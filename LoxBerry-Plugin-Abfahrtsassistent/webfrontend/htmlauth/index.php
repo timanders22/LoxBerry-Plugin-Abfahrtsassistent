@@ -66,6 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_P
     $abfcfg['buffer_min'] = max(0, min(120, (int) ($_POST['buffer_min'] ?? 10)));
     $abfcfg['arrival_min'] = max(0, min(120, (int) ($_POST['arrival_min'] ?? 10)));
     $abfcfg['lookahead_hours'] = max(1, min(48, (int) ($_POST['lookahead_hours'] ?? 15)));
+    $abfcfg['ignore_locations'] = trim((string) ($_POST['ignore_locations'] ?? 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin'));
     $mode = (string) ($_POST['tts_mode'] ?? 'musicserver');
     $abfcfg['tts'] = [
         'mode' => in_array($mode, ['musicserver', 'ms4h', 'audioserver', 'custom'], true) ? $mode : 'musicserver',
@@ -120,7 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_P
 
 // ---------- Laden ----------
 $abfcfg = is_file($config_file) ? (json_decode((string) file_get_contents($config_file), true) ?: []) : [];
-$abfcfg += ['calendars' => [], 'provider' => 'tomtom', 'api_key' => '', 'home_address' => '', 'buffer_min' => 10, 'arrival_min' => 10, 'lookahead_hours' => 15, 'tts' => []];
+$abfcfg += ['calendars' => [], 'provider' => 'tomtom', 'api_key' => '', 'home_address' => '', 'buffer_min' => 10, 'arrival_min' => 10, 'lookahead_hours' => 15, 'ignore_locations' => 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin', 'tts' => []];
 $abfcfg['tts'] += ['mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 20, 'lang' => 'de', 'template' => ''];
 $abfcfg += ['notify' => [], 'quiet' => []];
 $abfcfg['notify'] += ['audio' => 1, 'push' => 1];
@@ -244,6 +245,12 @@ Ort: <?= e($status['ort'] ?? '') ?> &mdash; Fahrzeit <?= isset($status['fahrt'])
 
 <label>Abfahrtsadresse (Zuhause)</label>
 <input data-role="none" type="text" name="home_address" value="<?= e($abfcfg['home_address']) ?>" placeholder="Stra&szlig;e Hausnummer, PLZ Ort">
+
+<label>Ignorierte Orte (Online-Termine)</label>
+<input data-role="none" type="text" name="ignore_locations" value="<?= e($abfcfg['ignore_locations']) ?>" placeholder="online, teams, zoom, ...">
+<div class="abf-small">Termine, deren Ortsangabe eines dieser W&ouml;rter enth&auml;lt (Komma-Liste, Gro&szlig;-/Kleinschreibung egal),
+werden wie Termine <b>ohne</b> Ort behandelt &mdash; keine Fahrzeitberechnung, keine Abfahrts-Ansage
+(z.&nbsp;B. Videokonferenzen mit Ort &bdquo;ONLINE&ldquo;). Meeting-Links (http/https) werden immer ignoriert.</div>
 
 <h2>Zeiten</h2>
 <div class="abf-row">

@@ -85,3 +85,7 @@ Neustart-Nachholung; Erklärung, warum kein Ankunftsreserve-Baustein nötig ist)
 **v1.3.5:** Anleitung: Ankunftsreserve-Absatz entfernt; Praxis-Hinweise zum
 Benachrichtigungs-Baustein ergänzt (Flankenverhalten, keine Mehrfachquellen am
 Push-Eingang, eigener Test-Baustein).
+
+**v1.3.6:** Online-Termin-Filter: Ortsangaben wie „ONLINE“, „Teams“, „Zoom“ (konfigurierbare
+Liste) sowie Meeting-Links (http/https) werden ignoriert — keine Fahrzeitberechnung für
+Videokonferenzen.

@@ -46,6 +46,7 @@ function abfahrt_config() {
         'buffer_min' => 10,
         'arrival_min' => 10,
         'lookahead_hours' => 15,
+        'ignore_locations' => 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin',
         'tts' => [],
         'notify' => [],
         'quiet' => [],
@@ -128,6 +129,28 @@ function abfahrt_audio_allowed(array $abfcfg, &$why = '') {
     return true;
 }
 
+
+
+/** Ist die Ortsangabe ein Online-/Video-Termin (keine Fahrt noetig)? */
+function abfahrt_loc_ignored($loc, array $abfcfg) {
+    $loc = trim((string) $loc);
+    if ($loc === '') {
+        return false;
+    }
+    if (preg_match('#^https?://#i', $loc)) {
+        return true; // Meeting-Link statt Adresse
+    }
+    foreach (explode(',', (string) ($abfcfg['ignore_locations'] ?? '')) as $kw) {
+        $kw = trim($kw);
+        if ($kw === '') {
+            continue;
+        }
+        if (preg_match('/(?<![\p{L}\p{N}])' . preg_quote($kw, '/') . '(?![\p{L}\p{N}])/ui', $loc)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /* ---------------- Logging ---------------- */
 
@@ -240,6 +263,9 @@ function abfahrt_next_event(array $abfcfg, &$diag = []) {
             $loc = '';
             if (preg_match('/LOCATION:([^\r\n]+)/', $ev, $ml)) {
                 $loc = trim(str_replace(['\\,', '\\;', '\\n'], [',', ';', ' '], $ml[1]));
+            }
+            if ($loc !== '' && abfahrt_loc_ignored($loc, $abfcfg)) {
+                $loc = ''; // Online-/Videotermin: keine Fahrzeitberechnung
             }
             $cancelled = (bool) preg_match('/STATUS:CANCELLED/', $ev);
 
