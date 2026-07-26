@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Abfahrts-Assistent: Uhr + Abfahrtspfeil -->
+  <rect x="8" y="8" width="496" height="496" rx="96" fill="#2e7d32"/>
+  <circle cx="200" cy="220" r="130" fill="none" stroke="#ffffff" stroke-width="26"/>
+  <line x1="200" y1="220" x2="200" y2="140" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <line x1="200" y1="220" x2="258" y2="250" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+  <line x1="120" y1="400" x2="360" y2="400" stroke="#ffffff" stroke-width="34" stroke-linecap="round"/>
+  <polygon points="340,348 430,400 340,452" fill="#ffffff"/>
+</svg>
