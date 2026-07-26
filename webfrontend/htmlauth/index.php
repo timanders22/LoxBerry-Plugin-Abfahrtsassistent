@@ -210,6 +210,22 @@ $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
 .abf-cal input:nth-child(2) { flex: 1 1 auto !important; width: auto !important; min-width: 200px; }
 .abf-cal .abf-rfbtn { flex: 0 0 auto !important; }
 .abf-wrap a.abf-btn:visited, .abf-wrap a.abf-btn:hover, .abf-wrap a.abf-btn:active { color: #fff !important; }
+
+/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
+.abf-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.abf-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.abf-knopfreihe form { margin: 0; display: flex; }
+.abf-knopfreihe .abf-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
+.abf-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.abf-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.abf-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.abf-btn.abf-b-lesen   { background: #6dac20; }
+.abf-btn.abf-b-technik { background: #546e7a; }
+.abf-btn.abf-b-aktion  { background: #e0620d; }
+.abf-punkt.abf-b-lesen   { background: #6dac20; }
+.abf-punkt.abf-b-technik { background: #546e7a; }
+.abf-punkt.abf-b-aktion  { background: #e0620d; }
 </style>
 <div class="abf-wrap">
 
@@ -518,8 +534,23 @@ Nachholung keine Flanke.
 <!-- ================= Reiter: Test ================= -->
 <div class="abf-pane" id="tab-test">
 <h2>Test</h2>
-<p><a class="abf-btn" style="display:inline-block;text-decoration:none;margin-right:10px;" href="/plugins/<?= e($plugindir) ?>/termin.php?debug=1" target="_blank">Termin-Abfrage (Debug)</a>
-<a class="abf-btn" style="display:inline-block;text-decoration:none;background:#607d8b;" href="/plugins/<?= e($plugindir) ?>/termin_say.php?force=1" target="_blank">Ansage jetzt ausl&ouml;sen</a></p>
+<div class="abf-legende">
+<span><i class="abf-punkt abf-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
+<span><i class="abf-punkt abf-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
+<span><i class="abf-punkt abf-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+</div>
+
+<h3 class="abf-h3">Technische Auskunft</h3>
+<div class="abf-knopfreihe">
+<a class="abf-btn abf-b-technik" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin.php?debug=1" target="_blank">Termin-Abfrage (Debug)</a>
+</div>
+
+<h3 class="abf-h3">L&ouml;st etwas aus</h3>
+<div class="abf-knopfreihe">
+<a class="abf-btn abf-b-aktion" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin_say.php?force=1" target="_blank">Ansage jetzt ausl&ouml;sen</a>
+</div>
+
+
 <div class="abf-small">
 &bull; <b>Termin-Abfrage (Debug)</b> zeigt, welcher Termin gefunden wurde, Fahrzeit, Abfahrts-Countdown und je Kalender die Trefferzahl.<br>
 &bull; <b>Ansage jetzt ausl&ouml;sen</b> spricht sofort &uuml;ber die Lautsprecher (umgeht bewusst Checkbox und Sperrzeiten, Parameter <span class="abf-mono">force=1</span>) &mdash; ideal zum Lautsprecher-Test. Eine Push-Nachricht wird dabei nicht verschickt (die kommt vom Miniserver).<br>
