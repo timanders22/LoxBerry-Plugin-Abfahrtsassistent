@@ -657,3 +657,68 @@ function abfahrt_tts_url($text, array $tts) {
         $tpl
     );
 }
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function abfahrt_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function abfahrt_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . abfahrt_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
