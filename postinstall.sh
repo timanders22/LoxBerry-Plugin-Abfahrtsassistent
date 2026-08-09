@@ -30,4 +30,8 @@ if [ -f "$BK" ]; then
         echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
     fi
 fi
+# Der API-Key des Kartendienstes steht in dieser Datei - nur fuer den
+# Eigentuemer lesbar. Gilt auch fuer die Sicherung daneben.
+chmod 600 "$BASE/config/plugins/$PFOLDER/abfahrt.json" 2>/dev/null
+chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
 exit 0

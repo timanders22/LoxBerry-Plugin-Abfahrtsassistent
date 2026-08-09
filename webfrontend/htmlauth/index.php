@@ -57,7 +57,36 @@ if ((!is_file($config_file) || trim((string) @file_get_contents($config_file)) =
 $saved = false;
 $save_error = '';
 $refreshed_msg = '';
-$active_tab = preg_match('/^tab-(settings|loxone|test|log)$/', (string) ($_POST['activetab'] ?? '')) ? $_POST['activetab'] : 'tab-settings';
+/* Drei Stellen gehoeren immer zusammen: Reiterleiste, Bereich (sm-pane mit
+   gleicher id) und diese Positivliste. Fehlt ein Name hier, ist der Reiter
+   sichtbar und anklickbar - aber nach jedem Absenden springt die Seite
+   zurueck auf Einstellungen. */
+$abf_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+$active_tab = preg_match($abf_muster, (string) ($_POST['activetab'] ?? '')) ? $_POST['activetab'] : 'tab-settings';
+if (isset($_GET['form']) && preg_match($abf_muster, 'tab-' . $_GET['form'])) {
+    $active_tab = 'tab-' . $_GET['form'];
+}
+
+// ---------- Loxone-Vorlage herunterladen ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    $host = $host !== '' ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', $host) : '';
+    $v = abfahrt_vorlage($host);
+    header('Content-Type: application/x-download');
+    // Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
+    // jeder Name, der ein Leerzeichen enthaelt.
+    header('Content-Disposition: attachment; filename="' . $v[0] . '"');
+    header('Content-Length: ' . strlen($v[1]));
+    echo $v[1];
+    exit;
+}
+
+// ---------- Audio-Server suchen ----------
+$abf_ms4h = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ms4h_suchen'])) {
+    $abf_ms4h = abfahrt_ms4h_suchen();
+    $active_tab = 'tab-settings';
+}
 
 // ---------- Log leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
@@ -65,9 +94,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     $active_tab = 'tab-log';
 }
 
+// ---------- Speichern: nur die MQTT-Werte ----------
+// Bewusst ein eigener Zweig. Der grosse Speichervorgang unten baut die
+// Konfiguration von Grund auf neu; wuerde das MQTT-Formular dieselbe Taste
+// druecken, waeren Kalender, Zugangsdaten und Sperrzeiten anschliessend leer.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
+    $abf_neu = abfahrt_config();
+    $abf_neu['mqtt_ein'] = empty($_POST['mqtt_ein']) ? 0 : 1;
+    $abf_t = preg_replace('#[^A-Za-z0-9_/\-]#', '', trim((string) ($_POST['mqtt_topic'] ?? '')));
+    if ($abf_t === '') {
+        $save_error = abfahrt_t('MQTT.FEHLER_TOPIC');
+    } else {
+        $abf_neu['mqtt_topic'] = $abf_t;
+        if (!is_dir($config_dir)) { @mkdir($config_dir, 0775, true); }
+        $abf_js = json_encode($abf_neu, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($abf_js !== false && @file_put_contents($config_file, $abf_js) !== false) {
+            @chmod($config_file, 0600);
+            @copy($config_file, $backup_file);
+            @chmod($backup_file, 0600);
+            $saved = true;
+        } else {
+            $save_error = 'Konfiguration konnte nicht gespeichert werden: ' . $config_file;
+        }
+    }
+    $active_tab = 'tab-mqtt';
+}
+
 // ---------- Speichern (auch bei "Kalender neu einlesen") ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_POST['refresh'])) && !isset($_POST['clearlog'])) {
+    // ACHTUNG: hier wird die Konfiguration KOMPLETT neu aufgebaut. Alles, was
+    // nicht in diesem Formular steht, waere danach weg. Die MQTT-Werte stehen
+    // in einem eigenen Reiter mit eigenem Formular - sie werden deshalb aus
+    // dem alten Stand uebernommen.
+    $abf_alt = abfahrt_config();
     $abfcfg = [];
+    $abfcfg['mqtt_ein'] = (int) $abf_alt['mqtt_ein'];
+    $abfcfg['mqtt_topic'] = (string) $abf_alt['mqtt_topic'];
     $abfcfg['calendars'] = [];
     for ($i = 0; $i < 10; $i++) {
         $name = trim((string) ($_POST['cal_name'][$i] ?? ''));
@@ -118,7 +180,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_P
         // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
         if ($json !== false && @file_put_contents($config_file, $json) !== false) {
             $saved = true;
+            // In dieser Datei steht der API-Key des Kartendienstes. Bei TomTom
+            // haengt daran ein Tageskontingent, bei Google eine Rechnung -
+            // sie geht niemanden ausser den Eigentuemer etwas an. Gilt fuer die
+            // Sicherung genauso, sonst liegt die Kopie offen daneben.
+            @chmod($config_file, 0600);
             @copy($config_file, $backup_file); // Sicherung ausserhalb des Plugin-Ordners (uebersteht Updates & Neuinstallation)
+            @chmod($backup_file, 0600);
         } else {
             $save_error = 'Konfiguration konnte nicht gespeichert werden: ' . $config_file;
         }
@@ -132,7 +200,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_P
             @unlink('/tmp/abfahrtsassistent/ics_' . md5($rurl));
             // Frische Berechnung anstossen (aktualisiert auch die Status-Zeile oben)
             $ctx = stream_context_create(['http' => ['timeout' => 25]]);
-            @file_get_contents('http://127.0.0.1/plugins/' . $plugindir . '/termin.php', false, $ctx);
+            // Port aus der general.json, nicht hart 80 - siehe abfahrt_webport().
+            $warm = function_exists('abfahrt_lokal_url')
+                ? abfahrt_lokal_url('/plugins/' . $plugindir . '/termin.php')
+                : 'http://127.0.0.1/plugins/' . $plugindir . '/termin.php';
+            @file_get_contents($warm, false, $ctx);
             $refreshed_msg = "Kalender \"$rname\" neu eingelesen.";
         } else {
             $refreshed_msg = "Kalender " . ($ri + 1) . ": keine URL eingetragen.";
@@ -153,6 +225,28 @@ foreach (abfahrt_quiet_keys() as $d) {
 while (count($abfcfg['calendars']) < 10) {
     $abfcfg['calendars'][] = ['name' => '', 'url' => ''];
 }
+
+/* Merkwort fuer die beiden ausloesenden Aufrufe (termin_say.php und
+ * termin.php?debug=1). Wird beim ersten Oeffnen der Oberflaeche erzeugt und
+ * danach NIE wieder angefasst - sonst wuerden einmal eingetragene
+ * Loxone-Adressen ungueltig. Bestehende Anlagen bekommen es beim naechsten
+ * Aufruf dieser Seite.
+ *
+ * Geschrieben wird direkt und nicht ueber den Speichern-Zweig oben: der
+ * laeuft nur bei einem abgesendeten Formular. */
+if (empty($abfcfg['aktionstoken'])) {
+    $abfcfg['aktionstoken'] = abfahrt_token_erzeugen();
+    $abf_tokjson = json_encode($abfcfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($abf_tokjson !== false) {
+        if (!is_dir($config_dir)) { @mkdir($config_dir, 0775, true); }
+        if (@file_put_contents($config_file, $abf_tokjson) !== false) {
+            @chmod($config_file, 0600);
+            @copy($config_file, $backup_file);
+            @chmod($backup_file, 0600);
+        }
+    }
+}
+$abf_token = (string) $abfcfg['aktionstoken'];
 
 $status = @json_decode((string) @file_get_contents('/tmp/abfahrtsassistent/titel.json'), true) ?: [];
 $log_lines = [];
@@ -239,11 +333,16 @@ $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
 <div class="sm-alert sm-info"><b><?php echo abfahrt_t('TEXT.LETZTER_BERECHNETER_TERMIN'); ?></b> <?= e($status['titel']) ?> (<?= e($status['kalender'] ?? '') ?>), <?= e($status['beginn'] ?? '') ?><?php echo abfahrt_t('TEXT.ORT'); ?> <?= e($status['ort'] ?? '') ?> <?php echo abfahrt_t('TEXT.FAHRZEIT'); ?> <?= isset($status['fahrt']) ? (int) ceil((float) $status['fahrt']) : '?' ?> <?php echo abfahrt_t('TEXT.MINUTEN_ABFAHRT_IN'); ?> <?= isset($status['abfahrt_in']) ? (int) $status['abfahrt_in'] : '?' ?> <?php echo abfahrt_t('TEXT.MINUTEN'); ?></div>
 <?php } ?>
 
+<!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. Warum beides:
+     Der Link traegt die Adresse - jeder Reiter ist damit verlinkbar, die
+     Zurueck-Taste tut das Erwartete, und faellt das Skript aus, bleibt die
+     Seite bedienbar. -->
 <div class="sm-tabs">
-    <div class="sm-tab" data-pane="tab-settings"><?php echo abfahrt_t('REITER.EINSTELLUNGEN'); ?></div>
-    <div class="sm-tab" data-pane="tab-loxone"><?php echo abfahrt_t('REITER.LOXONE'); ?></div>
-    <div class="sm-tab" data-pane="tab-test"><?php echo abfahrt_t('REITER.TEST'); ?></div>
-    <div class="sm-tab" data-pane="tab-log"><?php echo abfahrt_t('REITER.LOG'); ?></div>
+    <a class="sm-tab" data-pane="tab-settings" href="index.php?form=settings"><?php echo abfahrt_t('REITER.EINSTELLUNGEN'); ?></a>
+    <a class="sm-tab" data-pane="tab-mqtt"     href="index.php?form=mqtt"><?php echo abfahrt_t('REITER.MQTT'); ?></a>
+    <a class="sm-tab" data-pane="tab-loxone"   href="index.php?form=loxone"><?php echo abfahrt_t('REITER.LOXONE'); ?></a>
+    <a class="sm-tab" data-pane="tab-test"     href="index.php?form=test"><?php echo abfahrt_t('REITER.TEST'); ?></a>
+    <a class="sm-tab" data-pane="tab-log"      href="index.php?form=log"><?php echo abfahrt_t('REITER.LOG'); ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -319,6 +418,24 @@ $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
     <div>
         <label><?php echo abfahrt_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
         <input data-role="none" type="text" name="tts_ip" value="<?= e($abfcfg['tts']['ip']) ?>" placeholder="z. B. 192.168.1.50">
+<?php if ($abf_ms4h !== null) { ?>
+  <?php if ($abf_ms4h['gefunden']) { ?>
+    <div class="sm-alert sm-info"><?= sprintf(abfahrt_t('MS4H.GEFUNDEN'), (int) $abf_ms4h['port'], e($abf_ms4h['quelle'])) ?></div>
+  <?php } else { ?>
+    <div class="sm-alert sm-err"><?php echo abfahrt_t('MS4H.NICHTS'); ?></div>
+  <?php } ?>
+<?php } ?>
+<div class="sm-legende" style="margin-top:6px;">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo abfahrt_t('LEGENDE.LESEN'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="ms4h_suchen" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?php echo abfahrt_t('MS4H.K_SUCHEN'); ?></button>
+</form>
+</div>
+<div class="sm-small"><?php echo abfahrt_t('MS4H.HINWEIS'); ?></div>
     </div>
     <div>
         <label><?php echo abfahrt_t('TEXT.PORT'); ?></label>
@@ -399,10 +516,72 @@ $abf_regel = function_exists('abfahrt_quiet_rule') ? abfahrt_quiet_rule($abfcfg)
 </form>
 </div>
 
+<!-- ================= Reiter: MQTT ================= -->
+<div class="sm-pane" id="tab-mqtt">
+<h2><?php echo abfahrt_t('MQTT.H_TITEL'); ?></h2>
+<?php $abf_m = abfahrt_mqtt_zustand(); ?>
+<?php if (!$abf_m['gefunden']) { ?>
+<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.KEIN_ABSCHNITT'); ?></div>
+<?php } elseif (!$abf_m['autostart']) { ?>
+<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.KEIN_AUTOSTART'); ?></div>
+<?php } else { ?>
+<div class="sm-alert sm-info"><?= sprintf(abfahrt_t('MQTT.OK'), (int) $abf_m['udpport']) ?></div>
+<?php } ?>
+
+<div class="sm-step"><?php echo abfahrt_t('MQTT.WARUM'); ?></div>
+
+<h3 class="sm-h3"><?php echo abfahrt_t('MQTT.H_ABO'); ?></h3>
+<div class="sm-small"><?php echo abfahrt_t('MQTT.ABO_TEXT'); ?></div>
+<div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abfcfg['mqtt_topic']) ?>/#</div>
+<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.ABO_WARNUNG'); ?></div>
+
+<h3 class="sm-h3"><?php echo abfahrt_t('MQTT.H_THEMEN'); ?></h3>
+<table class="sm-tbl">
+<tr><th><?php echo abfahrt_t('MQTT.T_THEMA'); ?></th><th><?php echo abfahrt_t('MQTT.T_BEDEUTUNG'); ?></th><th><?php echo abfahrt_t('MQTT.T_WERT'); ?></th></tr>
+<?php $abf_w = abfahrt_werte(abfahrt_stand(), $abfcfg); ?>
+<?php foreach (abfahrt_felder() as $abf_n => $abf_d) { ?>
+<tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_n) ?></span></td>
+    <td><?php echo abfahrt_t($abf_d[3]); ?></td>
+    <td><?= isset($abf_w[$abf_n]) ? e($abf_w[$abf_n]) : '&mdash;' ?></td></tr>
+<?php } ?>
+</table>
+
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-row"><label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= !empty($abfcfg['mqtt_ein']) ? ' checked' : '' ?>> <?php echo abfahrt_t('MQTT.L_EIN'); ?></label></div>
+<div class="sm-row"><label><?php echo abfahrt_t('MQTT.L_TOPIC'); ?></label>
+<input data-role="none" type="text" name="mqtt_topic" value="<?= e($abfcfg['mqtt_topic']) ?>" size="24"></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo abfahrt_t('LEGENDE.AKTION'); ?></span></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo abfahrt_t('TEXT.SPEICHERN'); ?></button>
+</div>
+</form>
+</div>
+
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-pane" id="tab-loxone">
 <h2><?php echo abfahrt_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo abfahrt_t('TEXT.DAS_PLUGIN_BERECHNET_AUF_DEM_LOXBE'); ?></p>
+
+<div class="sm-step"><b><?php echo abfahrt_t('LOX.S1_T'); ?></b><br><br>
+<?php echo abfahrt_t('LOX.S1'); ?></div>
+
+<div class="sm-step"><b><?php echo abfahrt_t('LOX.S2_T'); ?></b><br><br>
+<?php echo abfahrt_t('LOX.S2'); ?>
+<div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abfcfg['mqtt_topic']) ?>/#</div>
+<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.ABO_WARNUNG'); ?></div>
+<?php echo abfahrt_t('LOX.S2_THEMEN'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo abfahrt_t('MQTT.T_THEMA'); ?></th><th><?php echo abfahrt_t('MQTT.T_BEDEUTUNG'); ?></th></tr>
+<?php foreach (abfahrt_felder() as $abf_n => $abf_d) { ?>
+<tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_n) ?></span></td><td><?php echo abfahrt_t($abf_d[3]); ?></td></tr>
+<?php } ?>
+</table>
+</div>
+
+<h3 class="sm-h3"><?php echo abfahrt_t('LOX.H_ALTERNATIVE'); ?></h3>
+<div class="sm-small"><?php echo abfahrt_t('LOX.ALTERNATIVE_TEXT'); ?></div>
 
 <div class="sm-step"><b><?php echo abfahrt_t('TEXT.SCHRITT_1_VIRTUELLEN_HTTP_EINGANG_'); ?></b><br><br>
 In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TEXT.MINISERVER_IN_DER_BAUMANSICHT_ANKL'); ?> <i><?php echo abfahrt_t('TEXT.VIRTUELLE_EINGNGE'); ?></i> <?php echo abfahrt_t('TEXT.TEXT_2'); ?>
@@ -425,9 +604,24 @@ In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TE
 <tr><td><span class="sm-mono"><?php echo abfahrt_t('TEXT.IMINSTART_I_V'); ?></span></td><td><?php echo abfahrt_t('TEXT.MINUTEN_BIS_ZUM'); ?> <b><?php echo abfahrt_t('TEXT.TERMINBEGINN'); ?></b>.</td><td>55</td></tr>
 <tr><td><span class="sm-mono"><?php echo abfahrt_t('TEXT.IFAHRT_I_V'); ?></span></td><td><?php echo abfahrt_t('TEXT.AKTUELLE'); ?> <b><?php echo abfahrt_t('TEXT.FAHRZEIT_2'); ?></b> <?php echo abfahrt_t('TEXT.IN_MINUTEN_INKLUSIVE_STAU_VERKEHRS'); ?></td><td>43.7</td></tr>
 <tr><td><span class="sm-mono"><?php echo abfahrt_t('TEXT.IOK_I_V'); ?></span></td><td><b>1</b> <?php echo abfahrt_t('TEXT.TERMIN_GEFUNDEN_UND_ROUTE_BERECHNE'); ?> <b>0</b> <?php echo abfahrt_t('TEXT.KEIN_TERMIN_MIT_ORT_IM_ZEITFENSTER'); ?></td><td>1</td></tr>
+<tr><td><span class="sm-mono">\iFEHLER=\i\v</span></td><td><?php echo abfahrt_t('TEXT.FEHLER_BEDEUTUNG'); ?></td><td>0</td></tr>
 <tr><td><span class="sm-mono"><?php echo abfahrt_t('TEXT.IAUDIO_I_V'); ?></span></td><td><b>1</b> <?php echo abfahrt_t('TEXT.ANSAGE_ERLAUBT_CHECKBOX_AN_UND_KEI'); ?> <b>0</b> <?php echo abfahrt_t('TEXT.LAUTSPRECHER_SOLL_STUMM_BLEIBEN'); ?></td><td>1</td></tr>
 <tr><td><span class="sm-mono"><?php echo abfahrt_t('TEXT.IPUSH_I_V'); ?></span></td><td><b>1</b> <?php echo abfahrt_t('TEXT.PUSH_NACHRICHT_ERLAUBT_CHECKBOX'); ?> <b>0</b> <?php echo abfahrt_t('TEXT.KEIN_PUSH'); ?></td><td>1</td></tr>
 </table>
+<div class="sm-alert sm-info"><?php echo abfahrt_t('TEXT.FEHLER_ERLAEUTERUNG'); ?></div>
+
+<h3 class="sm-h3"><?php echo abfahrt_t('LOX.H_VORLAGE'); ?></h3>
+<div class="sm-small"><?php echo abfahrt_t('LOX.VORLAGE_TEXT'); ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo abfahrt_t('LEGENDE.TECHNIK'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="download" value="xml_in">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?php echo abfahrt_t('LOX.K_VORLAGE'); ?></button>
+</form>
+</div>
 </div>
 
 <div class="sm-step"><b><?php echo abfahrt_t('TEXT.SCHRITT_3_AUSLSEN_VON_ANSAGE_UND_P'); ?></b><br><br>
@@ -435,8 +629,10 @@ In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TE
 <table class="sm-tbl">
 <tr><th>Eigenschaft</th><th>Wert</th></tr>
 <tr><td><?php echo abfahrt_t('TEXT.ADRESSE_VIRTUELLER_AUSGANG'); ?></td><td><span class="sm-mono">http://<?= $host ?></span></td></tr>
-<tr><td><?php echo abfahrt_t('TEXT.BEFEHL_BEI_EIN_AUSGANG_BEFEHL'); ?></td><td><span class="sm-mono">/plugins/<?= e($plugindir) ?><?php echo abfahrt_t('TEXT.TERMIN_SAY_PHP_2'); ?></span></td></tr>
+<tr><td><?php echo abfahrt_t('TEXT.BEFEHL_BEI_EIN_AUSGANG_BEFEHL'); ?></td><td><span class="sm-mono">/plugins/<?= e($plugindir) ?><?php echo abfahrt_t('TEXT.TERMIN_SAY_PHP_2'); ?>?token=<?= e($abf_token) ?></span></td></tr>
+<tr><td><?php echo abfahrt_t('TEXT.AKTUELLES_MERKWORT'); ?></td><td><span class="sm-mono"><?= e($abf_token) ?></span></td></tr>
 </table>
+<div class="sm-alert sm-warn"><?php echo abfahrt_t('TEXT.MERKWORT_HINWEIS'); ?></div>
 <b><?php echo abfahrt_t('TEXT.B_LOGIK_AUF_DER_PROGRAMMIERSEITE'); ?></b> <?php echo abfahrt_t('TEXT.MAN_VERGLEICHT'); ?> <span class="sm-mono">AB<?php echo abfahrt_t('TEXT.FAHRT'); ?>_IN</span> <?php echo abfahrt_t('TEXT.MIT_DER_EIGENEN_VORWARNZEIT_Z_B_5_'); ?>
 <span class="sm-mono">OK=1</span><?php echo abfahrt_t('TEXT.DANN'); ?><br>
 <?php echo abfahrt_t('TEXT.BEI'); ?> <span class="sm-mono"><?php echo abfahrt_t('TEXT.AUDIO_1'); ?></span> <?php echo abfahrt_t('TEXT.DEN_VIRTUELLEN_AUSGANG_SCHALTEN_DA'); ?><br>
@@ -475,32 +671,62 @@ In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TE
 <?php echo abfahrt_t('TEXT.IN_DIESEM_MODUS_LIEFERT_2'); ?> <span class="sm-mono">termin_say.php</span> <?php echo abfahrt_t('TEXT.NUR_DEN_TEXT'); ?><span class="sm-mono">TEXT=...</span><?php echo abfahrt_t('TEXT.UND_SPRICHT_NICHT_SELBST'); ?>
 </div>
 
-<div class="sm-step"><b><?php echo abfahrt_t('TEXT.SCHRITT_6_KOMPLETTE_BAUSTEIN_LISTE'); ?></b><br><br>
-<?php echo abfahrt_t('TEXT.SO_SIEHT_DIE_VOLLSTNDIGE_LOGIK_AUF'); ?>
+<div class="sm-step"><b><?php echo abfahrt_t('LOX.H_BAUSTEINE'); ?></b><br><br>
+<?php echo abfahrt_t('LOX.BAUSTEINE_TEXT'); ?>
 <table class="sm-tbl">
-<tr><th>#</th><th><?php echo abfahrt_t('TEXT.BAUSTEIN_TYP'); ?></th><th><?php echo abfahrt_t('TEXT.NAME_VORSCHLAG'); ?></th><th><?php echo abfahrt_t('TEXT.PARAMETER'); ?></th><th><?php echo abfahrt_t('TEXT.EINGNGE_VERBINDEN_MIT'); ?></th></tr>
-<tr><td>1</td><td><?php echo abfahrt_t('TEXT.VIRTUELLER_HTTP_EINGANG_6_BEFEHLE'); ?></td><td><?php echo abfahrt_t('TEXT.ABFAHRTS_ASSISTENT'); ?></td><td><?php echo abfahrt_t('TEXT.URL_WIE_SCHRITT1_ABFRAGE_300S'); ?></td><td><?php echo abfahrt_t('TEXT.HOLT_DIE_DATEN_SELBST'); ?></td></tr>
-<tr><td>2</td><td><?php echo abfahrt_t('TEXT.AUSWAHLTASTEN_ODER_FESTER_WERT'); ?></td><td><?php echo abfahrt_t('TEXT.ABFAHRT_VORWARNUNG_MIN'); ?></td><td><?php echo abfahrt_t('TEXT.STANDARD_5_SCHRITTWEITE_1_MIN_0_MA'); ?></td><td><?php echo abfahrt_t('TEXT.BEDIENUNG_IN_DER_APP'); ?></td></tr>
-<tr><td>3</td><td><?php echo abfahrt_t('TEXT.FORMEL'); ?></td><td><?php echo abfahrt_t('TEXT.MINUTEN_BIS_WARNUNG'); ?></td><td><?php echo abfahrt_t('TEXT.FORMEL_2'); ?> <span class="sm-mono">I1-I2</span></td><td><?php echo abfahrt_t('TEXT.I1_HTTP_BEFEHL'); ?> <span class="sm-mono">ABFAHRT_IN</span><?php echo abfahrt_t('TEXT.I2_AQ_DER_VORWARNUNG_2'); ?></td></tr>
-<tr><td>4</td><td><?php echo abfahrt_t('TEXT.SCHWELLWERTSCHALTER'); ?></td><td><?php echo abfahrt_t('TEXT.WARNZEIT_ERREICHT'); ?></td><td><?php echo abfahrt_t('TEXT.EIN_SCHWELLE'); ?> <b>0,4</b> <?php echo abfahrt_t('TEXT.AUS_SCHWELLE'); ?> <b>0,6</b> <?php echo abfahrt_t('TEXT.EIN_AUS_SCHALTET_BEIM_UNTERSCHREIT'); ?></td><td><?php echo abfahrt_t('TEXT.EINGANG_AUSGANG_DER_FORMEL_3'); ?></td></tr>
-<tr><td>5</td><td>Schwellwertschalter</td><td><?php echo abfahrt_t('TEXT.TERMIN_IN_REICHWEITE'); ?></td><td>Ein <b>899</b> <?php echo abfahrt_t('TEXT.AUS'); ?> <b>901</b> <?php echo abfahrt_t('TEXT.EIN_BEI_MINSTART_UNTER_15H'); ?></td><td><?php echo abfahrt_t('TEXT.EINGANG_HTTP_BEFEHL'); ?> <span class="sm-mono"><?php echo abfahrt_t('TEXT.MINSTART'); ?></span></td></tr>
-<tr><td>6</td><td>Schwellwertschalter</td><td><?php echo abfahrt_t('TEXT.DATEN_OK'); ?></td><td><?php echo abfahrt_t('TEXT.EIN_0_5_AUS_0_4'); ?></td><td>Eingang = HTTP-Befehl <span class="sm-mono">OK</span></td></tr>
-<tr><td>7</td><td>UND</td><td><?php echo abfahrt_t('TEXT.TERMIN_GLTIG'); ?></td><td><?php echo abfahrt_t('TEXT.TEXT_5'); ?></td><td>I1 = #5, I2 = #6</td></tr>
-<tr><td>8</td><td>UND</td><td><?php echo abfahrt_t('TEXT.ABFAHRT_JETZT_MELDEN'); ?></td><td>&mdash;</td><td>I1 = #4, I2 = #7</td></tr>
-<tr><td>9</td><td>Schwellwertschalter</td><td><?php echo abfahrt_t('TEXT.AUDIO_ERLAUBT'); ?></td><td>Ein 0,5 / Aus 0,4</td><td>Eingang = HTTP-Befehl <span class="sm-mono"><?php echo abfahrt_t('TEXT.AUDIO_2'); ?></span></td></tr>
-<tr><td>10</td><td>Schwellwertschalter</td><td><?php echo abfahrt_t('TEXT.PUSH_ERLAUBT'); ?></td><td>Ein 0,5 / Aus 0,4</td><td>Eingang = HTTP-Befehl <span class="sm-mono">PUSH</span></td></tr>
-<tr><td>11</td><td>UND</td><td><?php echo abfahrt_t('TEXT.ANSAGE_ERLAUBT'); ?></td><td>&mdash;</td><td><?php echo abfahrt_t('TEXT.I1_8_I2_9_AUSGANG_AN_DEN'); ?> <b><?php echo abfahrt_t('TEXT.VIRTUELLEN_AUSGANG'); ?></b> <?php echo abfahrt_t('TEXT.AUS_SCHRITT3_TERMIN_SAY_PHP'); ?></td></tr>
-<tr><td>12</td><td>UND</td><td><?php echo abfahrt_t('TEXT.PUSH_ERLAUBT_ABFAHRT'); ?></td><td>&mdash;</td><td><?php echo abfahrt_t('TEXT.I1_8_I2_10_AUSGANG_AN_EINEN'); ?> <b><?php echo abfahrt_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN'); ?></b> <?php echo abfahrt_t('TEXT.MELDUNGSTEXT_Z_B_ZEIT_ZUM_LOSFAHRE'); ?></td></tr>
-<tr><td>13</td><td><?php echo abfahrt_t('TEXT.STATUS_OPTIONAL'); ?></td><td>Abfahrts-Assistent</td><td><?php echo abfahrt_t('TEXT.SIEHE_SCHRITT4'); ?></td><td><?php echo abfahrt_t('TEXT.V1_ABFAHRT_IN_V2_FAHRT_V3_OK'); ?></td></tr>
+<tr><th>#</th><th><?php echo abfahrt_t('LOX.T_BAUSTEIN'); ?></th><th><?php echo abfahrt_t('LOX.T_NAME'); ?></th>
+    <th><?php echo abfahrt_t('LOX.T_PARAMETER'); ?></th><th><?php echo abfahrt_t('LOX.T_VERBINDEN'); ?></th></tr>
+<?php
+/* Die Eingaenge kommen aus derselben Feldtabelle wie Statuszeile, MQTT-Themen
+   und Importdatei. Eine von Hand gepflegte Liste liefe frueher oder spaeter
+   auseinander - und dann steht in der Anleitung ein Thema, das es nicht gibt. */
+$abf_i = 0;
+foreach (abfahrt_felder() as $abf_n => $abf_d) {
+    $abf_i++; ?>
+<tr><td><?= $abf_i ?></td><td><?php echo abfahrt_t('LOX.B_EINGANG'); ?></td>
+    <td><span class="sm-mono">Abfahrt <?= e($abf_n) ?></span></td>
+    <td><?php echo abfahrt_t('LOX.B_THEMA'); ?> <span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_n) ?></span></td>
+    <td>&mdash;</td></tr>
+<?php } ?>
+<?php for ($abf_b = 1; $abf_b <= 14; $abf_b++) { $abf_i++; ?>
+<tr><td><?= $abf_i ?></td><td><?php echo abfahrt_t('BAUSTEIN.B' . $abf_b . '_TYP'); ?></td>
+    <td><span class="sm-mono"><?php echo abfahrt_t('BAUSTEIN.B' . $abf_b . '_NAME'); ?></span></td>
+    <td><?php echo abfahrt_t('BAUSTEIN.B' . $abf_b . '_PARAM'); ?></td>
+    <td><?php echo abfahrt_t('BAUSTEIN.B' . $abf_b . '_VERB'); ?></td></tr>
+<?php } ?>
 </table>
-<br><br>
-<b><?php echo abfahrt_t('TEXT.OPTIONAL_EMPFOHLEN_NEUSTART_NACHHO'); ?></b> <?php echo abfahrt_t('TEXT.DAMIT_EINE_BEREITS_FLLIGE_ABFAHRT_'); ?> <i><?php echo abfahrt_t('TEXT.SYSTEMSTART_IMPULS'); ?></i> &rarr; <i><?php echo abfahrt_t('TEXT.AUSSCHALTVERZGERUNG'); ?></i> <?php echo abfahrt_t('TEXT.300S_JE_EIN'); ?> <i>UND</i> <?php echo abfahrt_t('TEXT.MIT_11_BZW_12_JE_EINE'); ?> <i><?php echo abfahrt_t('TEXT.EINSCHALTVERZGERUNG'); ?></i> <?php echo abfahrt_t('TEXT.60S_ALS_ZUS_AUML_TZLICHE_QUELLE_AU'); ?>
+<div class="sm-alert sm-info"><?php echo abfahrt_t('LOX.BAUSTEINE_ERLAEUTERUNG'); ?></div>
 </div>
+
+<div class="sm-step"><b><?php echo abfahrt_t('LOX.H_GEGENPROBE'); ?></b><br><br>
+<?php echo abfahrt_t('LOX.GEGENPROBE'); ?></div>
+
 </div>
 
 <!-- ================= Reiter: Test ================= -->
 <div class="sm-pane" id="tab-test">
 <h2>Test</h2>
+
+<h3 class="sm-h3"><?php echo abfahrt_t('TEST.H_SELBSTTEST'); ?></h3>
+<div class="sm-small"><?php echo abfahrt_t('TEST.SELBSTTEST_TEXT'); ?></div>
+<?php
+$abf_pr = abfahrt_pruefungen($abfcfg);
+$abf_schlecht = 0;
+foreach ($abf_pr as $abf_z) { if ($abf_z[0] === 0) { $abf_schlecht++; } }
+?>
+<div class="sm-alert <?= $abf_schlecht ? 'sm-err' : 'sm-info' ?>">
+<?= sprintf(abfahrt_t($abf_schlecht ? 'TEST.SELBSTTEST_FEHL' : 'TEST.SELBSTTEST_OK'),
+            count($abf_pr) - $abf_schlecht, count($abf_pr)) ?>
+</div>
+<table class="sm-tbl">
+<tr><th style="width:34px;"></th><th style="width:34%;"><?php echo abfahrt_t('TEST.T_FRAGE'); ?></th><th><?php echo abfahrt_t('TEST.T_ANTWORT'); ?></th></tr>
+<?php foreach ($abf_pr as $abf_z) { ?>
+<tr><td style="text-align:center;"><?= $abf_z[0] === 1 ? '<span class="sm-ok">&#10004;</span>'
+        : ($abf_z[0] === 0 ? '<span class="sm-err">&#10008;</span>' : '<b>i</b>') ?></td>
+    <td><?= $abf_z[1] ?></td><td><?= $abf_z[2] ?></td></tr>
+<?php } ?>
+</table>
+
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo abfahrt_t('LEGENDE.LESEN'); ?></span>
 <span><i class="sm-punkt sm-b-technik"></i> <?php echo abfahrt_t('LEGENDE.TECHNIK'); ?></span>
@@ -509,12 +735,12 @@ In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TE
 
 <h3 class="sm-h3"><?php echo abfahrt_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-technik" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin.php?debug=1" target="_blank"><?php echo abfahrt_t('TEXT.TERMIN_ABFRAGE_DEBUG_2'); ?></a>
+<a class="sm-btn sm-b-technik" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin.php?debug=1&amp;token=<?= e($abf_token) ?>" target="_blank"><?php echo abfahrt_t('TEXT.TERMIN_ABFRAGE_DEBUG_2'); ?></a>
 </div>
 
 <h3 class="sm-h3"><?php echo abfahrt_t('TEXT.LST_ETWAS_AUS'); ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin_say.php?<?php echo abfahrt_t('TEXT.FORCE_1'); ?>" target="_blank"><?php echo abfahrt_t('TEXT.ANSAGE_JETZT_AUSLSEN_2'); ?></a>
+<a class="sm-btn sm-b-aktion" style="text-decoration:none;" href="/plugins/<?= e($plugindir) ?>/termin_say.php?<?php echo abfahrt_t('TEXT.FORCE_1'); ?>&amp;token=<?= e($abf_token) ?>" target="_blank"><?php echo abfahrt_t('TEXT.ANSAGE_JETZT_AUSLSEN_2'); ?></a>
 </div>
 
 
@@ -534,11 +760,15 @@ In <b><?php echo abfahrt_t('TEXT.LOXONE_CONFIG'); ?></b><?php echo abfahrt_t('TE
 <?php } else { ?>
 <div class="sm-alert sm-info"><?php echo abfahrt_t('TEXT.NOCH_KEINE_LOG_EINTRGE_VORHANDEN'); ?></div>
 <?php } ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo abfahrt_t('LEGENDE.AKTION'); ?></span>
+</div>
 <form action="index.php" method="post" style="margin-top:10px;">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo abfahrt_t('TEXT.LOG_LEEREN'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo abfahrt_t('TEXT.LOG_LEEREN'); ?></button>
 </form>
+<?php if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { echo LBWeb::loglist_html(); } ?>
 </div>
 
 </div>
@@ -553,6 +783,7 @@ function abfTtsMode() {
 abfTtsMode();
 (function () {
     var tabs = document.querySelectorAll('.sm-tab');
+    // Links: Klick abfangen, damit Eingaben in anderen Reitern erhalten bleiben.
     function activate(id) {
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
         document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });

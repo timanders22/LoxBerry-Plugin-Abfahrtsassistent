@@ -1,0 +1,8 @@
+#!/bin/bash
+# Weckt den Hintergrunddienst jede Minute. Ob tatsaechlich gerechnet und beim
+# Kartendienst angefragt wird, entscheidet das Skript selbst - der Minutentakt
+# ist der Herzschlag, nicht der Abfragetakt.
+#
+# Ueber den Interpreter aufgerufen, nicht ueber die Raute-Zeile: geht beim
+# Entpacken das Ausfuehrungsrecht verloren, laeuft der Dienst trotzdem an.
+/usr/bin/php REPLACELBPBINDIR/abfahrt_dienst.php >/dev/null 2>&1

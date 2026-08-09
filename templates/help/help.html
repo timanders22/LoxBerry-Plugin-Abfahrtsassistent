@@ -8,18 +8,48 @@
 
 <p><b>v1.1.1:</b> Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade); Zonen-Feld akzeptiert einfache Zonenliste (<code>2,4,6</code>) &amp;mdash; Lautst&amp;auml;rke kommt dann aus dem Lautst&amp;auml;rke-Feld; <code>Zone~Lautst&amp;auml;rke</code> je Zone weiterhin m&amp;ouml;glich.</p>
 
+<h3>Wenn etwas nicht geht</h3>
+<p>Der Reiter <i>Test</i> hat eine <b>Selbstprüfung</b>, die ohne Loxone
+beantwortet, ob die Einrichtung trägt &mdash; von unten nach oben: Kalender,
+API-Key, Adresse, Dateirechte, läuft der Hintergrunddienst, was hat er zuletzt
+gerechnet, Feiertagsquelle, Audioausgabe, Sperrzeit, MQTT-Weg, Vorlage. Der
+erste Kreuz-Eintrag ist meist die Ursache.</p>
+
+<p><b>Zu <code>FEHLER=7</code>:</b> Der Kartendienst war kurz nicht erreichbar,
+die letzte bekannte Fahrzeit gilt weiter, <code>OK</code> bleibt 1. Das ist
+Absicht &mdash; bräche die Berechnung stattdessen ab, fiele der
+Schwellwertschalter in Loxone kurz aus und löste danach ein zweites Mal aus:
+derselbe Termin sagte zweimal Bescheid.</p>
+
 <h3>Konfiguration (Plugin-Oberfläche)</h3>
 
 <ul><li>Bis zu 10 Kalender (Name + private iCal-URL)</li><li>Kartendienst: <b>TomTom</b> / <b>Google Maps</b> / <b>HERE</b> + eigener API-Key</li><li>Abfahrtsadresse (Zuhause)</li><li><b>Ankunft X Minuten vor Termin</b> und <b>Pufferzeit</b></li><li>Sprachausgabe:</li><li><b>Loxone Music Server</b> (klassisch): direkte TTS-Ansage über Port 7091</li><li><b>Audioserver4Home / MusicServer4Home</b>: URL-Vorlage (anpassbar)</li><li><b>Original Loxone Audioserver</b>: hat keine HTTP-TTS-Schnittstelle — das Plugin liefert den Ansagetext, die Ausgabe erfolgt in Loxone Config über Textgenerator → TTS-Eingang des Audioplayer-Bausteins</li><li><b>Eigene URL-Vorlage</b> mit Platzhaltern <code>{ip} {port} {zones} {vol} {lang} {text}</code></li></ul>
 
 <p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten — Kalender-URLs, API-Key und Adressen werden ausschließlich in der lokalen Konfiguration (<code>config/plugins/&lt;plugin&gt;/abfahrt.json</code>) gespeichert.</p>
 
+<h3>Weg nach Loxone</h3>
+<p><b>MQTT ist ab 1.5.0 der Regelweg.</b> Das Plugin rechnet im Hintergrund
+(Cron, jede Minute) und schiebt jede Änderung selbst zum Miniserver. Dafür muss
+das Abo <code>abfahrt/#</code> im MQTT-Gateway stehen
+(System &rarr; MQTT Gateway &rarr; Subscriptions) &mdash; <b>ohne diesen Eintrag
+kommt am Miniserver nichts an</b>, das ist die häufigste Fehlerursache. Der
+Reiter <i>MQTT</i> zeigt Abo und alle Themen.</p>
+
+<p>Der <b>virtuelle HTTP-Eingang</b> bleibt als Alternative bestehen. Wichtig:
+<code>termin.php</code> <b>rechnet nicht mehr selbst</b>, sondern gibt den
+Zwischenstand aus. Dadurch hängt die Zahl der Anfragen an den Kartendienst
+nicht mehr daran, wie oft Loxone fragt. Nur <code>?debug=1</code> rechnet neu.</p>
+
+<p>Der Reiter <i>Einbindung in Loxone</i> erzeugt auf Knopfdruck eine fertige
+Importdatei für Loxone Config und enthält die vollständige Baustein-Liste zum
+Nachbauen &mdash; für beide Wege.</p>
+
 <h3>Endpunkte (für Loxone)</h3>
 
 <table class="sm-tbl">
 <tr><th>Endpunkt</th><th>Zweck</th></tr>
-<tr><td><code>/plugins/abfahrtsassistent/termin.php</code></td><td>Flat-Text: <code>TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..</code></td></tr>
-<tr><td><code>/plugins/abfahrtsassistent/termin.php?debug=1</code></td><td>Diagnose</td></tr>
+<tr><td><code>/plugins/abfahrtsassistent/termin.php</code></td><td>Flat-Text: <code>TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..</code> &mdash; liest nur ab</td></tr>
+<tr><td><code>/plugins/abfahrtsassistent/termin.php?debug=1</code></td><td>Diagnose &mdash; <b>rechnet neu</b></td></tr>
 <tr><td><code>/plugins/abfahrtsassistent/termin_say.php</code></td><td>Ansage auslösen (bzw. <code>TEXT=...</code> im Audioserver-Modus)</td></tr>
 </table>
 
@@ -50,3 +80,12 @@
 <h3>Datenschutz</h3>
 
 <p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten. Kalender-URLs, API-Key, Adressen und Zonen liegen ausschließlich in der lokalen Konfiguration (<code>config/plugins/abfahrtsassistent/abfahrt.json</code>) und werden nie mitgeliefert. Externe Verbindungen bestehen nur zu den vom Nutzer selbst eingetragenen Kalendern und zum gewählten Kartendienst (TomTom, Google Maps oder HERE).</p>
+<p><b>v1.5.0:</b> MQTT-Push über das LoxBerry-Gateway samt eigenem Reiter (nur
+Änderungen werden gesendet); Rechnen in den Hintergrunddienst verlagert &mdash;
+<code>termin.php</code> liest nur noch ab; Importdatei für Loxone Config auf
+Knopfdruck; Baustein-Liste auf MQTT umgeschrieben; Selbstprüfung im Reiter
+<i>Test</i>; Feld <code>FEHLER</code> mit Zahlencode und <code>ALTER</code> für
+die Ausfallerkennung; Fahrzeit gilt bei einem Ausfall des Kartendienstes bis zu
+eine Stunde weiter; Routen-Cache skaliert mit der Nähe zum Termin;
+Serientermine werden vorgespult; Audio-Server-Suche; Webserver-Port aus der
+<code>general.json</code>; Konfiguration mit Rechten 0600.</p>

@@ -12,14 +12,26 @@
  *     erfolgt in Loxone Config ueber einen Textgenerator-Baustein am
  *     TTS-Eingang des Audioplayer-Bausteins.
  *
- * Aufruf: /plugins/abfahrtsassistent/termin_say.php
- *         ?text=...  eigener Text statt des automatischen
+ * Aufruf: /plugins/abfahrtsassistent/termin_say.php?token=...
+ *         &text=...   eigener Text statt des automatischen
+ *         &force=1    umgeht Ruhezeiten und die Audio-Freigabe (Testknopf)
+ *
+ * DIESER ENDPUNKT SPRICHT IM HAUS und verlangt deshalb das Merkwort aus dem
+ * Reiter "Einbindung in Loxone". Er liegt im unangemeldeten Bereich, damit
+ * Loxone ihn ohne Zugangsdaten erreicht - ohne Pruefung koennte jeder im Netz
+ * beliebigen Text ansagen lassen, und mit &force=1 auch mitten in der Nacht,
+ * denn force umgeht die Ruhezeiten.
  */
 
 require_once __DIR__ . '/abfahrt_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
 $abfcfg = abfahrt_config();
+
+if (!abfahrt_token_ok($abfcfg)) {
+    abfahrt_token_abweisen('SAY', $abfcfg);
+}
+
 $tts = $abfcfg['tts'];
 
 // Freigabe pruefen (Test-Button nutzt ?force=1 und umgeht die Sperren)

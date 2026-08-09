@@ -12,6 +12,7 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 
 if [ -f "$BASE/config/plugins/$PFOLDER/abfahrt.json" ]; then
     cp -p "$BASE/config/plugins/$PFOLDER/abfahrt.json" "$ARGV1/abfahrt.json.backup"
+    chmod 600 "$ARGV1/abfahrt.json.backup" 2>/dev/null
     echo "<INFO> Konfiguration gesichert."
 else
     echo "<INFO> Keine bestehende Konfiguration gefunden."

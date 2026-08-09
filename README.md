@@ -40,19 +40,49 @@ API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
 
 | Endpunkt | Zweck |
 |---|---|
-| `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..` |
-| `/plugins/abfahrtsassistent/termin.php?debug=1` | Diagnose |
-| `/plugins/abfahrtsassistent/termin_say.php` | Ansage auslösen (bzw. `TEXT=...` im Audioserver-Modus) |
+| `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..` |
+| `/plugins/abfahrtsassistent/termin.php?debug=1&token=…` | Diagnose — **rechnet neu**, alle anderen Aufrufe lesen nur ab |
+| `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen (bzw. `TEXT=...` im Audioserver-Modus) |
 
-**Virtueller HTTP-Eingang** (alle 5 min): Befehlserkennung `\iABFAHRT_IN=\i\v`.
-**Virtueller Ausgang** (bei Abfahrt/Vorwarnung): `/plugins/abfahrtsassistent/termin_say.php`.
+**Die beiden auslösenden Aufrufe verlangen ein Merkwort.** Sie liegen im
+unangemeldeten Bereich, damit Loxone sie ohne Zugangsdaten erreicht — ohne
+Prüfung könnte jeder im Netz beliebigen Text ansagen lassen, mit `&force=1`
+auch nachts, denn *force* umgeht die Sperrzeiten. `?debug=1` rechnet neu und
+fragt dabei den Kartendienst, kostet also Kontingent. Verglichen wird mit
+`hash_equals`, fail-closed: ohne gesetztes Merkwort wird nichts durchgelassen.
+Der zyklische Leseaufruf von `termin.php` ohne Parameter bleibt frei — er gibt
+nur den Zwischenstand aus. Das Merkwort steht im Reiter *Einbindung in Loxone*,
+die dort angezeigten Adressen tragen es bereits.
+
+**MQTT ist ab 1.5.0 der bevorzugte Weg.** Das Plugin rechnet im Hintergrund
+(`cron.01min`) und schiebt jede Änderung selbst zum Miniserver — Abo
+`abfahrt/#` im MQTT-Gateway eintragen. Gesendet wird nur, was sich geändert
+hat.
+
+**Virtueller HTTP-Eingang** bleibt daneben bestehen. Befehlserkennung mit
+**führendem Semikolon**: `\i;ABFAHRT_IN=\i\v`. Der Reiter *Einbindung in
+Loxone* erzeugt auf Knopfdruck eine fertige Importdatei mit allen acht
+Eingängen.
+
+`FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,
+2 kein API-Key, 3 keine Abfahrtsadresse, 4 kein Termin, 6 Kartendienst tot,
+**7 Kartendienst tot, letzte bekannte Fahrzeit gilt weiter** (OK bleibt 1).
 
 ## Hinweise
 
 - Termine ohne Ortsangabe (LOCATION) werden ignoriert — nur für Termine mit
   Ziel lässt sich eine Fahrzeit berechnen.
 - Ganztagestermine werden ignoriert.
-- Abfragelimits: ICS-Cache 10 min, Routen-Cache 5 min, Geocoding dauerhaft.
+- Abfragelimits: ICS-Cache 10 min, Geocoding dauerhaft. Der **Routen-Cache
+  skaliert** mit der Nähe zum Termin: über 3 h stündlich, 1–3 h
+  viertelstündlich, letzte Stunde alle 5 min. Über zwölf Stunden gerechnet
+  sind das 51 statt 144 Abfragen.
+- Fällt der Kartendienst aus, gilt die letzte bekannte Fahrzeit **bis zu eine
+  Stunde** weiter (`FEHLER=7`) statt die Berechnung abzubrechen. Ohne das fiel
+  der Schwellwertschalter in Loxone ab und löste beim nächsten gelungenen
+  Abruf ein zweites Mal aus — derselbe Termin sagte zweimal Bescheid.
+- Der API-Key liegt mit Rechten `0600` in der Konfiguration, ebenso die
+  Sicherung daneben.
 
 
 **v1.2.0:** Getrennte Aktivierung von Audioausgabe und Push-Nachricht;
@@ -115,3 +145,27 @@ Kalendern und zum gewählten Kartendienst (TomTom, Google Maps oder HERE).
 ## Lizenz
 
 MIT — siehe [LICENSE](LICENSE).
+
+**v1.5.0:** MQTT-Push über das LoxBerry-Gateway samt eigenem Reiter (nur
+Änderungen werden gesendet); Rechnen in den Hintergrunddienst
+`bin/abfahrt_dienst.php` verlagert — `termin.php` liest nur noch ab, damit die
+Zahl der Anfragen an den Kartendienst nicht mehr daran hängt, wie oft Loxone
+fragt; Importdatei für Loxone Config auf Knopfdruck; Selbstprüfung im Reiter
+*Test*; Feld `FEHLER` mit Zahlencode; Fahrzeit-Gnadenfrist gegen doppelte
+Ansagen; Routen-Cache skaliert mit der Nähe zum Termin; Serientermine werden
+vorgespult statt Tag für Tag ab DTSTART durchlaufen; Audio-Server-Suche;
+Webserver-Port aus der `general.json` statt hart 80; Konfiguration auf `0600`;
+`prerelease.cfg` ergänzt.
+
+**Zweiter Bruch gegenüber 1.4.0:** Der Virtuelle Ausgang, der die Ansage
+auslöst, braucht jetzt `?token=…`. Ohne das antwortet `termin_say.php` mit
+HTTP 403 und sagt nichts mehr an. Das Merkwort wird beim ersten Öffnen der
+Oberfläche erzeugt und steht im Reiter *Einbindung in Loxone*, zusammen mit der
+fertigen Adresse zum Übernehmen.
+
+**Bruch gegenüber 1.4.0:** Die Befehlserkennungen im Miniserver brauchen ein
+**führendes Semikolon** — aus `\iABFAHRT_IN=\i\v` wird `\i;ABFAHRT_IN=\i\v`.
+Grund: Loxone sucht wörtlich und nimmt den ersten Treffer; ohne Semikolon fände
+`FAHRT=` auch die Stelle in `ABFAHRT_IN=`, sobald sich die Feldreihenfolge
+einmal ändert. Die alten Muster funktionieren weiter, solange die Reihenfolge
+bleibt — wer auf Nummer sicher gehen will, lädt die neue Importdatei.
