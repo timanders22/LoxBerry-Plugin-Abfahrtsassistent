@@ -50,6 +50,18 @@
   </g>
 
   <!-- Typography -->
-  <text x="256" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="2">ABFAHRTSASSISTENT</text>
-  <text x="256" y="425" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="38" letter-spacing="3">LOXBERRY</text>
+  <!-- Plugin-Name ist die dominante Zeile, LOXBERRY steht klein darunter.
+
+       ZUR GROESSE: 30 px, Sperrung 1. Ein blosser Tausch auf die frueheren
+       38 px geht nicht - ABFAHRTSASSISTENT hat 17 Zeichen und waere dann
+       447 px breit.
+
+       Massgeblich ist NICHT die Mitte der Zeile, sondern ihre UNTERSTE
+       Bildzeile: dort ist der Kreis am schmalsten. Bei Grundlinie 388 liegt
+       das bei y=387, wo der innere Ring (r=232) nur 381 px misst. 29 px ergeben
+       dort 329 px. In den kleinen Fassungen (64 und 128 px) ruecken Schrift
+       und Ring optisch zusammen, weil beide auf wenige Bildpunkte
+       zusammenfallen - deshalb 29 statt der rechnerisch noch moeglichen 32. -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="1">ABFAHRTSASSISTENT</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>
