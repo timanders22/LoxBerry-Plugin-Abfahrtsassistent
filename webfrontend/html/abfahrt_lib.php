@@ -13,8 +13,37 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
+}
+
 function abfahrt_paths() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
     $plugindir = getenv('LBPPLUGINDIR') ?: basename(dirname(__DIR__, 1));
     // Public html dir: .../webfrontend/html/plugins/<plugindir>/ -> plugin name is folder name
     $self = basename(__DIR__);
@@ -181,7 +210,7 @@ function abfahrt_webport() {
     static $port = null;
     if ($port !== null) { return $port; }
     $port = 80;
-    $lb = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
     if ($lb !== '') {
         $f = $lb . '/config/system/general.json';
         if (is_file($f)) {
@@ -232,7 +261,7 @@ function abfahrt_daytype() {
     //    hier auf den Abfahrts-Assistenten - ohne Umschalten wuerde das Ferien-
     //    Plugin im falschen Konfigurations- und Datenverzeichnis suchen.
     if ($res['quelle'] === 'keine') {
-        $lb = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+        $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
         $kandidaten = [];
         if ($lb !== '') { $kandidaten[] = $lb . '/webfrontend/html/plugins/ferien/ferien_lib.php'; }
         $kandidaten[] = dirname(__DIR__, 3) . '/html/plugins/ferien/ferien_lib.php';
@@ -339,7 +368,7 @@ function abfahrt_loc_ignored($loc, array $abfcfg) {
 /* ---------------- Logging ---------------- */
 
 function abfahrt_logfile() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
     $self = basename(__DIR__);
     if ($lbhomedir) {
         $dir = $lbhomedir . '/log/plugins/' . $self;
@@ -1002,7 +1031,7 @@ function abfahrt_berechnen(array $abfcfg = null) {
  * ================================================================== */
 
 function abfahrt_mqtt_zustand() {
-    $lb = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
     $aus = ['gefunden' => false, 'udpport' => 0, 'autostart' => false];
     if ($lb === '') { return $aus; }
     $f = $lb . '/config/system/general.json';
@@ -1021,6 +1050,21 @@ function abfahrt_mqtt_zustand() {
  * Das Gateway ist Teil des Systems, kein Plugin - eingeschaltet wird es unter
  * System -> MQTT Gateway.
  */
+/**
+ * Einen Wert fuer den UDP-Eingang des MQTT-Gateways unschaedlich machen.
+ *
+ * Das Gateway liest ZEILENWEISE. Ein Zeilenumbruch im Wert - aus einer
+ * Fehlermeldung, einem Geraetenamen oder der Ausgabe eines Systembefehls -
+ * zerlegt die Uebertragung, und aus den Bruchstuecken bildet das Gateway
+ * erfundene Themen. Ein Tabulator schadet ebenso, weil Leerzeichen Thema und
+ * Wert trennt.
+ */
+function abf_mqtt_wert_saeubern($v)
+{
+    $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
+    return trim(preg_replace('/ {2,}/', ' ', $wert));
+}
+
 function abfahrt_mqtt_senden(array $werte, array $abfcfg = null) {
     if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
     if (empty($abfcfg['mqtt_ein'])) { return false; }
@@ -1030,7 +1074,8 @@ function abfahrt_mqtt_senden(array $werte, array $abfcfg = null) {
     if (!$sock) { return false; }
     $raus = 0;
     foreach ($werte as $name => $wert) {
-        if (@fwrite($sock, 'publish ' . $abfcfg['mqtt_topic'] . '/' . $name . ' ' . $wert . "\n") !== false) {
+        if (@fwrite($sock, 'publish ' . $abfcfg['mqtt_topic'] . '/' . $name . ' '
+                . abf_mqtt_wert_saeubern($wert) . "\n") !== false) {
             $raus++;
         }
     }
@@ -1243,7 +1288,7 @@ function abfahrt_e($s) {
  */
 function abfahrt_ms4h_suchen() {
     $aus = ['gefunden' => false, 'port' => 0, 'zonen' => '', 'quelle' => ''];
-    $lb = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
+    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
 
     // 1) Konfiguration eines installierten MS4H-Plugins lesen
     if ($lb !== '') {
@@ -1317,7 +1362,7 @@ function abfahrt_t($schluessel)
         // sich aus dem Ablageort dieser Datei.
         $home = getenv('LBHOMEDIR');
         if (!$home || !is_dir($home)) {
-            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
                 if (is_dir($k)) { $home = $k; break; }
             }
         }
