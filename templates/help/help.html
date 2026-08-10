@@ -1,91 +1,65 @@
-<h2>Abfahrts-Assistent</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Sagt an, wann man losfahren muss: Das Plugin liest bis zu <b>10 iCal-Kalender</b> (z. B. Google Kalender), sucht den nächsten Termin <b>mit Ortsangabe</b>, ermittelt die aktuelle <b>Fahrzeit inkl. Verkehrslage</b> (TomTom, Google Maps oder HERE) und berechnet daraus den Abfahrtszeitpunkt:</p>
+<p><TMPL_VAR HILFE.K02></p>
 
 <pre><code>Abfahrt = Terminbeginn − Fahrzeit − Ankunftsreserve − Pufferzeit</code></pre>
 
-<p>Kompatibel mit LoxBerry 3.x und <b>LoxBerry 4.0</b> (reines PHP 8, keine Zusatzpakete). Serientermine werden vollständig expandiert (täglich/wöchentlich/monatlich/ jährlich mit INTERVAL, BYDAY, UNTIL, COUNT; EXDATE; einzeln verschobene oder gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]</p>
+<p><TMPL_VAR HILFE.K03></p>
 
-<p><b>v1.1.1:</b> Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade); Zonen-Feld akzeptiert einfache Zonenliste (<code>2,4,6</code>) &amp;mdash; Lautst&amp;auml;rke kommt dann aus dem Lautst&amp;auml;rke-Feld; <code>Zone~Lautst&amp;auml;rke</code> je Zone weiterhin m&amp;ouml;glich.</p>
+<p><TMPL_VAR HILFE.K04></p>
 
-<h3>Wenn etwas nicht geht</h3>
-<p>Der Reiter <i>Test</i> hat eine <b>Selbstprüfung</b>, die ohne Loxone
-beantwortet, ob die Einrichtung trägt &mdash; von unten nach oben: Kalender,
-API-Key, Adresse, Dateirechte, läuft der Hintergrunddienst, was hat er zuletzt
-gerechnet, Feiertagsquelle, Audioausgabe, Sperrzeit, MQTT-Weg, Vorlage. Der
-erste Kreuz-Eintrag ist meist die Ursache.</p>
+<h3><TMPL_VAR HILFE.K05></h3>
+<p><TMPL_VAR HILFE.K06></p>
 
-<p><b>Zu <code>FEHLER=7</code>:</b> Der Kartendienst war kurz nicht erreichbar,
-die letzte bekannte Fahrzeit gilt weiter, <code>OK</code> bleibt 1. Das ist
-Absicht &mdash; bräche die Berechnung stattdessen ab, fiele der
-Schwellwertschalter in Loxone kurz aus und löste danach ein zweites Mal aus:
-derselbe Termin sagte zweimal Bescheid.</p>
+<p><TMPL_VAR HILFE.K07></p>
 
-<h3>Konfiguration (Plugin-Oberfläche)</h3>
+<h3><TMPL_VAR HILFE.K08></h3>
 
-<ul><li>Bis zu 10 Kalender (Name + private iCal-URL)</li><li>Kartendienst: <b>TomTom</b> / <b>Google Maps</b> / <b>HERE</b> + eigener API-Key</li><li>Abfahrtsadresse (Zuhause)</li><li><b>Ankunft X Minuten vor Termin</b> und <b>Pufferzeit</b></li><li>Sprachausgabe:</li><li><b>Loxone Music Server</b> (klassisch): direkte TTS-Ansage über Port 7091</li><li><b>Audioserver4Home / MusicServer4Home</b>: URL-Vorlage (anpassbar)</li><li><b>Original Loxone Audioserver</b>: hat keine HTTP-TTS-Schnittstelle — das Plugin liefert den Ansagetext, die Ausgabe erfolgt in Loxone Config über Textgenerator → TTS-Eingang des Audioplayer-Bausteins</li><li><b>Eigene URL-Vorlage</b> mit Platzhaltern <code>{ip} {port} {zones} {vol} {lang} {text}</code></li></ul>
+<ul><li><TMPL_VAR HILFE.K09></li><li><TMPL_VAR HILFE.K10></li><li><TMPL_VAR HILFE.K11></li><li><TMPL_VAR HILFE.K12></li><li><TMPL_VAR HILFE.K13></li><li><TMPL_VAR HILFE.K14></li><li><TMPL_VAR HILFE.K15></li><li><TMPL_VAR HILFE.K16></li><li><TMPL_VAR HILFE.K17></li></ul>
 
-<p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten — Kalender-URLs, API-Key und Adressen werden ausschließlich in der lokalen Konfiguration (<code>config/plugins/&lt;plugin&gt;/abfahrt.json</code>) gespeichert.</p>
+<p><TMPL_VAR HILFE.K18></p>
 
-<h3>Weg nach Loxone</h3>
-<p><b>MQTT ist ab 1.5.0 der Regelweg.</b> Das Plugin rechnet im Hintergrund
-(Cron, jede Minute) und schiebt jede Änderung selbst zum Miniserver. Dafür muss
-das Abo <code>abfahrt/#</code> im MQTT-Gateway stehen
-(System &rarr; MQTT Gateway &rarr; Subscriptions) &mdash; <b>ohne diesen Eintrag
-kommt am Miniserver nichts an</b>, das ist die häufigste Fehlerursache. Der
-Reiter <i>MQTT</i> zeigt Abo und alle Themen.</p>
+<h3><TMPL_VAR HILFE.K19></h3>
+<p><TMPL_VAR HILFE.K20></p>
 
-<p>Der <b>virtuelle HTTP-Eingang</b> bleibt als Alternative bestehen. Wichtig:
-<code>termin.php</code> <b>rechnet nicht mehr selbst</b>, sondern gibt den
-Zwischenstand aus. Dadurch hängt die Zahl der Anfragen an den Kartendienst
-nicht mehr daran, wie oft Loxone fragt. Nur <code>?debug=1</code> rechnet neu.</p>
+<p><TMPL_VAR HILFE.K21></p>
 
-<p>Der Reiter <i>Einbindung in Loxone</i> erzeugt auf Knopfdruck eine fertige
-Importdatei für Loxone Config und enthält die vollständige Baustein-Liste zum
-Nachbauen &mdash; für beide Wege.</p>
+<p><TMPL_VAR HILFE.K22></p>
 
-<h3>Endpunkte (für Loxone)</h3>
+<h3><TMPL_VAR HILFE.K23></h3>
 
 <table class="sm-tbl">
-<tr><th>Endpunkt</th><th>Zweck</th></tr>
-<tr><td><code>/plugins/abfahrtsassistent/termin.php</code></td><td>Flat-Text: <code>TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..</code> &mdash; liest nur ab</td></tr>
-<tr><td><code>/plugins/abfahrtsassistent/termin.php?debug=1</code></td><td>Diagnose &mdash; <b>rechnet neu</b></td></tr>
-<tr><td><code>/plugins/abfahrtsassistent/termin_say.php</code></td><td>Ansage auslösen (bzw. <code>TEXT=...</code> im Audioserver-Modus)</td></tr>
+<tr><th><TMPL_VAR HILFE.K41></th><th><TMPL_VAR HILFE.K42></th></tr>
+<tr><td><TMPL_VAR HILFE.K43></td><td><TMPL_VAR HILFE.K44></td></tr>
+<tr><td><TMPL_VAR HILFE.K45></td><td><TMPL_VAR HILFE.K46></td></tr>
+<tr><td><TMPL_VAR HILFE.K47></td><td><TMPL_VAR HILFE.K48></td></tr>
 </table>
 
-<p><b>Virtueller HTTP-Eingang</b> (alle 5 min): Befehlserkennung <code>\iABFAHRT_IN=\i\v</code>. <b>Virtueller Ausgang</b> (bei Abfahrt/Vorwarnung): <code>/plugins/abfahrtsassistent/termin_say.php</code>.</p>
+<p><TMPL_VAR HILFE.K24></p>
 
-<h3>Hinweise</h3>
+<h3><TMPL_VAR HILFE.K25></h3>
 
-<ul><li>Termine ohne Ortsangabe (LOCATION) werden ignoriert — nur für Termine mit Ziel lässt sich eine Fahrzeit berechnen.</li><li>Ganztagestermine werden ignoriert.</li><li>Abfragelimits: ICS-Cache 10 min, Routen-Cache 5 min, Geocoding dauerhaft.</li></ul>
+<ul><li><TMPL_VAR HILFE.K26></li><li><TMPL_VAR HILFE.K27></li><li><TMPL_VAR HILFE.K28></li></ul>
 
-<p><b>v1.2.0:</b> Getrennte Aktivierung von Audioausgabe und Push-Nachricht; Sperrzeiten für die Audioausgabe je Wochentag (auch über Mitternacht); Flags <code>AUDIO=</code>/<code>PUSH=</code> in der termin.php-Ausgabe für Loxone; Umlaute in der Ansage korrekt („Nächster“); Test-Button umgeht Sperren (<code>?force=1</code>).</p>
+<p><TMPL_VAR HILFE.K29></p>
 
-<p><b>v1.3.0:</b> Admin-Oberfläche mit Reitern (Einstellungen / Einbindung in Loxone mit Laien-Anleitung / Test / Logdateien); Button „Kalender neu einlesen“ je Kalender; Logging (Ergebnis-Änderungen, Ansagen, Fehler); Konfig-Sicherung zusätzlich außerhalb des Plugin-Ordners (übersteht auch Neuinstallation); leere Kalendernamen bleiben leer (Platzhalter); Sperrzeit-Defaults 20:00–07:00; kompaktes Sperrzeiten-Layout.</p>
+<p><TMPL_VAR HILFE.K30></p>
 
-<p><b>v1.3.1:</b> Layout-Korrekturen: LoxBerry-eigene jQuery-Mobile-Styles neutralisiert (<code>data-role="none"</code> + CSS) — Kalenderfelder wieder voll breit, „Neu einlesen“ kompakt, Reiter/Buttons ohne Schatten, weiße Schrift auf farbigen Buttons.</p>
+<p><TMPL_VAR HILFE.K31></p>
 
-<p><b>v1.3.2:</b> Loxone-Anleitung um Statusbaustein (Schritt 4) und Audio-System-Verkabelung (Schritt 5: Music Server/MS4H = keine Loxone-Verknüpfung nötig; Original-Audioserver = Textgenerator→TTS-Eingang) ergänzt; Log-Kasten ohne Schatten; Status-Zeile in vollen Minuten (aufgerundet); Standard-Lautstärke 8 %; Zonen: Leerzeichen nach Komma erlaubt; Logdatei übersteht Updates.</p>
+<p><TMPL_VAR HILFE.K32></p>
 
-<p><b>v1.3.3:</b> Loxone-Anleitung: Schritt 6 mit kompletter Baustein-Liste zum 1:1-Nachbau (inkl. Vorwarnung, invertierter Schwellwertschalter, UND-Gatter, Audio/Push-Gates, Neustart-Nachholung; Erklärung, warum kein Ankunftsreserve-Baustein nötig ist).</p>
+<p><TMPL_VAR HILFE.K33></p>
 
-<p><b>v1.3.4:</b> Oberfläche im LoxBerry-Grün (#6dac20).</p>
+<p><TMPL_VAR HILFE.K34></p>
 
-<p><b>v1.3.5:</b> Anleitung: Ankunftsreserve-Absatz entfernt; Praxis-Hinweise zum Benachrichtigungs-Baustein ergänzt (Flankenverhalten, keine Mehrfachquellen am Push-Eingang, eigener Test-Baustein).</p>
+<p><TMPL_VAR HILFE.K35></p>
 
-<p><b>v1.3.6:</b> Online-Termin-Filter: Ortsangaben wie „ONLINE“, „Teams“, „Zoom“ (konfigurierbare Liste) sowie Meeting-Links (http/https) werden ignoriert — keine Fahrzeitberechnung für Videokonferenzen.</p>
+<p><TMPL_VAR HILFE.K36></p>
 
-<p><b>v1.3.7:</b> Standard-Lautstärke der Ansagen von 20 % auf 8 % gesenkt; Ansagen beginnen jetzt mit „Hallo!" statt „Ding Dong!". Beides betrifft nur die Voreinstellung neuer Installationen — bestehende Einstellungen bleiben erhalten. Neu bei den Sperrzeiten: drei zusätzliche Zeilen <b>Feiertag, Ferien und Urlaub</b>, die dem Wochentag vorgehen (Prüfreihenfolge Urlaub → Feiertag → Ferien → Wochentag). Damit lässt sich die Ansage an freien Tagen später freigeben. Die Sondertage kommen aus dem optionalen LoxBerry-Plugin „Ferien und Feiertage" (Urlaub = eigener Termin der Art „Urlaub (abwesend)"); ist es nicht installiert, bleiben die drei Zeilen wirkungslos und es gilt allein die Wochentagstabelle. Für die Veröffentlichung anonymisiert (Autorenangabe, MIT-Lizenz, Datenschutz- Hinweis) — Hinweis: durch die geänderte Autorenangabe kann LoxBerry das Plugin als „neu" ansehen; die Konfiguration überlebt das dank der Sicherung außerhalb des Plugin-Ordners.</p>
+<p><TMPL_VAR HILFE.K37></p>
 
-<h3>Datenschutz</h3>
+<h3><TMPL_VAR HILFE.K38></h3>
 
-<p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten. Kalender-URLs, API-Key, Adressen und Zonen liegen ausschließlich in der lokalen Konfiguration (<code>config/plugins/abfahrtsassistent/abfahrt.json</code>) und werden nie mitgeliefert. Externe Verbindungen bestehen nur zu den vom Nutzer selbst eingetragenen Kalendern und zum gewählten Kartendienst (TomTom, Google Maps oder HERE).</p>
-<p><b>v1.5.0:</b> MQTT-Push über das LoxBerry-Gateway samt eigenem Reiter (nur
-Änderungen werden gesendet); Rechnen in den Hintergrunddienst verlagert &mdash;
-<code>termin.php</code> liest nur noch ab; Importdatei für Loxone Config auf
-Knopfdruck; Baustein-Liste auf MQTT umgeschrieben; Selbstprüfung im Reiter
-<i>Test</i>; Feld <code>FEHLER</code> mit Zahlencode und <code>ALTER</code> für
-die Ausfallerkennung; Fahrzeit gilt bei einem Ausfall des Kartendienstes bis zu
-eine Stunde weiter; Routen-Cache skaliert mit der Nähe zum Termin;
-Serientermine werden vorgespult; Audio-Server-Suche; Webserver-Port aus der
-<code>general.json</code>; Konfiguration mit Rechten 0600.</p>
+<p><TMPL_VAR HILFE.K39></p>
+<p><TMPL_VAR HILFE.K40></p>

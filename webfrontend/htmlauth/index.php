@@ -258,7 +258,7 @@ function e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 
 $use_frame = class_exists('LBWeb', false);
 if ($use_frame) {
-    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', '');
+    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', 'help.html');
 }
 $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
 ?>
@@ -728,9 +728,8 @@ foreach ($abf_pr as $abf_z) { if ($abf_z[0] === 0) { $abf_schlecht++; } }
 </table>
 
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo abfahrt_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo abfahrt_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo abfahrt_t('LEGENDE.AKTION'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i><?php echo abfahrt_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i><?php echo abfahrt_t('LEGENDE.AKTION'); ?></span>
 </div>
 
 <h3 class="sm-h3"><?php echo abfahrt_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
