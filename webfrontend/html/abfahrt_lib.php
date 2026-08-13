@@ -822,11 +822,17 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
 
 /* ---------------- TTS ---------------- */
 
-/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null. */
+/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null,
+ *  bei fehlender (aber benoetigter) IP: '' - uebernommen aus AWM-Abfuhr 1.2.0:
+ *  die IP wird nur verlangt, wenn der Modus bzw. die Vorlage sie benutzt,
+ *  sonst liess sich eine eigene Vorlage ohne {ip} gar nicht verwenden. */
 function abfahrt_tts_url($text, array $tts) {
     $mode = $tts['mode'];
     if ($mode === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
+    }
+    if ($mode === 'musicserver' && trim((string) $tts['ip']) === '') {
+        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
     }
     if ($mode === 'musicserver') {
         // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~25,4~25,6~25".
@@ -848,6 +854,10 @@ function abfahrt_tts_url($text, array $tts) {
     if ($tpl === '') {
         // Standard-Vorlage MusicServer4Home
         $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
+    }
+    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet (AWM 1.2.0).
+    if (trim((string) $tts['ip']) === '' && strpos($tpl, '{ip}') !== false) {
+        return '';
     }
     return str_replace(
         ['{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'],
@@ -1040,7 +1050,7 @@ function abfahrt_mqtt_zustand() {
     if (!isset($d['Mqtt'])) { return $aus; }
     $aus['gefunden'] = true;
     $aus['udpport'] = isset($d['Mqtt']['Udpinport']) ? (int) $d['Mqtt']['Udpinport'] : 0;
-    $aus['autostart'] = !empty($d['Mqtt']['Autostart']);
+    $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']); // NICHT 'Autostart' - den Schluessel gibt es nicht (Fehlerklasse ACTiKamera 1.9.2)
     return $aus;
 }
 

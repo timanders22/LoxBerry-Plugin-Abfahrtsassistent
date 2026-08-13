@@ -69,12 +69,14 @@ if ($tts['mode'] === 'audioserver') {
     exit;
 }
 
-if (trim($tts['ip']) === '') {
+$url = abfahrt_tts_url($text, $tts);
+// '' heisst: die IP fehlt, obwohl der Modus bzw. die Vorlage sie braucht.
+// Die Pruefung sitzt seit 1.5.4 in abfahrt_tts_url() - vorher stand sie hier
+// vor dem Aufruf und sperrte auch eigene Vorlagen ohne {ip} aus (AWM 1.2.0).
+if ($url === '') {
     echo "FEHLER: Keine Audio-Server-IP konfiguriert (Plugin-Oberflaeche oeffnen).\n";
     exit;
 }
-
-$url = abfahrt_tts_url($text, $tts);
 $r = abfahrt_http_get($url, 8);
 if ($r !== false) {
     abfahrt_log('Ansage gesprochen: ' . $text . (isset($_GET['force']) ? ' [Test/force]' : ''));
