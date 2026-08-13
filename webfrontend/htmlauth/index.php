@@ -548,6 +548,7 @@ $abf_regel = function_exists('abfahrt_quiet_rule') ? abfahrt_quiet_rule($abfcfg)
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-pane" id="tab-mqtt">
 <h2><?php echo abfahrt_t('MQTT.H_TITEL'); ?></h2>
+<?php if (!function_exists('abfahrt_hs_autostart')) { function abfahrt_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (abfahrt_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo abfahrt_t('MQTT.W_AUTOSTART'); ?></div><?php } ?>
 <?php $abf_m = abfahrt_mqtt_zustand(); ?>
 <?php if (!$abf_m['gefunden']) { ?>
 <div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.KEIN_ABSCHNITT'); ?></div>
