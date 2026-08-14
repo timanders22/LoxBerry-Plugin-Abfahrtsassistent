@@ -121,7 +121,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
 }
 
 // ---------- Speichern (auch bei "Kalender neu einlesen") ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_POST['refresh'])) && !isset($_POST['clearlog'])) {
+/* Der MS4H-Suchknopf sitzt im selben Formular und schickt 'save' mit.
+ * Er soll aber nur suchen, nicht speichern. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_POST['refresh']))
+    && !isset($_POST['clearlog']) && !isset($_POST['ms4h_suchen'])) {
     // ACHTUNG: hier wird die Konfiguration KOMPLETT neu aufgebaut. Alles, was
     // nicht in diesem Formular steht, waere danach weg. Die MQTT-Werte stehen
     // in einem eigenen Reiter mit eigenem Formular - sie werden deshalb aus
@@ -212,16 +215,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save']) || isset($_P
     }
 }
 
-// ---------- Laden ----------
-$abfcfg = is_file($config_file) ? (json_decode((string) file_get_contents($config_file), true) ?: []) : [];
-$abfcfg += ['calendars' => [], 'provider' => 'tomtom', 'api_key' => '', 'home_address' => '', 'buffer_min' => 10, 'arrival_min' => 10, 'lookahead_hours' => 15, 'ignore_locations' => 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin', 'tts' => []];
-$abfcfg['tts'] += ['mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => ''];
-$abfcfg += ['notify' => [], 'quiet' => []];
-$abfcfg['notify'] += ['audio' => 1, 'push' => 1];
-foreach (abfahrt_quiet_keys() as $d) {
-    if (!isset($abfcfg['quiet'][$d]) || !is_array($abfcfg['quiet'][$d])) { $abfcfg['quiet'][$d] = []; }
-    $abfcfg['quiet'][$d] += ['on' => 0, 'from' => '20:00', 'to' => $d >= 8 ? '09:00' : '07:00'];
-}
+/* ---------- Laden ----------
+ *
+ * Ueber abfahrt_config(), NICHT ueber ein eigenes Laden mit eigener
+ * Vorgabeliste. Bis 1.5.4 stand hier eine zweite, aeltere Kopie der Vorgaben.
+ * Als der MQTT-Reiter dazukam, wurden die Vorgaben mqtt_ein und mqtt_topic
+ * nur in der Bibliothek nachgezogen - die Oberflaeche kannte sie nicht. Auf
+ * jeder Anlage mit einer abfahrt.json aus der Zeit davor lief das Abonnement
+ * dann auf "/#" statt "abfahrt/#", das Themenfeld war leer, und der Haken
+ * "MQTT einschalten" stand auf aus, waehrend der Dienst tatsaechlich sendete.
+ *
+ * Vorgabewerte gehoeren an genau EINE Stelle. */
+$abfcfg = abfahrt_config();
 while (count($abfcfg['calendars']) < 10) {
     $abfcfg['calendars'][] = ['name' => '', 'url' => ''];
 }
@@ -463,11 +468,13 @@ $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
 <span><i class="sm-punkt sm-b-lesen"></i> <?php echo abfahrt_t('LEGENDE.LESEN'); ?></span>
 </div>
 <div class="sm-knopfreihe">
-<form action="index.php" method="post" style="margin:0;">
-    <input data-role="none" type="hidden" name="ms4h_suchen" value="1">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?php echo abfahrt_t('MS4H.K_SUCHEN'); ?></button>
-</form>
+<?php /* KEIN eigenes <form> mehr an dieser Stelle: es lag im Einstellungs-
+         formular, und HTML verbietet Formulare im Formular. Der Browser warf
+         es weg - das versteckte Feld "ms4h_suchen" gehoerte damit zum
+         AEUSSEREN Formular und wurde bei JEDEM Speichern mitgeschickt, die
+         Suche lief also jedes Mal mit. Jetzt traegt der Knopf den Namen
+         selbst; er wird nur gesendet, wenn er gedrueckt wird. */ ?>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ms4h_suchen" value="1"><?php echo abfahrt_t('MS4H.K_SUCHEN'); ?></button>
 </div>
 <div class="sm-small"><?php echo abfahrt_t('MS4H.HINWEIS'); ?></div>
     </div>
