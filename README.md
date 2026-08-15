@@ -18,6 +18,16 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautst&auml;rke kommt dann aus
 dem Lautst&auml;rke-Feld; `Zone~Lautst&auml;rke` je Zone weiterhin m&ouml;glich.
 
+## Neu in 1.5.7
+**Token pruefbar, ohne dass das Haus spricht.** Bisher liess sich das Merkwort
+nur pruefen, indem man den Ansage-Endpunkt aufrief — und dann redete die Anlage.
+Mit `?force=1` sogar an den Ruhezeiten vorbei.
+
+Neu: `?selftest=1&token=…` durchlaeuft dieselbe Token-Pruefung und endet dann
+sofort mit `SELFTEST;OK=1;TOKEN=OK`. Keine Ansage, kein Aufruf des
+Audio-Servers, keine Freigabepruefung. Ein falsches Token bekommt unveraendert
+dieselbe Abweisung wie zuvor.
+
 ## Konfiguration (Plugin-Oberfläche)
 
 - Bis zu 10 Kalender (Name + private iCal-URL)

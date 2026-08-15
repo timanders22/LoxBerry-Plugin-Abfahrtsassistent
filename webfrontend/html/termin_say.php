@@ -13,6 +13,7 @@
  *     TTS-Eingang des Audioplayer-Bausteins.
  *
  * Aufruf: /plugins/abfahrtsassistent/termin_say.php?token=...
+ *         ?selftest=1&token=...  prueft NUR das Token, spricht nicht
  *         &text=...   eigener Text statt des automatischen
  *         &force=1    umgeht Ruhezeiten und die Audio-Freigabe (Testknopf)
  *
@@ -30,6 +31,26 @@ $abfcfg = abfahrt_config();
 
 if (!abfahrt_token_ok($abfcfg)) {
     abfahrt_token_abweisen('SAY', $abfcfg);
+}
+
+/* ---------- Selbsttest: Token pruefen, ohne zu sprechen ----------
+ *
+ * WOZU
+ * Ob das in Loxone eingetragene Token noch stimmt, liess sich bisher nur
+ * pruefen, indem man den Endpunkt aufrief - und dann sprach das Haus. Wer nur
+ * nachsehen wollte, stoerte alle Anwesenden. ?force=1 machte es schlimmer,
+ * nicht besser.
+ *
+ * ?selftest=1&token=... laeuft durch dieselbe Token-Pruefung (steht bewusst
+ * DAHINTER, damit ein falsches Token dieselbe Abweisung bekommt wie sonst) und
+ * endet dann sofort: keine Ansage, kein Music-Server-Aufruf, keine
+ * Freigabepruefung.
+ *
+ * Antwort: SELFTEST;OK=1;TOKEN=OK
+ */
+if (isset($_GET['selftest'])) {
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
+    exit;
 }
 
 $tts = $abfcfg['tts'];
