@@ -63,6 +63,25 @@ if ($debug && !abfahrt_token_ok($abfcfg)) {
     abfahrt_token_abweisen('TERMIN', $abfcfg);
 }
 
+/* ---------- Selbsttest: Merkwort pruefen, ohne zu rechnen ----------
+ *
+ * Auch dieser Endpunkt ist tokengeschuetzt (?debug=1 rechnet neu und fragt
+ * dabei den Kartendienst), also bekommt auch er seinen Selbsttest - so
+ * verlangt es der Hausstandard fuer JEDEN tokengeschuetzten Endpunkt im
+ * unangemeldeten Bereich.
+ *
+ * Der Zweig steht bewusst HINTER der Token-Pruefung: ein falsches Merkwort
+ * bekommt dieselbe Abweisung wie sonst auch, der Selbsttest ist keine
+ * Abkuerzung an der Sicherheit vorbei. Er fragt aber seinerseits nach dem
+ * Merkwort, damit er auch ohne ?debug=1 nicht offensteht. */
+if (isset($_GET['selftest'])) {
+    if (!abfahrt_token_ok($abfcfg)) {
+        abfahrt_token_abweisen('SELFTEST', $abfcfg);
+    }
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
+    exit;
+}
+
 $diag = [];
 if ($debug) {
     // Nur im Debug-Fall wird gerechnet - und dann bewusst und sichtbar.

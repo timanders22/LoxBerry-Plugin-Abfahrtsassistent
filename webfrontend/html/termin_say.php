@@ -65,22 +65,26 @@ if (!isset($_GET['force'])) {
     }
 }
 
-// Ansagetext bauen
-$info = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true) ?: [];
-if (isset($_GET['text']) && trim($_GET['text']) !== '') {
-    $text = trim($_GET['text']);
-} else {
-    $titel = trim((string) ($info['titel'] ?? ''));
-    if ($titel === '') {
-        $text = 'Hallo! Zeit zum Losfahren! Dein nächster Termin steht an.';
-    } else {
-        $titel = preg_replace('/[^\p{L}\p{N} .,:!?\-]/u', ' ', $titel); // TTS-sichere Zeichen
-        $text = 'Hallo! Zeit zum Losfahren! Nächster Termin: ' . $titel . '.';
-        if (!empty($info['fahrt'])) {
-            $text .= ' Fahrzeit etwa ' . ceil((float) $info['fahrt']) . ' Minuten.';
-        }
-    }
+/* Ansagetext bauen.
+ *
+ * Ein Feld statt einer Zeichenkette (?text[]=a) wird ABGEWIESEN, nicht
+ * umgewandelt: (string) auf ein Feld ergibt "Array" samt Warnung, und trim()
+ * darauf war unter PHP 8 ein TypeError - also HTTP 500 samt Dateipfad in der
+ * Antwort an den Miniserver.
+ *
+ * Der mitgegebene Text laeuft durch denselben Filter wie der automatische
+ * Titel. Ohne ihn erzeugte ein Zeilenumbruch darin im Protokoll eine zweite,
+ * frei erfundene Zeile mit eigenem Zeitstempel. Was im Protokoll steht, muss
+ * stimmen. */
+if (isset($_GET['text']) && !is_string($_GET['text'])) {
+    http_response_code(400);
+    echo "FEHLER: Der Parameter text muss ein einzelner Text sein.\n";
+    exit;
 }
+$info = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true);
+if (!is_array($info)) { $info = []; }
+$eigener = isset($_GET['text']) ? abfahrt_tts_sauber($_GET['text']) : '';
+$text = ($eigener !== '') ? $eigener : abfahrt_ansagetext($info, $abfcfg);
 
 if ($tts['mode'] === 'audioserver') {
     // Kein HTTP-Push moeglich - Text fuer Loxone Config bereitstellen
@@ -98,13 +102,26 @@ if ($url === '') {
     echo "FEHLER: Keine Audio-Server-IP konfiguriert (Plugin-Oberflaeche oeffnen).\n";
     exit;
 }
-$r = abfahrt_http_get($url, 8);
+/* Die WIRKUNG pruefen, nicht den Rueckgabewert.
+ *
+ * Bisher galt jede Antwort ausser einem Transportfehler als Erfolg - curl
+ * liefert den Rumpf auch bei HTTP 404 und 500. Eine falsche Zonennummer
+ * fuehrte damit zu "Ansage gesprochen" im Protokoll, obwohl nichts gesagt
+ * wurde. Eine stille Falschaussage ist die schlimmste Art von Fehler.
+ *
+ * $grund sagt jetzt auch, WER geantwortet hat: "Verbindung abgewiesen"
+ * (Rechner da, Dienst aus) fuehrt zu einer voellig anderen Suche als eine
+ * Zeitueberschreitung. */
+$grund = '';
+$status = 0;
+$r = abfahrt_http_get($url, 8, $grund, $status);
 if ($r !== false) {
     abfahrt_log('Ansage gesprochen: ' . $text . (isset($_GET['force']) ? ' [Test/force]' : ''));
     echo "OK: $text\n";
 } else {
-    abfahrt_log('FEHLER beim Aufruf des Audio-Servers');
-    echo "FEHLER beim Aufruf des Audio-Servers.\n";
+    abfahrt_log('FEHLER beim Aufruf des Audio-Servers: ' . ($grund !== '' ? $grund : 'unbekannt'));
+    echo 'FEHLER beim Aufruf des Audio-Servers'
+       . ($grund !== '' ? ': ' . $grund : '.') . "\n";
     if (isset($_GET['debug'])) {
         echo "URL: $url\n";
     }

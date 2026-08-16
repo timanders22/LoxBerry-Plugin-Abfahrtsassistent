@@ -25,7 +25,56 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-require_once dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php';
+
+/* Die Bibliothek ueber eine Kandidatensuche finden - NICHT ueber eine feste
+ * Zahl von ".." nach oben.
+ *
+ * DAS WAR DER SCHWERSTE FEHLER DIESER LINIE. Bis 1.5.7 stand hier
+ *
+ *     require_once dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php';
+ *
+ * Im entpackten Archiv liegen bin/ und webfrontend/ nebeneinander, dort geht
+ * das auf. Auf dem installierten LoxBerry liegen sie in GETRENNTEN Baeumen:
+ *
+ *     /opt/loxberry/bin/plugins/<ordner>/abfahrt_dienst.php
+ *     /opt/loxberry/webfrontend/html/plugins/<ordner>/abfahrt_lib.php
+ *
+ * dirname(__DIR__) ergibt dort /opt/loxberry/bin/plugins, gesucht wurde also
+ * /opt/loxberry/bin/plugins/webfrontend/html/abfahrt_lib.php. Die gibt es
+ * nicht. Der Dienst brach bei JEDEM Cron-Lauf mit einem fatalen Fehler ab -
+ * seit 1.5.0, also seit das Rechnen ueberhaupt hierher verlagert wurde.
+ *
+ * Bemerkt hat es niemand, weil der Cron nach /dev/null schreibt und
+ * termin.php den (nie geschriebenen) Zwischenstand klaglos als OK=0 ausgibt.
+ * In Loxone sah das aus wie "kein Termin gefunden", nicht wie ein Defekt.
+ *
+ * Deshalb: mehrere Kandidaten, und wenn keiner passt, wird gesagt, welche
+ * Datei wo gesucht wurde - auf STDERR und mit Rueckgabewert 1, damit ein
+ * kuenftiger Ausfall sichtbar ist statt lautlos.
+ */
+$abf_lb = getenv('LBHOMEDIR');
+$abf_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+$abf_kandidaten = array();
+if ($abf_lb) {
+    $abf_kandidaten[] = $abf_lb . '/webfrontend/html/plugins/' . $abf_ordner . '/abfahrt_lib.php';
+}
+// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
+// .../bin/plugins/<ordner>  ->  .../webfrontend/html/plugins/<ordner>
+$abf_kandidaten[] = dirname(dirname(dirname(__DIR__)))
+                  . '/webfrontend/html/plugins/' . basename(__DIR__) . '/abfahrt_lib.php';
+// entpacktes Archiv: bin/ und webfrontend/ liegen nebeneinander
+$abf_kandidaten[] = dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php';
+
+$abf_lib = '';
+foreach ($abf_kandidaten as $abf_k) {
+    if (is_file($abf_k)) { $abf_lib = $abf_k; break; }
+}
+if ($abf_lib === '') {
+    fwrite(STDERR, "Abfahrts-Assistent: abfahrt_lib.php nicht gefunden. Gesucht wurde in:\n");
+    foreach ($abf_kandidaten as $abf_k) { fwrite(STDERR, '  ' . $abf_k . "\n"); }
+    exit(1);
+}
+require_once $abf_lib;
 
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
 $abfcfg = abfahrt_config();
@@ -77,16 +126,44 @@ list($st, $diag) = abfahrt_berechnen($abfcfg);
  * unveraenderten Freigaben und Fehlerzustaende - die stehen sonst
  * hundertmal am Tag gleich im Broker. Verglichen wird deshalb feldweise. */
 $werte = abfahrt_werte($st, $abfcfg);
-$vorher = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/mqtt_letzte.json'), true);
+$merker = abfahrt_tmpdir() . '/mqtt_letzte.json';
+$vorher = @json_decode((string) @file_get_contents($merker), true);
 if (!is_array($vorher)) { $vorher = []; }
+
+/* Vollversand im Takt (neu in 1.6.0, ab Werk aus).
+ *
+ * WOZU: Startet der MINISERVER neu, ohne dass der LoxBerry neu startet, sind
+ * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
+ * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Bei einem Termin,
+ * der erst in Stunden ansteht, kann das Stunden dauern.
+ *
+ * Umgekehrt ist Dauersenden auch nichts: dieselben unveraenderten Freigaben
+ * stuenden hundertmal am Tag im Broker. Deshalb ein einstellbarer Abstand,
+ * und ab Werk bleibt es beim Senden nur bei Aenderung.
+ */
+$voll = false;
+$vollAlle = (int) $abfcfg['mqtt_vollsend_min'];
+if ($vollAlle > 0) {
+    $letzterVoll = is_file($merker) ? (int) filemtime($merker) : 0;
+    if (time() - $letzterVoll >= $vollAlle * 60) {
+        $voll = true;
+    }
+}
+
 $neu = [];
 foreach ($werte as $k => $v) {
-    if (!array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) { $neu[$k] = $v; }
+    if ($voll || !array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) {
+        $neu[$k] = $v;
+    }
 }
 if ($neu) {
     abfahrt_mqtt_senden($neu, $abfcfg);
     $js = json_encode($werte);
-    if ($js !== false) { @file_put_contents(abfahrt_tmpdir() . '/mqtt_letzte.json', $js); }
+    if ($js !== false) { @file_put_contents($merker, $js); }
+} elseif ($voll) {
+    // Nichts zu senden, aber die Frist ist abgelaufen - Zeitstempel
+    // trotzdem fortschreiben, sonst laeuft der Vollversand jede Minute an.
+    @touch($merker);
 }
 
 flock($fh, LOCK_UN);

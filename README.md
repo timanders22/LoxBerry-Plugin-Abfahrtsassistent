@@ -9,14 +9,212 @@ berechnet daraus den Abfahrtszeitpunkt:
 Abfahrt = Terminbeginn − Fahrzeit − Ankunftsreserve − Pufferzeit
 ```
 
-Kompatibel mit LoxBerry 3.x und **LoxBerry 4.0** (reines PHP 8, keine
-Zusatzpakete). Serientermine werden vollständig expandiert (täglich/wöchentlich/monatlich/
+Kompatibel mit LoxBerry 3.x und **LoxBerry 4.0**. Der Code laeuft unter
+PHP **7.4 und 8.x** &mdash; LoxBerry fuehrt bis Debian 13 PHP 7.4 als
+Standardfassung. Keine Zusatzpakete. Serientermine werden vollständig expandiert (täglich/wöchentlich/monatlich/
 jährlich mit INTERVAL, BYDAY, UNTIL, COUNT; EXDATE; einzeln verschobene oder
 gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautst&auml;rke kommt dann aus
 dem Lautst&auml;rke-Feld; `Zone~Lautst&auml;rke` je Zone weiterhin m&ouml;glich.
+
+## Neu in 1.6.0
+
+Zehn Erweiterungen. **Acht davon stehen ab Werk aus** &mdash; wer aktualisiert,
+bekommt dort genau das Verhalten von 1.5.8.
+
+> ### Zwei Dinge ändern sich beim Update von selbst
+>
+> **1. Die Fahrzeit wird für den Abfahrtszeitpunkt berechnet, nicht für jetzt.**
+> Das ist die Berichtigung eines schiefen Ergebnisses und deshalb ab Werk an —
+> aber es **verdoppelt die Abfragen beim Kartendienst**. Bei TomTom sind das
+> statt rund 50 nun rund 100 Abfragen am Tag gegen ein Kontingent von 2500;
+> bei Google steht dahinter eine Rechnung. Wer das nicht will, nimmt in den
+> *Einstellungen* unter „Fahrzeitberechnung" den Haken heraus.
+>
+> **2. Alle MQTT-Werte werden alle 15 Minuten erneut gesendet**, auch
+> unverändert. Damit steht ein neu gestarteter Miniserver nicht mit leeren
+> Eingängen da. Abschalten mit `0` im Reiter *MQTT*.
+>
+> Alles Übrige — Ortsbuch, Ganztagestermine, Sperrzeit für Push, eigener
+> Ansagetext — bleibt aus, bis Sie es einschalten.
+
+### Genauere Fahrzeit: für den Abfahrtszeitpunkt statt für jetzt
+
+Bisher fragte das Plugin den Kartendienst immer nach der Verkehrslage von
+*jetzt*. Für einen Termin in acht Stunden sagt die nichts &mdash; gerade der
+Berufsverkehr wird dadurch verlässlich falsch geschätzt.
+
+Mit dem neuen Haken **Fahrzeit für den Abfahrtszeitpunkt berechnen** wird
+zweimal gefragt: einmal grob, dann noch einmal für den daraus ermittelten
+Abfahrtszeitpunkt. Die Parameter stehen so in der Dokumentation der Anbieter:
+
+| Dienst | Parameter | Format |
+|---|---|---|
+| Google Directions | `departure_time` | Unix-Sekunden |
+| TomTom Routing | `departAt` | ISO 8601 ohne Versatz (TomTom nimmt die Zeitzone des Startpunkts) |
+| HERE Routing v8 | `departureTime` | ISO 8601 **mit** Zeitzonen-Versatz |
+
+**Das verdoppelt die Abfragen** (TomTom: Tageskontingent, Google: Rechnung).
+Es greift nur, wenn die Abfahrt mehr als 20 Minuten entfernt ist &mdash; näher
+dran sind „jetzt" und „der Abfahrtszeitpunkt" dasselbe. Der Routen-Zwischen&shy;speicher
+unterscheidet die beiden Fälle. **Ab Werk eingeschaltet**, siehe den Kasten oben.
+
+### Ortsbuch: „Büro" ist keine Adresse
+
+Im Kalenderfeld `LOCATION` steht selten eine Adresse, sondern „Büro",
+„Besprechungsraum 3" oder „Praxis Dr. Weber". Der Kartendienst kann damit
+nichts anfangen, und die Berechnung endete mit `FEHLER=6`.
+
+Die neue Tabelle im Reiter *Einstellungen* übersetzt das. Verglichen wird
+zuerst wortgleich, dann als **eigenständiges Wort** innerhalb der Ortsangabe:
+
+```
+Büro                 -> Hauptstr. 5, Berlin      (Treffer)
+büro                 -> Hauptstr. 5, Berlin      (Treffer, Schreibung egal)
+Im Büro, 2. Stock    -> Hauptstr. 5, Berlin      (Treffer)
+Büroklammer          -> Büroklammer              (KEIN Treffer - kein Teilwort)
+```
+
+### Diagnose je Kalender
+
+Der Knopf **Kalender jetzt durchsehen** im Reiter *Test* beantwortet, was
+`FEHLER=4` offenlässt: hat das Plugin im Kalender nachgesehen und nichts
+gefunden &mdash; oder hat es gar nicht hingesehen? Je Kalender: Gegenstelle,
+Alter des Zwischenspeichers, Zahl der Termine, davon mit Ort im Zeitfenster,
+und der nächste Treffer.
+
+### Merkwort prüfen und neu würfeln
+
+Der Reiter *Test* hat jetzt **Merkwort prüfen (ohne Ansage)** &mdash; grün, es
+löst nichts aus &mdash; und daneben **Merkwort neu würfeln** in Orange, mit
+Rückfrage. Bis 1.5.7 geschah das Zweite ungewollt bei jedem Speichern.
+
+### Geokodierung sichtbar
+
+Ein Tippfehler in der Abfahrtsadresse führt zu einer Fahrzeit, die plausibel
+aussieht und von der falschen Stelle aus gerechnet ist. Der Reiter *Test* zeigt
+jetzt die Koordinaten samt Kartenlink und hat einen Knopf, sie zu verwerfen.
+
+### Sperrzeit auch für die Push-Nachricht
+
+Die Sperrzeiten-Tabelle wirkte nur auf die Ansage. Ein Haken schaltet sie
+zusätzlich auf `PUSH`.
+
+### Eigener Ansagetext
+
+Ein Feld mit den Platzhaltern `{titel} {ort} {fahrt} {abfahrt_in} {beginn}`.
+Leer bleibt es beim mitgelieferten Text &mdash; der ist seit 1.5.8 zweisprachig.
+
+### Neues Feld `ANKUNFT`
+
+Die voraussichtliche Ankunft in **Minuten seit Mitternacht**, wenn man jetzt
+losführe (1440 = unbekannt). Damit beantwortet die Anlage die Frage, die
+`ABFAHRT_IN` nicht beantwortet: bin ich schon zu spät, und um wie viel.
+
+Das Feld steht **am Ende** der Liste, damit alle bisherigen Befehlserkennungen
+unverändert gültig bleiben. Wer die Importdatei neu einliest, bekommt es
+mit; wer den virtuellen Eingang von Hand anlegt, braucht
+`\i;ANKUNFT=\i\v`.
+
+> **Nebenbei behoben:** Die Verweise in der Baustein-Liste („Ausgang von #10")
+> waren als Zahlen in die Sprachdatei getippt. Ein neuntes Feld hätte jeden
+> davon um eins verschoben &mdash; lautlos, denn eine Zahl sieht immer richtig
+> aus. Sie werden jetzt aus der Feldtabelle berechnet.
+
+### MQTT: alle Werte im Takt erneut senden
+
+Gesendet wird nur, was sich geändert hat. Startet der **Miniserver** neu, ohne
+dass der LoxBerry neu startet, bleiben seine virtuellen Eingänge deshalb leer,
+bis sich zufällig ein Wert bewegt. Im Reiter *MQTT* lässt sich ein Abstand
+einstellen, in dem alles erneut gesendet wird. **Vorgabe 15 Minuten**, `0` = aus.
+
+### Ganztagestermine
+
+Ein Ganztagestermin nennt keine Uhrzeit &mdash; ohne Angabe lässt sich nicht
+sagen, wann man losfahren soll, und er wird verworfen. Mit dem neuen Haken gilt
+eine einstellbare Uhrzeit dieses Tages als Terminbeginn.
+
+## Neu in 1.5.8
+
+Fehlerbehebungen aus einer Zeile-fuer-Zeile-Pruefung. **Drei davon betreffen
+bestehende Anlagen unmittelbar:**
+
+* **Der Hintergrunddienst konnte nie starten &mdash; seit 1.5.0.**
+  `bin/abfahrt_dienst.php` suchte seine Programmbibliothek ueber
+  `dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php'`. Im entpackten
+  Archiv liegen `bin/` und `webfrontend/` nebeneinander, dort geht das auf; auf
+  dem installierten LoxBerry liegen sie in **getrennten Baeumen**, und der
+  Aufruf endete bei jedem Cron-Lauf mit
+  `Failed opening required '/opt/loxberry/bin/plugins/webfrontend/html/abfahrt_lib.php'`.
+  Damit wurde seit 1.5.0 nie gerechnet: kein `stand.json`, nichts ueber MQTT,
+  und `termin.php` lieferte an Loxone dauerhaft `OK=0;MINSTART=9999`. Bemerkt
+  hat es niemand, weil der Cron nach `/dev/null` schreibt und `OK=0` in Loxone
+  aussieht wie &bdquo;kein Termin gefunden&ldquo; statt wie ein Defekt.
+  Die Bibliothek wird jetzt ueber eine Kandidatensuche gefunden, und wenn
+  keiner der Pfade passt, sagt der Dienst auf der Fehlerausgabe, **welche
+  Datei er wo gesucht hat**.
+
+* **Das Merkwort ueberlebt jetzt das Speichern.** Bisher loeschte jedes
+  Speichern der Einstellungen das Merkwort aus der Konfiguration; beim
+  naechsten Seitenaufbau entstand ein neues. Der Virtuelle Ausgang im
+  Miniserver trug weiter das alte und bekam ab da HTTP 403 &mdash; die Ansage
+  verstummte, ohne dass irgendwo etwas zu sehen war. **Nach dem Update einmal
+  die Oberflaeche oeffnen und das im Reiter *Einbindung in Loxone* angezeigte
+  Merkwort mit dem in Loxone Config vergleichen.**
+* **Die Baustein-Liste nennt das Merkwort in der Ausgangsadresse.** Wer sie
+  bis 1.5.7 eins zu eins nachgebaut hat, hat einen Ausgang gebaut, der nie
+  funktionieren konnte.
+
+Im Kalender behoben (alle nachgerechnet):
+
+| Fall | bisher | jetzt |
+|---|---|---|
+| `FREQ=MONTHLY`, DTSTART 31.01., `INTERVAL=2` | 01.10.2026 | 31.01.2027 |
+| `FREQ=YEARLY`, DTSTART 29.02.2024 | 01.03.2027 | 29.02.2028 |
+| `FREQ=MONTHLY;BYDAY=3TH` (jeder dritte Donnerstag) | So 16.08. | Do 20.08. |
+| `FREQ=MONTHLY;BYDAY=-1FR` (letzter Freitag) | Mo 31.08. | Fr 28.08. |
+| `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` | loest auch am Wochenende aus | nur werktags |
+| `LOCATION;LANGUAGE=de-DE:` (Outlook/Exchange) | Termin wird nicht gefunden | gefunden |
+| `DTSTART;TZID=...;VALUE=DATE-TIME:` | Termin wird nicht gefunden | gefunden |
+| `EXDATE;VALUE=DATE-TIME:` | geloeschte Instanz erscheint weiter | entfaellt |
+| `TZID="America/New_York"` (in Anfuehrungszeichen) | als Berliner Zeit gerechnet | richtig |
+| `RECURRENCE-ID;RANGE=THISANDFUTURE` | wurde nicht ausgewertet | verschiebt bzw. beendet die Serie |
+| `LOCATION:` im Beschreibungstext | wurde als Ortsangabe genommen | nur echte Eigenschaftszeilen |
+
+Weiter behoben:
+
+* **Sperrzeit ueber Mitternacht** gilt jetzt der Nacht, in der sie *beginnt*.
+  Wer nur den Samstag sperrte, wurde bisher am Sonntag um 01:13 doch
+  angesprochen. Gleiche Anfangs- und Endzeit bedeutet jetzt ganztaegig statt
+  nie.
+* **Die Befehlserkennungen im Reiter *Einbindung in Loxone*** tragen das
+  fuehrende Semikolon (`\i;FAHRT=\i\v`) &mdash; wie die Importdatei und wie
+  seit 1.5.0 angekuendigt.
+* **Die Vorgabelautstaerke wirkt wieder.** Die Zonenvorgabe lautete `1~25`,
+  und eine Zonenangabe mit Lautstaerke hat Vorrang: ab Werk sprach die Anlage
+  mit 25 %, obwohl ueberall 8 % stand.
+* **&bdquo;Ansage gesprochen&ldquo; steht nur noch im Protokoll, wenn sie
+  gesprochen wurde.** Bisher galt auch die Fehlerseite eines Music Servers als
+  Erfolg. Meldungen sagen jetzt, wer geantwortet hat (abgewiesen, Zeitablauf,
+  Name unbekannt, HTTP-Code).
+* **Eine leere oder abgebrochene Zwischenspeicherdatei** ergab eine Fahrzeit
+  von null Minuten &mdash; mit `OK=1` und `FEHLER=0`. Inhalte werden geprueft,
+  geschrieben wird unteilbar. Koordinaten verfallen nach 90 Tagen.
+* **Nach einem Fehler stehen keine alten Termindaten mehr da** &mdash; Anzeige
+  und Ansage nannten sonst einen laengst vergangenen Termin.
+* **Die Oberflaeche ist ohne JavaScript bedienbar** (der offene Reiter steht
+  jetzt im ausgelieferten HTML), ein Reiterwechsel wirft keine Eingaben mehr
+  weg, und alle vier Formulare tragen ein Einmalmerkmal gegen seitenfremd
+  ausgeloeste Absendungen.
+* **Zweisprachigkeit vervollstaendigt:** Wochentage, Sperrzeiten-Beschriftung,
+  Meldungen, Platzhalter und der **Ansagetext** kamen bisher auch bei
+  englischer Oberflaeche auf Deutsch.
+* `termin.php` beantwortet jetzt ebenfalls `?selftest=1&token=...`.
+* Ohne gesetztes `LBHOMEDIR` endete die Oberflaeche mit einem fatalen Fehler;
+  fehlte die Programmbibliothek, ebenso &mdash; jetzt gibt es eine Meldung,
+  die sagt, welche Datei wo erwartet wurde.
 
 ## Neu in 1.5.7
 **Token pruefbar, ohne dass das Haus spricht.** Bisher liess sich das Merkwort
@@ -53,6 +251,7 @@ API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
 | `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..` |
 | `/plugins/abfahrtsassistent/termin.php?debug=1&token=…` | Diagnose — **rechnet neu**, alle anderen Aufrufe lesen nur ab |
 | `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen (bzw. `TEXT=...` im Audioserver-Modus) |
+| `…/termin.php?selftest=1&token=…` bzw. `…/termin_say.php?selftest=1&token=…` | Merkwort prüfen, **ohne** dass etwas ausgelöst wird — Antwort `SELFTEST;OK=1;TOKEN=OK` |
 
 **Die beiden auslösenden Aufrufe verlangen ein Merkwort.** Sie liegen im
 unangemeldeten Bereich, damit Loxone sie ohne Zugangsdaten erreicht — ohne
