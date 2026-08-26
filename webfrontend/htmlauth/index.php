@@ -63,6 +63,23 @@ if ($lbhomedir) {
 }
 $config_file = $config_dir . '/abfahrt.json';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* Bibliothek einbinden.
  *
  * Beide Kandidaten sind noetig, weil html/ und htmlauth/ auf dem installierten
@@ -452,9 +469,6 @@ if (is_file($log_file)) {
 function e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 
 $use_frame = class_exists('LBWeb', false);
-if ($use_frame) {
-    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', 'help.html');
-}
 $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
 
 /* ---------------- Einstellungen sichern ----------------
@@ -502,6 +516,11 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
             $abf_hinweise[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($use_frame) {
+    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
