@@ -63,67 +63,76 @@ function abfahrt_paths() {
     ];
 }
 
+function abfahrt_vorgaben()
+{
+    /* Herausgezogen aus abfahrt_config(): die Vorgaben stehen weiterhin an
+     * EINER Stelle, jetzt aber an einer abrufbaren. Die Sicherung
+     * braucht die Schluesselliste, um Fremdes zu erkennen - ohne sie
+     * koennte sie nur alles durchwinken. */
+    return [
+    'calendars' => [],
+    'provider' => 'tomtom',
+    'api_key' => '',
+    'home_address' => '',
+    'buffer_min' => 10,
+    'arrival_min' => 10,
+    'lookahead_hours' => 15,
+    'ignore_locations' => 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin',
+    'tts' => [],
+    'notify' => [],
+    'quiet' => [],
+    'mqtt_ein' => 1,
+    'mqtt_topic' => 'abfahrt',
+    /* --- neu in 1.6.0 -------------------------------------------------
+     * Bis auf zwei stehen alle ab Werk aus beziehungsweise leer.
+     *
+     * ZWEI STEHEN AB WERK AN, und das ist eine bewusste Entscheidung vom
+     * 16.08.2026 gegen die Hausregel "neue Funktionen ab Werk aus":
+     *
+     *   route_departat     weil eine Fahrzeit, die fuer die Verkehrslage
+     *                      von JETZT gilt, bei einem Termin in Stunden
+     *                      schlicht falsch ist - das ist keine neue
+     *                      Funktion, sondern eine Berichtigung.
+     *   mqtt_vollsend_min  weil ein Miniserver nach einem Neustart sonst
+     *                      mit leeren Eingaengen dasteht, und das sieht
+     *                      aus wie ein Defekt des Plugins.
+     *
+     * BEIDE WIRKEN AUCH AUF BESTEHENDE ANLAGEN, sobald aktualisiert wird -
+     * die Schluessel fehlen dort, also greift die Vorgabe. Wer bei TomTom
+     * am Tageskontingent kratzt, nimmt den Haken in den Einstellungen
+     * heraus; das ueberlebt jedes weitere Speichern. In der
+     * Release-Beschreibung steht es an erster Stelle. */
+    // Fahrzeit fuer den ABFAHRTSZEITPUNKT statt fuer jetzt berechnen.
+    // Kostet je Berechnung eine zweite Abfrage beim Kartendienst.
+    'route_departat' => 1,
+    // Ortsangabe -> echte Adresse. [['muster'=>'Buero','adresse'=>'...'], ...]
+    'ortsbuch' => [],
+    // Sperrzeit auch auf die Push-Nachricht anwenden.
+    'quiet_push' => 0,
+    // Eigener Ansagetext mit {titel} {ort} {fahrt} {abfahrt_in} {beginn}.
+    'ansage_vorlage' => '',
+    // Alle MQTT-Werte erneut senden, auch wenn sie sich nicht geaendert
+    // haben - damit ein Miniserver nach einem Neustart nicht mit leeren
+    // Eingaengen dasteht. 0 = aus.
+    'mqtt_vollsend_min' => 15,
+    // Ganztagestermine mit Ortsangabe beruecksichtigen, Abfahrt zur
+    // angegebenen Uhrzeit dieses Tages.
+    'ganztags_ein' => 0,
+    'ganztags_zeit' => '08:00',
+    // Schuetzt die beiden AUSLOESENDEN Aufrufe im unangemeldeten Bereich:
+    // termin_say.php (spricht im Haus) und termin.php?debug=1 (rechnet neu
+    // und fragt dabei den Kartendienst). Der reine Leseaufruf von
+    // termin.php bleibt frei - den holt Loxone zyklisch ab, und er kostet
+    // nichts.
+    'aktionstoken' => '',
+];
+}
+
 function abfahrt_config() {
     $p = abfahrt_paths();
     $abfcfg = is_file($p['config']) ? (json_decode((string) file_get_contents($p['config']), true) ?: []) : [];
     // Defaults
-    $abfcfg += [
-        'calendars' => [],
-        'provider' => 'tomtom',
-        'api_key' => '',
-        'home_address' => '',
-        'buffer_min' => 10,
-        'arrival_min' => 10,
-        'lookahead_hours' => 15,
-        'ignore_locations' => 'online, teams, zoom, webex, google meet, skype, videokonferenz, telefontermin',
-        'tts' => [],
-        'notify' => [],
-        'quiet' => [],
-        'mqtt_ein' => 1,
-        'mqtt_topic' => 'abfahrt',
-        /* --- neu in 1.6.0 -------------------------------------------------
-         * Bis auf zwei stehen alle ab Werk aus beziehungsweise leer.
-         *
-         * ZWEI STEHEN AB WERK AN, und das ist eine bewusste Entscheidung vom
-         * 16.08.2026 gegen die Hausregel "neue Funktionen ab Werk aus":
-         *
-         *   route_departat     weil eine Fahrzeit, die fuer die Verkehrslage
-         *                      von JETZT gilt, bei einem Termin in Stunden
-         *                      schlicht falsch ist - das ist keine neue
-         *                      Funktion, sondern eine Berichtigung.
-         *   mqtt_vollsend_min  weil ein Miniserver nach einem Neustart sonst
-         *                      mit leeren Eingaengen dasteht, und das sieht
-         *                      aus wie ein Defekt des Plugins.
-         *
-         * BEIDE WIRKEN AUCH AUF BESTEHENDE ANLAGEN, sobald aktualisiert wird -
-         * die Schluessel fehlen dort, also greift die Vorgabe. Wer bei TomTom
-         * am Tageskontingent kratzt, nimmt den Haken in den Einstellungen
-         * heraus; das ueberlebt jedes weitere Speichern. In der
-         * Release-Beschreibung steht es an erster Stelle. */
-        // Fahrzeit fuer den ABFAHRTSZEITPUNKT statt fuer jetzt berechnen.
-        // Kostet je Berechnung eine zweite Abfrage beim Kartendienst.
-        'route_departat' => 1,
-        // Ortsangabe -> echte Adresse. [['muster'=>'Buero','adresse'=>'...'], ...]
-        'ortsbuch' => [],
-        // Sperrzeit auch auf die Push-Nachricht anwenden.
-        'quiet_push' => 0,
-        // Eigener Ansagetext mit {titel} {ort} {fahrt} {abfahrt_in} {beginn}.
-        'ansage_vorlage' => '',
-        // Alle MQTT-Werte erneut senden, auch wenn sie sich nicht geaendert
-        // haben - damit ein Miniserver nach einem Neustart nicht mit leeren
-        // Eingaengen dasteht. 0 = aus.
-        'mqtt_vollsend_min' => 15,
-        // Ganztagestermine mit Ortsangabe beruecksichtigen, Abfahrt zur
-        // angegebenen Uhrzeit dieses Tages.
-        'ganztags_ein' => 0,
-        'ganztags_zeit' => '08:00',
-        // Schuetzt die beiden AUSLOESENDEN Aufrufe im unangemeldeten Bereich:
-        // termin_say.php (spricht im Haus) und termin.php?debug=1 (rechnet neu
-        // und fragt dabei den Kartendienst). Der reine Leseaufruf von
-        // termin.php bleibt frei - den holt Loxone zyklisch ab, und er kostet
-        // nichts.
-        'aktionstoken' => '',
-    ];
+    $abfcfg += abfahrt_vorgaben();
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
     $abfcfg['mqtt_topic'] = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
@@ -1852,8 +1861,40 @@ function abfahrt_mqtt_zustand() {
     $aus['gefunden'] = true;
     $aus['udpport'] = isset($d['Mqtt']['Udpinport']) ? (int) $d['Mqtt']['Udpinport'] : 0;
     $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']); // NICHT 'Autostart' - den Schluessel gibt es nicht (Fehlerklasse ACTiKamera 1.9.2)
+    /* Die FASSUNG des MQTT-Gateways, ab Werk 1. Sie entscheidet, was der
+     * Anwender eintragen muss: unter V1 jedes Thema von Hand, ab V2
+     * erscheint die Themengruppe von selbst in den Subscriptions.
+     * 0 heisst "nicht feststellbar" - dann wird nichts behauptet,
+     * sondern es werden beide Faelle genannt. */
+    $aus['fassung'] = isset($d['Mqtt']['Gatewayversion'])
+        ? (int) $d['Mqtt']['Gatewayversion'] : 0;
     return $aus;
 }
+
+/**
+ * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
+ *
+ * Bis hierher stand an den Ausgabestellen unbedingt "Ohne diesen Eintrag
+ * kommt am Miniserver nichts an". Das gilt fuer Gateway V1, wo jedes Thema
+ * von Hand einzutragen ist. Ab V2 erscheint die Themengruppe von selbst in
+ * den Subscriptions - der Satz schickte jeden V2-Anwender zu einem
+ * Eingabeplatz, den es nicht gibt.
+ *
+ * Drei Ausgaenge, nicht zwei: ist die Fassung nicht feststellbar, werden
+ * BEIDE Faelle genannt statt einer behauptet.
+ */
+function abfahrt_abo_text()
+{
+    $m = abfahrt_mqtt_zustand();
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    if ($f <= 0) {
+        return abfahrt_t('MQTT.ABO_UNBEKANNT');
+    }
+    $gemessen = ' <span class="sm-mono">'
+              . sprintf(abfahrt_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
+    return abfahrt_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
+}
+
 
 /**
  * Werte an das MQTT-Gateway von LoxBerry schieben (UDP-Weiterleitung).
@@ -2289,4 +2330,67 @@ function abfahrt_t($schluessel)
     }
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+
+/**
+ * Den ganzen Konfigurationsstand ablegen - und sagen, ob es geklappt hat.
+ *
+ * Bisher schrieb diese Linie mitten in index.php. Das Zurueckspielen einer
+ * Sicherung braucht aber EINE Stelle, sonst steht die Pruefung "hat es
+ * geklappt?" an vier Orten verschieden da.
+ *
+ * Der Schreibweg ist der, den die Linie ohnehin benutzt - hier wird kein
+ * Verhalten geaendert, nur ein vorhandenes zusammengefasst.
+ */
+function abfahrt_config_speichern($cfg)
+{
+    $p = abfahrt_paths();
+    $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
+                            | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return false;   /* ungueltiges UTF-8 - lieber gar nicht schreiben
+                           als eine halbe Datei hinterlassen */
+    }
+    @mkdir(dirname($p['config']), 0775, true);
+    return (bool) (@file_put_contents($p['config'], $js) !== false);
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
+ * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
+ * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
+ * als die alte, und man sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function abfahrt_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(abfahrt_t('TEXT.SICH_KEIN_JSON')), 0);
+    }
+    $neu = abfahrt_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(abfahrt_t('TEXT.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = abfahrt_t('TEXT.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }

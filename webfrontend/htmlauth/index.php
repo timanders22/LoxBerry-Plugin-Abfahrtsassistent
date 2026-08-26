@@ -456,6 +456,54 @@ if ($use_frame) {
     LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', 'help.html');
 }
 $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($abf_post && isset($_POST['abfahrt_sichern'])) {
+    $abfahrt_js = json_encode(abfahrt_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($abfahrt_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="abfahrtsassistent_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $abfahrt_js;
+        exit;
+    }
+    $abf_hinweise[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
+    if (!isset($_FILES['abfahrt_sicherung']) || !is_array($_FILES['abfahrt_sicherung'])
+        || !isset($_FILES['abfahrt_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['abfahrt_sicherung']['tmp_name'])) {
+        $abf_hinweise[] = abfahrt_t('TEXT.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['abfahrt_sicherung']['size'] > 262144) {
+        $abf_hinweise[] = abfahrt_t('TEXT.SICH_ZU_GROSS');
+    } else {
+        list($abfahrt_neu, $abfahrt_mangel, $abfahrt_n) = abfahrt_sicherung_lesen(
+            (string) @file_get_contents($_FILES['abfahrt_sicherung']['tmp_name']));
+        if ($abfahrt_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $abf_hinweise[] = abfahrt_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $abfahrt_mangel);
+        } elseif (abfahrt_config_speichern($abfahrt_neu)) {
+            $abf_hinweise[] = sprintf(abfahrt_t('TEXT.SICH_UEBERNOMMEN'), $abfahrt_n);
+        } else {
+            $abf_hinweise[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -801,7 +849,7 @@ $abf_regel = function_exists('abfahrt_quiet_rule') ? abfahrt_quiet_rule($abfcfg)
 <h3 class="sm-h3"><?php echo abfahrt_t('MQTT.H_ABO'); ?></h3>
 <div class="sm-small"><?php echo abfahrt_t('MQTT.ABO_TEXT'); ?></div>
 <div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abfcfg['mqtt_topic']) ?>/#</div>
-<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.ABO_WARNUNG'); ?></div>
+<div class="sm-alert sm-err"><?php echo abfahrt_abo_text(); ?></div>
 
 <h3 class="sm-h3"><?php echo abfahrt_t('MQTT.H_THEMEN'); ?></h3>
 <table class="sm-tbl">
@@ -842,7 +890,7 @@ $abf_regel = function_exists('abfahrt_quiet_rule') ? abfahrt_quiet_rule($abfcfg)
 <div class="sm-step"><b><?php echo abfahrt_t('LOX.S2_T'); ?></b><br><br>
 <?php echo abfahrt_t('LOX.S2'); ?>
 <div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abfcfg['mqtt_topic']) ?>/#</div>
-<div class="sm-alert sm-err"><?php echo abfahrt_t('MQTT.ABO_WARNUNG'); ?></div>
+<div class="sm-alert sm-err"><?php echo abfahrt_abo_text(); ?></div>
 <?php echo abfahrt_t('LOX.S2_THEMEN'); ?>
 <table class="sm-tbl">
 <tr><th><?php echo abfahrt_t('MQTT.T_THEMA'); ?></th><th><?php echo abfahrt_t('MQTT.T_BEDEUTUNG'); ?></th></tr>
@@ -1112,6 +1160,27 @@ foreach ($abf_pr as $abf_z) { if ($abf_z[0] === 0) { $abf_schlecht++; } }
 <?php if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { echo LBWeb::loglist_html(); } ?>
 </div>
 
+
+<h2><?= abfahrt_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= abfahrt_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= abfahrt_t('TEXT.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="abfahrt_sichern" value="1"><?= abfahrt_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <input data-role="none" type="file" name="abfahrt_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="abfahrt_zurueck" value="1"><?= abfahrt_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 <script>
 function abfTtsMode() {
