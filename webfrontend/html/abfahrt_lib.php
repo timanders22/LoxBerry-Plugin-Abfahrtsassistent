@@ -662,6 +662,7 @@ function abfahrt_logfile() {
 
 function abfahrt_log($msg) {
     $f = abfahrt_logfile();
+    clearstatcache(true, $f);
     if (is_file($f) && filesize($f) > 512000) { // Rotation: letzte 200 Zeilen behalten
         $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: [], -200);
         @file_put_contents($f, implode("\n", $tail) . "\n");
