@@ -19,9 +19,10 @@
  * kann - ohne einen einzigen Vorteil.
  *
  * Aufrufe:
- *   abfahrt_dienst.php          aus dem Cron
- *   abfahrt_dienst.php jetzt    Takt umgehen
- *   abfahrt_dienst.php zeile    Statuszeile ausgeben, ohne zu rechnen
+ *   abfahrt_dienst.php              aus dem Cron
+ *   abfahrt_dienst.php jetzt        Takt umgehen
+ *   abfahrt_dienst.php zeile        Statuszeile ausgeben, ohne zu rechnen
+ *   abfahrt_dienst.php --selbsttest Einrichtung pruefen, ohne Netz
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -76,8 +77,112 @@ if ($abf_lib === '') {
 }
 require_once $abf_lib;
 
+
+/**
+ * Selbstpruefung ohne Netz und ohne Kartendienst.
+ *
+ * ANGELEGT 31.08.2026. Bis dahin gab es sie nicht: der Dienst nahm
+ * "--selbsttest" als unbekannte Betriebsart, lief in den Taktzweig, sagte
+ * nichts und endete mit 0. freigabe_pruefen.py meldete dafuer
+ * "keine auswertbare Ausgabe" - in jeder Fassung dieser Linie.
+ *
+ * Markenform, weil das die Form fuer eine EINRICHTUNGSpruefung ist: je Zeile
+ * eine Frage, [OK] oder [FEHL] davor. Der Rueckgabewert ist 1, sobald eine
+ * Zeile [FEHL] traegt.
+ *
+ * Was hier NICHT geprueft wird: der Kartendienst und die Kalender-Adressen.
+ * Beides kostet Kontingent beziehungsweise fremde Last, und ein Selbsttest,
+ * der Kosten verursacht, wird beim zweiten Mal nicht mehr aufgerufen.
+ */
+function abfahrt_selbsttest(array $abfcfg)
+{
+    $zeilen = array();
+    $fehler = 0;
+
+    $zeilen[] = '[OK]   PHP ' . PHP_VERSION;
+
+    foreach (array('json', 'curl') as $erw) {
+        if (extension_loaded($erw)) {
+            $zeilen[] = '[OK]   ' . sprintf(abfahrt_t('SELBST.ERW_DA'), $erw);
+        } else {
+            $fehler++;
+            $zeilen[] = '[FEHL] ' . sprintf(abfahrt_t('SELBST.ERW_FEHLT'), $erw);
+        }
+    }
+
+    /* abfahrt_paths() fuehrt zwei Schluessel: die Konfigurationsdatei und den
+     * Zwischenordner. Geprueft wird das VERZEICHNIS der Datei, nicht die
+     * Datei - beim ersten Start gibt es sie noch nicht, und das ist kein
+     * Fehler. Das Protokoll kommt aus abfahrt_logfile(). */
+    $p = abfahrt_paths();
+    $orte = array(
+        'SELBST.O_CONFIG' => dirname($p['config']),
+        'SELBST.O_TMP'    => $p['tmp'],
+        'SELBST.O_LOG'    => dirname(abfahrt_logfile()),
+    );
+    foreach ($orte as $name => $pfad) {
+        $ok = is_dir($pfad) && is_writable($pfad);
+        $zeilen[] = ($ok ? '[OK]   ' : '[FEHL] ')
+                  . sprintf(abfahrt_t('SELBST.ORDNER'), abfahrt_t($name), $pfad);
+        if (!$ok) {
+            $fehler++;
+        }
+    }
+
+    $kal = isset($abfcfg['calendars']) && is_array($abfcfg['calendars'])
+         ? count($abfcfg['calendars']) : 0;
+    if ($kal > 0) {
+        $zeilen[] = '[OK]   ' . sprintf(abfahrt_t('SELBST.KALENDER'), $kal);
+    } else {
+        $fehler++;
+        $zeilen[] = '[FEHL] ' . abfahrt_t('SELBST.KEIN_KALENDER');
+    }
+
+    /* Der Schluessel wird NUR auf "vorhanden" geprueft, nie ausgegeben - und
+     * auch seine Laenge nicht, die verriete den Anbieter. */
+    if (trim((string) (isset($abfcfg['api_key']) ? $abfcfg['api_key'] : '')) !== '') {
+        $zeilen[] = '[OK]   ' . sprintf(abfahrt_t('SELBST.SCHLUESSEL_DA'),
+            (string) (isset($abfcfg['provider']) ? $abfcfg['provider'] : '?'));
+    } else {
+        $fehler++;
+        $zeilen[] = '[FEHL] ' . abfahrt_t('SELBST.SCHLUESSEL_FEHLT');
+    }
+
+    if (trim((string) (isset($abfcfg['home_address']) ? $abfcfg['home_address'] : '')) !== '') {
+        $zeilen[] = '[OK]   ' . abfahrt_t('SELBST.HEIM_DA');
+    } else {
+        $fehler++;
+        $zeilen[] = '[FEHL] ' . abfahrt_t('SELBST.HEIM_FEHLT');
+    }
+
+    /* Das MQTT-Gateway. Massgeblich ist Gatewayautostart, nicht Brokerhost -
+     * der steht ab Werk auf localhost und beantwortet die Frage nicht. */
+    if (empty($abfcfg['mqtt_ein'])) {
+        $zeilen[] = '[INFO] ' . abfahrt_t('SELBST.MQTT_AUS');
+    } else {
+        $gw = abfahrt_mqtt_zustand();
+        if (empty($gw['gefunden'])) {
+            $zeilen[] = '[INFO] ' . abfahrt_t('SELBST.MQTT_UNBEKANNT');
+        } elseif (empty($gw['autostart'])) {
+            $fehler++;
+            $zeilen[] = '[FEHL] ' . abfahrt_t('SELBST.MQTT_AUTOSTART');
+        } else {
+            $zeilen[] = '[OK]   ' . sprintf(abfahrt_t('SELBST.MQTT_AN'),
+                (int) $gw['fassung'] > 0 ? (int) $gw['fassung']
+                                         : abfahrt_t('SELBST.MQTT_FASSUNG_UNBEKANNT'));
+        }
+    }
+
+    echo implode("\n", $zeilen) . "\n";
+    return $fehler ? 1 : 0;
+}
+
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
 $abfcfg = abfahrt_config();
+
+if ($modus === '--selbsttest') {
+    exit(abfahrt_selbsttest($abfcfg));
+}
 
 if ($modus === 'zeile') {
     echo abfahrt_zeile(abfahrt_stand(), $abfcfg) . "\n";
