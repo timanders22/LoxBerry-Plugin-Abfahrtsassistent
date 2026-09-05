@@ -12,20 +12,44 @@ ARGV5=$5
 LBHOMEDIR="${LBHOMEDIR:-$5}"
 PFOLDER="${ARGV3:-abfahrtsassistent}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+
+# Ohne Wurzelverzeichnis wird nichts angefasst. Sonst zeigte jeder Pfad
+# unten auf /config/... und /data/..., also neben den LoxBerry-Baum - und
+# das rm -rf am Ende griffe dorthin. uninstall/uninstall prueft das seit
+# jeher, dieses Skript tat es nicht.
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    echo "<INFO> Kein Wurzelverzeichnis uebergeben - nichts wiederhergestellt."
+    exit 0
+fi
+
 # Dort hat preupgrade.sh gesichert - NEBEN dem Ordner, weil der
 # Installer data/plugins/<x>/ zwischen beiden Skripten loescht.
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
+# ZURUECKGESPIELT = 1 heisst: die Datei liegt nachweislich wieder da. Nur dann
+# darf die Sicherung unten weg. Vorher wurde unbedingt gemeldet und unbedingt
+# geloescht - schlug das cp fehl (Platte voll, Rechte), war die einzige
+# vollstaendige Fassung samt Merkwort und Schluessel des Kartendienstes fort,
+# und der Anwender las "<OK> Konfiguration wiederhergestellt."
+ZURUECKGESPIELT=0
 if [ -f "$SICHER/abfahrt.json" ]; then
-    cp -p "$SICHER/abfahrt.json" "$BASE/config/plugins/$PFOLDER/abfahrt.json"
-    echo "<OK> Konfiguration wiederhergestellt."
+    if cp -p "$SICHER/abfahrt.json" "$BASE/config/plugins/$PFOLDER/abfahrt.json" \
+       && [ -s "$BASE/config/plugins/$PFOLDER/abfahrt.json" ]; then
+        ZURUECKGESPIELT=1
+        echo "<OK> Konfiguration wiederhergestellt."
+    else
+        echo "<FAIL> Die gesicherte Konfiguration liess sich NICHT zurueckspielen."
+        echo "<INFO> Sie bleibt liegen: $SICHER/abfahrt.json"
+    fi
 else
+    ZURUECKGESPIELT=1
     echo "<INFO> Keine gesicherte Konfiguration vorhanden."
 fi
 
-# Konfiguration aus Sicherung wiederherstellen (ausserhalb des Plugin-Ordners,
-# uebersteht Updates UND Deinstallation/Neuinstallation)
+# Zweitschrift der Oberflaeche. Sie liegt NEBEN dem Plugin-Ordner und
+# uebersteht damit ein Update - eine DEINSTALLATION nicht: uninstall/uninstall
+# raeumt sie ausdruecklich ab. Bis 1.6.6 stand hier das Gegenteil.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/abfahrt.json"
 if [ -f "$BK" ]; then
@@ -47,5 +71,8 @@ chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
 
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.
-rm -rf "$SICHER" 2>/dev/null
+# Aber NUR, wenn das Zurueckspielen nachweislich geklappt hat.
+if [ "$ZURUECKGESPIELT" = "1" ]; then
+    rm -rf "$SICHER" 2>/dev/null
+fi
 exit 0

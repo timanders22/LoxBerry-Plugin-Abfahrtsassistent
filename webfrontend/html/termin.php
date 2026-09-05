@@ -6,7 +6,7 @@
  *          http://<loxberry-ip>/plugins/abfahrtsassistent/termin.php?debug=1
  *
  * Ausgabe (Flat-Text fuer Virtuellen HTTP-Eingang):
- *   TERMIN;OK=1;MINSTART=42;FAHRT=17.5;ABFAHRT_IN=10;FEHLER=0;ALTER=23;AUDIO=1;PUSH=1
+ *   TERMIN;OK=1;MINSTART=42;FAHRT=17.5;ABFAHRT_IN=10;FEHLER=0;ALTER=23;AUDIO=1;PUSH=1;ANKUNFT=754
  *
  *   MINSTART   = Minuten bis zum Beginn des naechsten Termins mit Ortsangabe
  *   FAHRT      = aktuelle Fahrzeit dorthin in Minuten (inkl. Verkehrslage)
@@ -14,11 +14,14 @@
  *                (= MINSTART - FAHRT - Ankunftsreserve - Pufferzeit)
  *   OK         = 1 wenn Termin+Route berechnet, sonst 0 (dann MINSTART=9999)
  *   ALTER      = Alter der Berechnung in Sekunden - fuer die Ausfallerkennung
+ *   ANKUNFT    = Ankunftszeit in Minuten seit Mitternacht, 1440 = unbekannt
  *   FEHLER     = 0 kein Fehler
  *                1 kein Kalender eingerichtet
  *                2 kein API-Key eingerichtet
  *                3 keine Abfahrtsadresse eingerichtet
  *                4 kein Termin mit Ort im Zeitfenster
+ *                5 Kalender nicht erreichbar - es gilt der letzte gelesene
+ *                  Stand (neu in 1.6.7; OK bleibt 1, solange einer da war)
  *                6 Kartendienst nicht erreichbar (keine Fahrzeit)
  *                7 Kartendienst nicht erreichbar, letzte bekannte Fahrzeit
  *                  wird weiterbenutzt - OK bleibt 1, die Werte gelten
@@ -47,7 +50,14 @@
 require_once __DIR__ . '/abfahrt_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
-$debug = isset($_GET['debug']);
+/* ?debug=0 heisst AUS, nicht an.
+ *
+ * Vorher stand hier isset(). Damit schaltete jeder Wert die Funktion ein -
+ * auch die 0. Bei ?debug=0 hiess das: es wird gerechnet und beim
+ * Kartendienst angefragt, obwohl der Aufrufer das Gegenteil geschrieben hat;
+ * bei ?force=0 in termin_say.php wurden die Sperrzeiten umgangen. Das blosse
+ * ?debug ohne Wert bleibt eingeschaltet, dafuer ist es da. */
+$debug = abfahrt_schalter('debug');
 
 $abfcfg = abfahrt_config();
 
@@ -74,7 +84,7 @@ if ($debug && !abfahrt_token_ok($abfcfg)) {
  * bekommt dieselbe Abweisung wie sonst auch, der Selbsttest ist keine
  * Abkuerzung an der Sicherheit vorbei. Er fragt aber seinerseits nach dem
  * Merkwort, damit er auch ohne ?debug=1 nicht offensteht. */
-if (isset($_GET['selftest'])) {
+if (abfahrt_schalter('selftest')) {
     if (!abfahrt_token_ok($abfcfg)) {
         abfahrt_token_abweisen('SELFTEST', $abfcfg);
     }
@@ -120,14 +130,31 @@ $out = abfahrt_zeile($st, $abfcfg);
 
 /* Nur strukturelle Aenderungen protokollieren. Die Zahlen wandern jede Minute,
    das Protokoll soll deswegen nicht volllaufen - ein Wechsel bei OK oder
-   FEHLER dagegen ist genau das, was man spaeter sucht. */
-$f = abfahrt_tmpdir() . '/last_result.txt';
-$sig = preg_replace('/(MINSTART|FAHRT|ABFAHRT_IN|ALTER)=[-0-9.]+/', '', $out);
-$prev = is_file($f) ? trim((string) @file_get_contents($f)) : '';
-if ($sig !== $prev) {
-    abfahrt_log('Ergebnis: ' . $out . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : '')
-              . ($st['grund'] !== '' ? ' [' . $st['grund'] . ']' : ''));
-    @file_put_contents($f, $sig);
+   FEHLER dagegen ist genau das, was man spaeter sucht.
+
+   ANKUNFT GEHOERT IN DIESE LISTE, und bis 1.6.6 stand es nicht darin. Es ist
+   seit 1.6.0 das neunte Feld und wandert jede Minute (Ankunftszeit in
+   Minuten seit Mitternacht). Gemessen am 04.09.2026: drei Aufrufe, bei denen
+   sich NUR ANKUNFT um je 1 erhoehte, ergaben drei Protokollzeilen; mit
+   festem ANKUNFT eine einzige. Bei minuetlicher Abfrage lief das Protokoll
+   damit voll, und die Rotation auf 200 Zeilen warf nach gut drei Stunden
+   genau die OK-/FEHLER-Wechsel heraus, die man spaeter sucht.
+
+   NICHTS ANLEGEN: Diese Datei liegt im unangemeldeten Bereich. Ein anonymer
+   GET ohne Parameter hat bis 1.6.6 zwei Verzeichnisse und zwei Dateien
+   entstehen lassen. Geschrieben wird deshalb nur, wo der Dienst seine
+   Ablagen schon angelegt hat. */
+$abf_tmp = abfahrt_tmpdir(false);
+$abf_logdir = dirname(abfahrt_logfile(false));
+if (is_dir($abf_tmp) && is_dir($abf_logdir)) {
+    $f = $abf_tmp . '/last_result.txt';
+    $sig = preg_replace('/(MINSTART|FAHRT|ABFAHRT_IN|ALTER|ANKUNFT)=[-0-9.]+/', '', $out);
+    $prev = is_file($f) ? trim((string) @file_get_contents($f)) : '';
+    if ($sig !== $prev) {
+        abfahrt_log('Ergebnis: ' . $out . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : '')
+                  . ($st['grund'] !== '' ? ' [' . $st['grund'] . ']' : ''));
+        @file_put_contents($f, $sig);
+    }
 }
 
 echo $out . "\n";

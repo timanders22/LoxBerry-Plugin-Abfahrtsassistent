@@ -48,7 +48,7 @@ if (!abfahrt_token_ok($abfcfg)) {
  *
  * Antwort: SELFTEST;OK=1;TOKEN=OK
  */
-if (isset($_GET['selftest'])) {
+if (abfahrt_schalter('selftest')) {
     echo "SELFTEST;OK=1;TOKEN=OK\n";
     exit;
 }
@@ -56,7 +56,7 @@ if (isset($_GET['selftest'])) {
 $tts = $abfcfg['tts'];
 
 // Freigabe pruefen (Test-Button nutzt ?force=1 und umgeht die Sperren)
-if (!isset($_GET['force'])) {
+if (!abfahrt_schalter('force')) {
     $why = '';
     if (!abfahrt_audio_allowed($abfcfg, $why)) {
         abfahrt_log("Ansage unterdrueckt: $why");
@@ -116,13 +116,13 @@ $grund = '';
 $status = 0;
 $r = abfahrt_http_get($url, 8, $grund, $status);
 if ($r !== false) {
-    abfahrt_log('Ansage gesprochen: ' . $text . (isset($_GET['force']) ? ' [Test/force]' : ''));
+    abfahrt_log('Ansage gesprochen: ' . $text . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
     echo "OK: $text\n";
 } else {
     abfahrt_log('FEHLER beim Aufruf des Audio-Servers: ' . ($grund !== '' ? $grund : 'unbekannt'));
     echo 'FEHLER beim Aufruf des Audio-Servers'
        . ($grund !== '' ? ': ' . $grund : '.') . "\n";
-    if (isset($_GET['debug'])) {
+    if (abfahrt_schalter('debug')) {
         echo "URL: $url\n";
     }
 }

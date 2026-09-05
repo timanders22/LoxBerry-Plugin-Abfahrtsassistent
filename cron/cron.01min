@@ -5,4 +5,14 @@
 #
 # Ueber den Interpreter aufgerufen, nicht ueber die Raute-Zeile: geht beim
 # Entpacken das Ausfuehrungsrecht verloren, laeuft der Dienst trotzdem an.
-/usr/bin/php REPLACELBPBINDIR/abfahrt_dienst.php >/dev/null 2>&1
+#
+# Der Pfad steht in Anfuehrungszeichen (Hausform, wie in den anderen Linien),
+# und das Skript endet ausdruecklich mit 0: der Rueckgabewert des Dienstes
+# sagt etwas ueber den Lauf, nicht ueber den Cron-Eintrag.
+#
+# OFFEN und bewusst NICHT eingebaut: der Abstieg auf den Benutzer loxberry
+# (su loxberry -s /bin/sh -c ...), wie ihn ACTiKamera 1.9.17 macht. Er ist
+# nur richtig, wenn der Cron als root laeuft - und das ist an dieser Anlage
+# nicht gemessen. Wird nachgetragen, sobald die Frage beantwortet ist.
+/usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>&1
+exit 0

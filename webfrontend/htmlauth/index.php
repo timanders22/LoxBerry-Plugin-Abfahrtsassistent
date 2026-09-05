@@ -115,7 +115,9 @@ if (!$abf_geladen || !function_exists('abfahrt_config')) {
 
 // Falls Konfiguration fehlt/leer, aber Sicherung existiert: wiederherstellen
 if ((!is_file($config_file) || trim((string) @file_get_contents($config_file)) === '' || trim((string) @file_get_contents($config_file)) === '{}') && is_file($backup_file)) {
-    @mkdir($config_dir, 0775, true);
+    // is_dir() davor, wie 330 Zeilen tiefer auch: sonst meldet jeder
+    // Prueflauf mit E_ALL ein "mkdir(): File exists", das keines ist.
+    if (!is_dir($config_dir)) { @mkdir($config_dir, 0775, true); }
     @copy($backup_file, $config_file);
 }
 
@@ -315,7 +317,25 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))
          * wird abgewiesen und gemeldet, nicht zurechtgebogen. */
         $abf_hinweise[] = abfahrt_t('MELDUNG.KAL_FORM');
     }
-    for ($i = 0; $i < 10; $i++) {
+    /* BERICHTIGT 05.09.2026: Die Beanstandung allein verhindert das
+     * Speichern nicht (das tut nur $save_error), und die Schleife lief
+     * danach mit $abf_cal_name === null weiter und schrieb ZEHN LEERE
+     * Zeilen. Gemessen am 04.09.2026: die Seite meldete gleichzeitig
+     * "Die Kalenderfelder ... wurden abgewiesen" UND "Konfiguration
+     * gespeichert", und danach war kein Kalender mehr eingetragen. Der
+     * Kommentar oben sagte dabei das Gegenteil ("wird abgewiesen und
+     * gemeldet, nicht zurechtgebogen").
+     *
+     * Jetzt gilt: kommt eine der beiden Listen nicht als Feld an, bleibt
+     * die bestehende Kalenderliste unangetastet. Das uebrige Formular wird
+     * weiterhin gespeichert - eine Beanstandung wirft nicht die ganze
+     * Eingabe weg. */
+    $abf_kal_behalten = ($abf_cal_name === null || $abf_cal_url === null);
+    if ($abf_kal_behalten) {
+        $abfcfg['calendars'] = isset($abf_alt['calendars']) && is_array($abf_alt['calendars'])
+                             ? $abf_alt['calendars'] : array();
+    }
+    for ($i = 0; !$abf_kal_behalten && $i < 10; $i++) {
         $name = trim((string) ($abf_cal_name[$i] ?? ''));
         $url = trim((string) ($abf_cal_url[$i] ?? ''));
         if ($url !== '' && !preg_match('#^https?://#i', $url)) {
@@ -457,7 +477,14 @@ if (empty($abfcfg['aktionstoken'])) {
 }
 $abf_token = (string) $abfcfg['aktionstoken'];
 
-$status = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true) ?: [];
+/* is_file() davor: titel.json fehlt, solange der Dienst noch nicht
+ * gerechnet hat - das ist der Normalfall nach der Installation und kein
+ * Fehler. Ohne die Wache steht in jedem Prueflauf eine Warnung, die keine
+ * ist, und man gewoehnt sich das Lesen der Warnungen ab. */
+$abf_titeldatei = abfahrt_tmpdir() . '/titel.json';
+$status = is_file($abf_titeldatei)
+        ? (@json_decode((string) @file_get_contents($abf_titeldatei), true) ?: [])
+        : [];
 $log_lines = [];
 if (is_file($log_file)) {
     $log_lines = array_slice(array_reverse(file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []), 0, 300);
@@ -467,6 +494,22 @@ if (is_file($log_file)) {
 // lb_wurzel_ermitteln() steht jetzt ganz oben - Begruendung dort.
 
 function e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+
+/**
+ * Ein Alter in Sekunden lesbar machen.
+ *
+ * BERICHTIGT 05.09.2026: die Anzeige der Koordinaten sprang von Sekunden
+ * unmittelbar auf Stunden - alles zwischen 90 s und 1799 s stand als
+ * "vor 0 h ermittelt" da. Die Minutenstufe fehlte; die Schwesterstelle in
+ * abfahrt_lib.php hatte sie.
+ */
+function abf_alter_text($sek) {
+    $sek = max(0, (int) $sek);
+    if ($sek < 90)    { return $sek . ' s'; }
+    if ($sek < 5400)  { return (int) round($sek / 60) . ' min'; }
+    if ($sek < 172800) { return (int) round($sek / 3600) . ' h'; }
+    return (int) round($sek / 86400) . ' d';
+}
 
 $use_frame = class_exists('LBWeb', false);
 $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
@@ -478,8 +521,9 @@ $host = e($_SERVER['HTTP_HOST'] ?? '<loxberry-ip>');
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($abf_post && isset($_POST['abfahrt_sichern'])) {
-    $abfahrt_js = json_encode(abfahrt_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // Mit lesbarem Kopf (_plugin, _fassung, _stand, _hinweis) - Hausstandard.
+    // Die Leseseite uebergeht diese Schluessel, siehe abfahrt_sicherung_lesen().
+    $abfahrt_js = abfahrt_sicherung_bauen(abfahrt_config());
     if ($abfahrt_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="abfahrtsassistent_einstellungen_'
@@ -512,6 +556,26 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
             $abf_hinweise[] = abfahrt_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $abfahrt_mangel);
         } elseif (abfahrt_config_speichern($abfahrt_neu)) {
             $abf_hinweise[] = sprintf(abfahrt_t('TEXT.SICH_UEBERNOMMEN'), $abfahrt_n);
+            // Was die Lesefunktion angemerkt hat (fehlende Schluessel, ein
+            // leeres Merkwort in der Datei), gehoert auf den Bildschirm -
+            // sonst sieht ein unvollstaendiges Zurueckspielen aus wie ein
+            // vollstaendiges.
+            foreach ($abfahrt_mangel as $abf_hw) { $abf_hinweise[] = $abf_hw; }
+            /* DIE KONFIGURATION MUSS NEU GELESEN WERDEN.
+             *
+             * $abfcfg wurde 66 Zeilen weiter oben geladen. Ohne diese Zeile
+             * baut sich die ganze Seite aus dem Stand VOR dem Zurueckspielen
+             * auf: die Felder zeigen die alten Werte, der Reiter "Einbindung
+             * in Loxone" das alte Merkwort, und alle zehn Formulare tragen
+             * ein Einmalmerkmal, das aus dem alten Merkwort gebildet ist -
+             * das naechste Absenden wird abgewiesen. Gemessen am 04.09.2026.
+             *
+             * Das Merkwort wird mitgezogen, weil $abf_token darauf beruht. */
+            $abfcfg = abfahrt_config();
+            while (count($abfcfg['calendars']) < 10) {
+                $abfcfg['calendars'][] = ['name' => '', 'url' => ''];
+            }
+            $abf_token = (string) $abfcfg['aktionstoken'];
         } else {
             $abf_hinweise[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
         }
@@ -589,6 +653,16 @@ if ($use_frame) {
    benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
    bzw. der Referenzimplementierung uebernommen. */
 .sm-warn { background: #fdf3e3; border: 1px solid #e0620d; }
+/* Nachgetragen 05.09.2026. Der Durchgang vom 13.08. hat DANEBEN gegriffen:
+   benutzt werden .sm-hinweis (Zeile mit SICH_ERKLAERUNG) und .sm-warnung
+   (SICH_WARNUNG), definiert war nur das Kuerzel .sm-warn. Beide Kaesten der
+   Sicherung standen dadurch als nackter Fliesstext da - auch der Satz, dass
+   die Datei ein Geheimnis traegt. Gemessen ueber den Bestand am 04.09.2026:
+   47 Linien benutzen sm-warnung, 42 definieren sie, fuenf nicht. */
+.sm-hinweis { background: #e3f2fd; border: 1px solid #90caf9; border-radius: 8px;
+              padding: 10px 14px; margin: 12px 0; font-size: 0.9em; }
+.sm-warnung { background: #fdf3e3; border: 1px solid #e0620d; border-radius: 8px;
+              padding: 10px 14px; margin: 12px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -846,6 +920,47 @@ $abf_regel = function_exists('abfahrt_quiet_rule') ? abfahrt_quiet_rule($abfcfg)
 
 <button data-role="none" class="sm-btn" type="submit"><?php echo abfahrt_t('TEXT.SPEICHERN'); ?></button>
 </form>
+
+<!-- Sichern und Zurueckspielen: seit 05.09.2026 IN diesem Reiter.
+     Vorher stand der Block hinter allen fuenf Bereichen, unmittelbar in
+     .sm-wrap - er war damit auf jedem Reiter sichtbar, auch unter
+     "Logdateien", und sein verstecktes activetab=tab-settings warf den
+     Anwender nach jedem Klick auf den ersten Reiter zurueck. Er steht HINTER
+     dem Ende des Einstellungsformulars: seine beiden eigenen Formulare
+     duerfen nicht darin liegen.
+
+     Der schliessende Formular-Marker steht hier bewusst NICHT im Wortlaut -
+     formularpruefung.py zaehlt Marker und faende ihn im Kommentar mit
+     (Hausregel: ein Kommentar traegt nicht die Zeichenfolge, nach der ein
+     Werkzeug sucht). -->
+<h2><?= abfahrt_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= abfahrt_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= abfahrt_t('TEXT.SICH_WARNUNG') ?></div>
+<!-- Eigene Legende: der Block traegt einen lesenden und einen ausloesenden
+     Knopf. Ohne sie meldet hausstandard_pruefen.py "Legende passt nicht:
+     tab-settings ohne aktion" - gemessen, nachdem der Block in diesen Reiter
+     gewandert ist. -->
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo abfahrt_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo abfahrt_t('LEGENDE.AKTION'); ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="abfahrt_sichern" value="1"><?= abfahrt_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <input data-role="none" type="file" name="abfahrt_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="abfahrt_zurueck" value="1"><?= abfahrt_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -1089,7 +1204,7 @@ foreach ($abf_pr as $abf_z) { if ($abf_z[0] === 0) { $abf_schlecht++; } }
     <td><?= e($abf_geo['adresse']) ?></td>
     <td><?php if ($abf_geo['da']) {
             printf(abfahrt_t('TEST.A_GEO_OK'), '<span class="sm-mono">' . e($abf_geo['koordinaten']) . '</span>',
-                   $abf_geo['alter'] < 90 ? (int) $abf_geo['alter'] . ' s' : round($abf_geo['alter'] / 3600) . ' h');
+                   abf_alter_text((int) $abf_geo['alter']));
             echo ' &mdash; <a href="' . e($abf_geo['karte']) . '" target="_blank" rel="noopener noreferrer">'
                . abfahrt_t('TEST.AUF_KARTE') . '</a>';
         } else {
@@ -1178,28 +1293,6 @@ foreach ($abf_pr as $abf_z) { if ($abf_z[0] === 0) { $abf_schlecht++; } }
 </form>
 <?php if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { echo LBWeb::loglist_html(); } ?>
 </div>
-
-
-<h2><?= abfahrt_t('TEXT.H_SICHERUNG') ?></h2>
-<div class="sm-hinweis"><?= abfahrt_t('TEXT.SICH_ERKLAERUNG') ?></div>
-<div class="sm-warnung"><?= abfahrt_t('TEXT.SICH_WARNUNG') ?></div>
-<div class="sm-knopfreihe">
-  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
-       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
-       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
-       einen Download, der das Speichern verschluckt. -->
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="abfahrt_sichern" value="1"><?= abfahrt_t('TEXT.K_SICHERN') ?></button>
-  </form>
-  <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
-    <input data-role="none" type="file" name="abfahrt_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="abfahrt_zurueck" value="1"><?= abfahrt_t('TEXT.K_ZURUECK') ?></button>
-  </form>
-</div>
 </div>
 <script>
 function abfTtsMode() {
@@ -1207,7 +1300,11 @@ function abfTtsMode() {
     document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
     document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
     var port = document.getElementsByName('tts_port')[0];
-    if (m === 'musicserver' && (!port.value || port.value === '80')) { port.value = 7091; }
+    /* Nur ein LEERES Feld wird vorbelegt. Vorher wurde auch eine
+       eingetragene 80 auf 7091 gedreht - und zwar beim OEFFNEN der Seite,
+       weil abfTtsMode() auch dort einmal laeuft. Wer bewusst Port 80
+       eingetragen hatte, fand ihn beim naechsten Speichern geaendert. */
+    if (m === 'musicserver' && !port.value) { port.value = 7091; }
 }
 abfTtsMode();
 (function () {

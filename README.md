@@ -1,5 +1,7 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
+Version 1.6.7 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
 die aktuelle **Fahrzeit inkl. Verkehrslage** (TomTom, Google Maps oder HERE) und
@@ -9,15 +11,71 @@ berechnet daraus den Abfahrtszeitpunkt:
 Abfahrt = Terminbeginn − Fahrzeit − Ankunftsreserve − Pufferzeit
 ```
 
-Kompatibel mit LoxBerry 3.x und **LoxBerry 4.0**. Der Code laeuft unter
-PHP **7.4 und 8.x** &mdash; LoxBerry fuehrt bis Debian 13 PHP 7.4 als
+Kompatibel mit LoxBerry 3.x und **LoxBerry 4.0**. Der Code läuft unter
+PHP **7.4 und 8.x** &mdash; LoxBerry führt bis Debian 13 PHP 7.4 als
 Standardfassung. Keine Zusatzpakete. Serientermine werden vollständig expandiert (täglich/wöchentlich/monatlich/
 jährlich mit INTERVAL, BYDAY, UNTIL, COUNT; EXDATE; einzeln verschobene oder
 gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
-Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautst&auml;rke kommt dann aus
-dem Lautst&auml;rke-Feld; `Zone~Lautst&auml;rke` je Zone weiterhin m&ouml;glich.
+Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
+dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.7
+
+Eine Durchsicht, keine neue Funktion. Alles, was hier steht, war vorher falsch
+oder irreführend.
+
+**Das Zurückspielen einer Sicherung löscht nichts mehr.** Bisher wurde eine
+unvollständige Datei angenommen — sie meldete „1 Werte übernommen" und setzte
+alles Übrige auf Werkseinstellung zurück. Kalender, Schlüssel des
+Kartendienstes und Merkwort waren danach weg, und weil beim nächsten Öffnen der
+Oberfläche ein neues Merkwort entstand, war **jede in Loxone Config eingetragene
+Adresse stumm ungültig**. Jetzt gilt: ein Schlüssel, der in der Datei fehlt,
+behält seinen bisherigen Wert; jeder Wert wird geprüft (ein `provider` außerhalb
+der drei Kartendienste oder ein `arrival_min` von −999 kommt nicht mehr durch);
+ein leeres Merkwort in der Datei löscht das vorhandene nicht; und die Datei
+trägt jetzt einen lesbaren Kopf (`_plugin`, `_fassung`, `_stand`, `_hinweis`),
+den die Leseseite übergeht statt beanstandet.
+
+**Eine abgelaufene Serie liefert keinen Phantomtermin mehr.** Beim Vorspulen
+langer Wochenserien wurden die Wochentage der Ankunftswoche vor dem Starttag
+nicht mitgezählt. Eine Serie mit `COUNT`, die zu Ende war, gab dadurch noch
+einen Termin aus — mit Abfahrtswarnung, Ansage und Push für einen Termin, den
+es nicht gab.
+
+**Ein toter Kalender fällt jetzt auf.** Ließ sich ein Kalender nicht mehr laden,
+rechnete das Plugin unbegrenzt lange mit der letzten heruntergeladenen Fassung
+weiter, und zwar mit `OK=1;FEHLER=0`. Jetzt gilt die alte Fassung höchstens
+sechs Stunden, danach meldet die Statuszeile `FEHLER=5`. Lässt sich gar kein
+Kalender lesen, steht ebenfalls `FEHLER=5` statt `FEHLER=4` („kein Termin") —
+ein toter Kalender sah in Loxone bisher aus wie ein freier Tag.
+
+**Zeitzonen aus Outlook und Exchange.** `TZID:Eastern Standard Time` ist kein
+IANA-Name; die Zeitzone fiel still auf Europe/Berlin zurück, ein Termin in New
+York lag damit sechs Stunden falsch. Die verbreiteten Windows-Namen werden
+jetzt zugeordnet, und was sich nicht zuordnen lässt, steht in der Diagnose.
+
+**Der Hintergrunddienst schreibt jetzt ins Protokoll**, wenn sich `OK` oder
+`FEHLER` ändert — bisher hinterließ er keine einzige Zeile. Und er meldet einen
+terminfreien Tag nicht mehr als Fehlschlag: der Rückgabewert sagt jetzt, ob der
+Lauf durchgekommen ist, nicht, ob es einen Termin gibt.
+
+**Kleineres, das dennoch wirkte:** `?debug=0` heißt jetzt aus (bisher schaltete
+jeder Wert ein, auch die 0 — und `?force=0` umging die Sperrzeiten); der
+unangemeldete Endpunkt legt keine Verzeichnisse mehr an; das Feld `ANKUNFT`
+wandert nicht mehr in jede Protokollzeile (das Protokoll lief im Minutentakt
+voll); die Importdatei trägt den Port des Webservers; die Sicherungsknöpfe
+stehen im Reiter *Einstellungen* statt unter jedem Reiter; die beiden Kästen
+darüber haben wieder einen Rahmen; nach dem Zurückspielen zeigt die Oberfläche
+den neuen Stand statt des alten; `postupgrade.sh` löscht die Sicherung erst,
+wenn das Zurückspielen nachweislich geklappt hat.
+
+**Berichtigte Zusagen:** die Importdatei trägt **neun** Eingänge, nicht acht;
+die Beispielzeile zeigt `ANKUNFT`; die Hilfe nennt die Endpunkt-Adressen mit
+`?token=` (ohne den antwortet der Endpunkt mit HTTP 403); `postinstall.sh` und
+`postupgrade.sh` behaupten nicht mehr, die Zweitschrift überstehe eine
+Deinstallation — sie wird dabei absichtlich gelöscht.
 
 ## Neu in 1.6.0
 
@@ -138,30 +196,30 @@ eine einstellbare Uhrzeit dieses Tages als Terminbeginn.
 
 ## Neu in 1.5.8
 
-Fehlerbehebungen aus einer Zeile-fuer-Zeile-Pruefung. **Drei davon betreffen
+Fehlerbehebungen aus einer Zeile-für-Zeile-Prüfung. **Drei davon betreffen
 bestehende Anlagen unmittelbar:**
 
 * **Der Hintergrunddienst konnte nie starten &mdash; seit 1.5.0.**
-  `bin/abfahrt_dienst.php` suchte seine Programmbibliothek ueber
+  `bin/abfahrt_dienst.php` suchte seine Programmbibliothek über
   `dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php'`. Im entpackten
   Archiv liegen `bin/` und `webfrontend/` nebeneinander, dort geht das auf; auf
-  dem installierten LoxBerry liegen sie in **getrennten Baeumen**, und der
+  dem installierten LoxBerry liegen sie in **getrennten Bäumen**, und der
   Aufruf endete bei jedem Cron-Lauf mit
   `Failed opening required '/opt/loxberry/bin/plugins/webfrontend/html/abfahrt_lib.php'`.
-  Damit wurde seit 1.5.0 nie gerechnet: kein `stand.json`, nichts ueber MQTT,
+  Damit wurde seit 1.5.0 nie gerechnet: kein `stand.json`, nichts über MQTT,
   und `termin.php` lieferte an Loxone dauerhaft `OK=0;MINSTART=9999`. Bemerkt
   hat es niemand, weil der Cron nach `/dev/null` schreibt und `OK=0` in Loxone
   aussieht wie &bdquo;kein Termin gefunden&ldquo; statt wie ein Defekt.
-  Die Bibliothek wird jetzt ueber eine Kandidatensuche gefunden, und wenn
+  Die Bibliothek wird jetzt über eine Kandidatensuche gefunden, und wenn
   keiner der Pfade passt, sagt der Dienst auf der Fehlerausgabe, **welche
   Datei er wo gesucht hat**.
 
-* **Das Merkwort ueberlebt jetzt das Speichern.** Bisher loeschte jedes
+* **Das Merkwort überlebt jetzt das Speichern.** Bisher löschte jedes
   Speichern der Einstellungen das Merkwort aus der Konfiguration; beim
-  naechsten Seitenaufbau entstand ein neues. Der Virtuelle Ausgang im
+  nächsten Seitenaufbau entstand ein neues. Der Virtuelle Ausgang im
   Miniserver trug weiter das alte und bekam ab da HTTP 403 &mdash; die Ansage
   verstummte, ohne dass irgendwo etwas zu sehen war. **Nach dem Update einmal
-  die Oberflaeche oeffnen und das im Reiter *Einbindung in Loxone* angezeigte
+  die Oberfläche öffnen und das im Reiter *Einbindung in Loxone* angezeigte
   Merkwort mit dem in Loxone Config vergleichen.**
 * **Die Baustein-Liste nennt das Merkwort in der Ausgangsadresse.** Wer sie
   bis 1.5.7 eins zu eins nachgebaut hat, hat einen Ausgang gebaut, der nie
@@ -175,55 +233,55 @@ Im Kalender behoben (alle nachgerechnet):
 | `FREQ=YEARLY`, DTSTART 29.02.2024 | 01.03.2027 | 29.02.2028 |
 | `FREQ=MONTHLY;BYDAY=3TH` (jeder dritte Donnerstag) | So 16.08. | Do 20.08. |
 | `FREQ=MONTHLY;BYDAY=-1FR` (letzter Freitag) | Mo 31.08. | Fr 28.08. |
-| `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` | loest auch am Wochenende aus | nur werktags |
+| `FREQ=DAILY;BYDAY=MO,TU,WE,TH,FR` | löst auch am Wochenende aus | nur werktags |
 | `LOCATION;LANGUAGE=de-DE:` (Outlook/Exchange) | Termin wird nicht gefunden | gefunden |
 | `DTSTART;TZID=...;VALUE=DATE-TIME:` | Termin wird nicht gefunden | gefunden |
-| `EXDATE;VALUE=DATE-TIME:` | geloeschte Instanz erscheint weiter | entfaellt |
-| `TZID="America/New_York"` (in Anfuehrungszeichen) | als Berliner Zeit gerechnet | richtig |
+| `EXDATE;VALUE=DATE-TIME:` | gelöschte Instanz erscheint weiter | entfällt |
+| `TZID="America/New_York"` (in Anführungszeichen) | als Berliner Zeit gerechnet | richtig |
 | `RECURRENCE-ID;RANGE=THISANDFUTURE` | wurde nicht ausgewertet | verschiebt bzw. beendet die Serie |
 | `LOCATION:` im Beschreibungstext | wurde als Ortsangabe genommen | nur echte Eigenschaftszeilen |
 
 Weiter behoben:
 
-* **Sperrzeit ueber Mitternacht** gilt jetzt der Nacht, in der sie *beginnt*.
+* **Sperrzeit über Mitternacht** gilt jetzt der Nacht, in der sie *beginnt*.
   Wer nur den Samstag sperrte, wurde bisher am Sonntag um 01:13 doch
-  angesprochen. Gleiche Anfangs- und Endzeit bedeutet jetzt ganztaegig statt
+  angesprochen. Gleiche Anfangs- und Endzeit bedeutet jetzt ganztägig statt
   nie.
 * **Die Befehlserkennungen im Reiter *Einbindung in Loxone*** tragen das
-  fuehrende Semikolon (`\i;FAHRT=\i\v`) &mdash; wie die Importdatei und wie
-  seit 1.5.0 angekuendigt.
-* **Die Vorgabelautstaerke wirkt wieder.** Die Zonenvorgabe lautete `1~25`,
-  und eine Zonenangabe mit Lautstaerke hat Vorrang: ab Werk sprach die Anlage
-  mit 25 %, obwohl ueberall 8 % stand.
+  führende Semikolon (`\i;FAHRT=\i\v`) &mdash; wie die Importdatei und wie
+  seit 1.5.0 angekündigt.
+* **Die Vorgabelautstärke wirkt wieder.** Die Zonenvorgabe lautete `1~25`,
+  und eine Zonenangabe mit Lautstärke hat Vorrang: ab Werk sprach die Anlage
+  mit 25 %, obwohl überall 8 % stand.
 * **&bdquo;Ansage gesprochen&ldquo; steht nur noch im Protokoll, wenn sie
   gesprochen wurde.** Bisher galt auch die Fehlerseite eines Music Servers als
   Erfolg. Meldungen sagen jetzt, wer geantwortet hat (abgewiesen, Zeitablauf,
   Name unbekannt, HTTP-Code).
 * **Eine leere oder abgebrochene Zwischenspeicherdatei** ergab eine Fahrzeit
-  von null Minuten &mdash; mit `OK=1` und `FEHLER=0`. Inhalte werden geprueft,
+  von null Minuten &mdash; mit `OK=1` und `FEHLER=0`. Inhalte werden geprüft,
   geschrieben wird unteilbar. Koordinaten verfallen nach 90 Tagen.
 * **Nach einem Fehler stehen keine alten Termindaten mehr da** &mdash; Anzeige
-  und Ansage nannten sonst einen laengst vergangenen Termin.
-* **Die Oberflaeche ist ohne JavaScript bedienbar** (der offene Reiter steht
+  und Ansage nannten sonst einen längst vergangenen Termin.
+* **Die Oberfläche ist ohne JavaScript bedienbar** (der offene Reiter steht
   jetzt im ausgelieferten HTML), ein Reiterwechsel wirft keine Eingaben mehr
   weg, und alle vier Formulare tragen ein Einmalmerkmal gegen seitenfremd
-  ausgeloeste Absendungen.
-* **Zweisprachigkeit vervollstaendigt:** Wochentage, Sperrzeiten-Beschriftung,
+  ausgelöste Absendungen.
+* **Zweisprachigkeit vervollständigt:** Wochentage, Sperrzeiten-Beschriftung,
   Meldungen, Platzhalter und der **Ansagetext** kamen bisher auch bei
-  englischer Oberflaeche auf Deutsch.
+  englischer Oberfläche auf Deutsch.
 * `termin.php` beantwortet jetzt ebenfalls `?selftest=1&token=...`.
-* Ohne gesetztes `LBHOMEDIR` endete die Oberflaeche mit einem fatalen Fehler;
+* Ohne gesetztes `LBHOMEDIR` endete die Oberfläche mit einem fatalen Fehler;
   fehlte die Programmbibliothek, ebenso &mdash; jetzt gibt es eine Meldung,
   die sagt, welche Datei wo erwartet wurde.
 
 ## Neu in 1.5.7
-**Token pruefbar, ohne dass das Haus spricht.** Bisher liess sich das Merkwort
-nur pruefen, indem man den Ansage-Endpunkt aufrief — und dann redete die Anlage.
+**Token prüfbar, ohne dass das Haus spricht.** Bisher ließ sich das Merkwort
+nur prüfen, indem man den Ansage-Endpunkt aufrief — und dann redete die Anlage.
 Mit `?force=1` sogar an den Ruhezeiten vorbei.
 
-Neu: `?selftest=1&token=…` durchlaeuft dieselbe Token-Pruefung und endet dann
+Neu: `?selftest=1&token=…` durchläuft dieselbe Token-Prüfung und endet dann
 sofort mit `SELFTEST;OK=1;TOKEN=OK`. Keine Ansage, kein Aufruf des
-Audio-Servers, keine Freigabepruefung. Ein falsches Token bekommt unveraendert
+Audio-Servers, keine Freigabeprüfung. Ein falsches Token bekommt unverändert
 dieselbe Abweisung wie zuvor.
 
 ## Konfiguration (Plugin-Oberfläche)
@@ -248,7 +306,7 @@ API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
 
 | Endpunkt | Zweck |
 |---|---|
-| `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..` |
+| `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..;ANKUNFT=..` |
 | `/plugins/abfahrtsassistent/termin.php?debug=1&token=…` | Diagnose — **rechnet neu**, alle anderen Aufrufe lesen nur ab |
 | `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen (bzw. `TEXT=...` im Audioserver-Modus) |
 | `…/termin.php?selftest=1&token=…` bzw. `…/termin_say.php?selftest=1&token=…` | Merkwort prüfen, **ohne** dass etwas ausgelöst wird — Antwort `SELFTEST;OK=1;TOKEN=OK` |
@@ -270,7 +328,7 @@ hat.
 
 **Virtueller HTTP-Eingang** bleibt daneben bestehen. Befehlserkennung mit
 **führendem Semikolon**: `\i;ABFAHRT_IN=\i\v`. Der Reiter *Einbindung in
-Loxone* erzeugt auf Knopfdruck eine fertige Importdatei mit allen acht
+Loxone* erzeugt auf Knopfdruck eine fertige Importdatei mit allen neun
 Eingängen.
 
 `FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,
@@ -281,8 +339,11 @@ Eingängen.
 
 - Termine ohne Ortsangabe (LOCATION) werden ignoriert — nur für Termine mit
   Ziel lässt sich eine Fahrzeit berechnen.
-- Ganztagestermine werden ignoriert.
-- Abfragelimits: ICS-Cache 10 min, Geocoding dauerhaft. Der **Routen-Cache
+- Ganztagestermine werden ab Werk übergangen; sie lassen sich in den
+  Einstellungen mit einer festen Uhrzeit einschalten (siehe oben).
+- Abfragelimits: ICS-Zwischenspeicher 10 min; ein Kalender, der sich nicht
+  mehr laden lässt, gilt höchstens 6 Stunden weiter (dann `FEHLER=5`).
+  Koordinaten verfallen nach 90 Tagen. Der **Routen-Cache
   skaliert** mit der Nähe zum Termin: über 3 h stündlich, 1–3 h
   viertelstündlich, letzte Stunde alle 5 min. Über zwölf Stunden gerechnet
   sind das 51 statt 144 Abfragen.

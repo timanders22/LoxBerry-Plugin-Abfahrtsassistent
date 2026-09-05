@@ -224,6 +224,27 @@ if ($modus !== 'jetzt') { usleep(mt_rand(0, 3000000)); }
 
 list($st, $diag) = abfahrt_berechnen($abfcfg);
 
+/* EINE PROTOKOLLZEILE, WENN SICH ETWAS STRUKTURELLES AENDERT.
+ *
+ * Bis 1.6.6 rief dieser Dienst abfahrt_log() kein einziges Mal - gemessen am
+ * 04.09.2026: nach einem vollstaendigen Rechenlauf war das Protokoll leer.
+ * Zusammen mit dem >/dev/null des Cron hiess das: der Dienst, der jede
+ * Minute unbeaufsichtigt laeuft, hinterlaesst keine Spur. Genau daran ist
+ * der Ausfall von 1.5.0 bis 1.5.7 monatelang unbemerkt geblieben.
+ *
+ * Geschrieben wird nur bei einem Wechsel von OK oder FEHLER - die Zahlen
+ * wandern jede Minute, das Protokoll soll deswegen nicht volllaufen. */
+$abf_sig = 'OK=' . (int) $st['ok'] . ';FEHLER=' . (int) $st['fehler'];
+$abf_sigdatei = abfahrt_tmpdir() . '/dienst_letzte.txt';
+$abf_vorher = is_file($abf_sigdatei) ? trim((string) @file_get_contents($abf_sigdatei)) : '';
+if ($abf_sig !== $abf_vorher) {
+    abfahrt_log('Dienst: ' . $abf_sig
+              . ($st['grund'] !== '' ? ' - ' . $st['grund'] : '')
+              . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : ''));
+    foreach ($diag as $abf_d) { abfahrt_log('   ' . $abf_d); }
+    @file_put_contents($abf_sigdatei, $abf_sig);
+}
+
 /* MQTT nur bei Aenderung.
  *
  * Der Countdown aendert sich zwar jede Minute, aber Loxone braucht ihn auch
@@ -273,4 +294,20 @@ if ($neu) {
 
 flock($fh, LOCK_UN);
 fclose($fh);
-exit((int) $st['ok'] ? 0 : 1);
+
+/* RUECKGABEWERT 0 HEISST "DER LAUF IST DURCHGEKOMMEN", nicht "es gibt einen
+ * Termin".
+ *
+ * Bis 1.6.6 stand hier exit((int) $st['ok'] ? 0 : 1). ok=0 ist unter anderem
+ * FEHLER=4 "kein Termin mit Ort im Zeitfenster" - der Normalfall an jedem
+ * terminfreien Tag. Der Cron endete damit alle fuenf Minuten mit 1, und wer
+ * den Dienst nach der Installation einmal von Hand startet und den
+ * Rueckgabewert ansieht (Hausregel), konnte "nichts zu tun" nicht von
+ * "abgestuerzt" unterscheiden. installationslage_pruefen.py meldete es als
+ * "Abbruch ohne Meldung, Rueckgabewert 1".
+ *
+ * Ein echter Fehlschlag endet weiterhin mit 1 - die fehlende Bibliothek
+ * ganz oben, und die Selbstpruefung mit --selbsttest. Was der Lauf
+ * inhaltlich gefunden hat, steht in der Statuszeile (OK und FEHLER), nicht
+ * im Rueckgabewert. */
+exit(0);

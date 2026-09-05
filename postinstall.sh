@@ -17,10 +17,19 @@ if [ ! -f "$BASE/config/plugins/$PFOLDER/abfahrt.json" ]; then
     echo "<INFO> Empty configuration created."
 fi
 
+# Die Wirkung pruefen, nicht die Absicht: gemeldet wird erst, wenn der
+# Ordner wirklich da ist. Vorher stand die Erfolgsmeldung unbedingt da, auch
+# wenn mkdir gescheitert war (jeder Fehlschlag ist mit 2>/dev/null stumm).
+if [ ! -d "$BASE/config/plugins/$PFOLDER" ]; then
+    echo "<FAIL> Das Konfigurationsverzeichnis liess sich nicht anlegen: $BASE/config/plugins/$PFOLDER"
+    exit 1
+fi
 echo "<OK> Installation completed. Bitte die Plugin-Oberflaeche oeffnen und konfigurieren."
 
-# Konfiguration aus Sicherung wiederherstellen (ausserhalb des Plugin-Ordners,
-# uebersteht Updates UND Deinstallation/Neuinstallation)
+# Konfiguration aus der Zweitschrift wiederherstellen. Sie liegt NEBEN dem
+# Plugin-Ordner und uebersteht damit ein Update - eine DEINSTALLATION nicht:
+# uninstall/uninstall raeumt sie ausdruecklich ab, damit keine Datei mit
+# Zugangsdaten liegen bleibt. Bis 1.6.6 stand hier das Gegenteil.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$BASE/config/plugins/$PFOLDER/abfahrt.json"
 if [ -f "$BK" ]; then
