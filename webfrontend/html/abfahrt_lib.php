@@ -1846,20 +1846,42 @@ function abfahrt_tts_url($text, array $tts) {
 
 /** name => [analog, min, max, Sprachschluessel] */
 function abfahrt_felder() {
+    /* Das fuenfte Element sagt, ob das MQTT-Thema RETAINED gesendet wird.
+     *
+     * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, damit
+     * Loxone nach einem Neustart des Miniservers oder des Gateways sofort
+     * den Stand hat; Messwerte mit Zeitbezug NICHT retained, damit nach
+     * einem Ausfall kein alter Wert als aktueller erscheint.
+     *
+     * Danach sind Zustaende: OK, FEHLER, AUDIO, PUSH. Die fuenf uebrigen
+     * beschreiben einen Zeitpunkt oder eine Dauer und bleiben ohne Retain -
+     * ALTER ganz besonders: es IST die Ausfallerkennung, und retained
+     * behauptete es fuer immer, die Rechnung sei eben erst gelaufen.
+     *
+     * Gemessen 06.09.2026 am Geraet: bis 1.6.7 ging alles ohne Retain
+     * hinaus (--retained-only auf abfahrt/# blieb leer), und zwischen zwei
+     * Vollversaenden - ab Werk alle 15 Minuten - standen die Eingaenge
+     * eines neu gestarteten Miniservers leer. */
     return [
-        'OK'         => [0, 0, 1, 'FELD.OK'],
-        'MINSTART'   => [1, 0, 99999, 'FELD.MINSTART'],
-        'FAHRT'      => [1, 0, 1440, 'FELD.FAHRT'],
-        'ABFAHRT_IN' => [1, -9999, 9999, 'FELD.ABFAHRT_IN'],
-        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER'],
-        'ALTER'      => [1, 0, 86400, 'FELD.ALTER'],
-        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO'],
-        'PUSH'       => [0, 0, 1, 'FELD.PUSH'],
+        'OK'         => [0, 0, 1, 'FELD.OK', 1],
+        'MINSTART'   => [1, 0, 99999, 'FELD.MINSTART', 0],
+        'FAHRT'      => [1, 0, 1440, 'FELD.FAHRT', 0],
+        'ABFAHRT_IN' => [1, -9999, 9999, 'FELD.ABFAHRT_IN', 0],
+        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER', 1],
+        'ALTER'      => [1, 0, 86400, 'FELD.ALTER', 0],
+        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO', 1],
+        'PUSH'       => [0, 0, 1, 'FELD.PUSH', 1],
         // Neu in 1.6.0. Steht am ENDE, damit die Reihenfolge der bisherigen
         // Felder - und damit jede eingetragene Befehlserkennung - gleich
         // bleibt. 1440 heisst "unbekannt"; gueltige Werte sind 0..1439.
-        'ANKUNFT'    => [1, 0, 1440, 'FELD.ANKUNFT'],
+        'ANKUNFT'    => [1, 0, 1440, 'FELD.ANKUNFT', 0],
     ];
+}
+
+/** Wird dieses Feld retained gesendet? Eine Quelle: abfahrt_felder(). */
+function abfahrt_feld_retain($name) {
+    $f = abfahrt_felder();
+    return isset($f[$name][4]) && $f[$name][4] ? true : false;
 }
 
 /**
@@ -2205,9 +2227,15 @@ function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null) {
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
     if (!$sock) { return false; }
+    /* Der UDP-Eingang des Gateways kennt vier Befehle: publish, retain,
+     * reconnect, save_relayed_states - gemessen 06.09.2026 im Quelltext des
+     * Geraets (sbin/mqttgateway.pl, Zeile 293). Ein Zustand geht mit
+     * "retain", ein Messwert mit "publish"; was das ist, sagt die
+     * Feldtabelle, nicht diese Stelle. */
     $raus = 0;
     foreach ($werte as $name => $wert) {
-        if (@fwrite($sock, 'publish ' . $abfcfg['mqtt_topic'] . '/' . $name . ' '
+        $befehl = abfahrt_feld_retain($name) ? 'retain' : 'publish';
+        if (@fwrite($sock, $befehl . ' ' . $abfcfg['mqtt_topic'] . '/' . $name . ' '
                 . abf_mqtt_wert_saeubern($wert) . "\n") !== false) {
             $raus++;
         }

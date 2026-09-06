@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.7 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.8 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,33 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.8
+
+- **Die vier Zustände gehen jetzt zurückbehalten (retained) hinaus.**
+  `OK`, `FEHLER`, `AUDIO` und `PUSH` sind Zustände; der Broker hebt sie auf und
+  gibt sie einem neu gestarteten Miniserver sofort. Die fünf Zahlen mit
+  Zeitbezug (`MINSTART`, `FAHRT`, `ABFAHRT_IN`, `ALTER`, `ANKUNFT`) bleiben
+  bewusst ohne Retain — `ALTER` ist die Ausfallerkennung und würde
+  zurückbehalten für immer behaupten, gerade gerechnet worden zu sein. Bis
+  1.6.7 ging alles ohne Retain hinaus; am 06.09.2026 am Gerät gemessen, und
+  zwischen zwei Vollversänden (ab Werk alle 15 Minuten) standen die Eingänge
+  eines neu gestarteten Miniservers leer. Der Reiter *Einbindung in Loxone*
+  führt die Spalte jetzt mit.
+- **Der Cron schreibt seine Fehlerausgabe ins Protokoll** statt nach
+  `/dev/null` (`cron.err`, Hausstandard). `>/dev/null 2>&1` verschluckte auch
+  „Bibliothek nicht gefunden" — genau das hat diese Linie von 1.5.0 bis 1.5.7
+  blind gemacht.
+- **Der Kommentar im Cron ist berichtigt.** Am 06.09.2026 am Gerät gemessen:
+  der Cron läuft als `loxberry`, nicht als root. Der Abstieg über `su`, der
+  bis 1.6.7 als offene Frage im Kommentar stand, entfällt damit begründet.
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.6.7 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`). Sonst ist an dieser
+  Fassung nichts geändert.
 
 ## Neu in 1.6.7
 

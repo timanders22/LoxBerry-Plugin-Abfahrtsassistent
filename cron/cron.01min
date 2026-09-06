@@ -10,9 +10,22 @@
 # und das Skript endet ausdruecklich mit 0: der Rueckgabewert des Dienstes
 # sagt etwas ueber den Lauf, nicht ueber den Cron-Eintrag.
 #
-# OFFEN und bewusst NICHT eingebaut: der Abstieg auf den Benutzer loxberry
-# (su loxberry -s /bin/sh -c ...), wie ihn ACTiKamera 1.9.17 macht. Er ist
-# nur richtig, wenn der Cron als root laeuft - und das ist an dieser Anlage
-# nicht gemessen. Wird nachgetragen, sobald die Frage beantwortet ist.
-/usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>&1
+# KEIN Abstieg auf den Benutzer loxberry (su loxberry -s /bin/sh -c ...), wie
+# ihn ACTiKamera 1.9.17 macht: der ist nur noetig, wenn der Cron als root
+# laeuft. Am 06.09.2026 am Geraet gemessen (/etc/cron.d/lbdefaults):
+#   * * * * * loxberry cd / && for f in .../cron.01min/*; do ($f cron=01min ...); done
+# Cron und Oberflaeche laufen also beide als loxberry, und alles unter
+# /tmp/abfahrtsassistent gehoert loxberry:loxberry. Der Abstieg entfaellt.
+#
+# Die FEHLERAUSGABE geht ins Protokoll, nicht nach /dev/null (Hausstandard,
+# Regeln/03). ">/dev/null 2>&1" verschluckte auch "Bibliothek nicht gefunden"
+# - genau das hat diese Linie von 1.5.0 bis 1.5.7 blind gemacht. Nur die
+# normale Ausgabe wird unterdrueckt.
+#
+# Nebenwirkung, die hier willkommen ist: die Umlenkung legt cron.err bei
+# JEDEM Lauf an und frischt ihre mtime auf. log/plugins liegt auf der
+# RAM-Scheibe, und log_maint.pl loescht dort stuendlich alles bis auf die 24
+# juengsten Dateien (gemessen 06.09.2026, Regeln/06) - eine Datei, die jede
+# Minute angefasst wird, ueberlebt das.
+/usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
 exit 0
