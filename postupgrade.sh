@@ -15,64 +15,60 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 
 # Ohne Wurzelverzeichnis wird nichts angefasst. Sonst zeigte jeder Pfad
 # unten auf /config/... und /data/..., also neben den LoxBerry-Baum - und
-# das rm -rf am Ende griffe dorthin. uninstall/uninstall prueft das seit
-# jeher, dieses Skript tat es nicht.
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    echo "<INFO> Kein Wurzelverzeichnis uebergeben - nichts wiederhergestellt."
+# das rm -rf am Ende griffe dorthin.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts wiederhergestellt."
     exit 0
 fi
 
 # Dort hat preupgrade.sh gesichert - NEBEN dem Ordner, weil der
 # Installer data/plugins/<x>/ zwischen beiden Skripten loescht.
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+CFGDIR="$BASE/config/plugins/$PFOLDER"
+CF="$CFGDIR/abfahrt.json"
 
-mkdir -p "$BASE/config/plugins/$PFOLDER" 2>/dev/null
-# ZURUECKGESPIELT = 1 heisst: die Datei liegt nachweislich wieder da. Nur dann
-# darf die Sicherung unten weg. Vorher wurde unbedingt gemeldet und unbedingt
-# geloescht - schlug das cp fehl (Platte voll, Rechte), war die einzige
-# vollstaendige Fassung samt Merkwort und Schluessel des Kartendienstes fort,
-# und der Anwender las "<OK> Konfiguration wiederhergestellt."
-ZURUECKGESPIELT=0
+mkdir -p "$CFGDIR" 2>/dev/null
+
+# Zurueckgespielt wird NUR hier (postinstall.sh laesst die Datei bei einer
+# Aktualisierung in Ruhe). Die Sicherung wird erst geloescht, wenn JEDE
+# Wiederherstellung nachweislich gelungen ist - geprueft mit cmp, nicht mit
+# "nicht leer". Vorher stand die Meldung bei zwei von drei Kopien unbedingt
+# da, und das rm -rf raeumte auch eine Logdatei weg, deren Kopie gescheitert
+# war.
+ALLES_GUT=1
 if [ -f "$SICHER/abfahrt.json" ]; then
-    if cp -p "$SICHER/abfahrt.json" "$BASE/config/plugins/$PFOLDER/abfahrt.json" \
-       && [ -s "$BASE/config/plugins/$PFOLDER/abfahrt.json" ]; then
-        ZURUECKGESPIELT=1
-        echo "<OK> Konfiguration wiederhergestellt."
+    if cp -p "$SICHER/abfahrt.json" "$CF" 2>/dev/null && cmp -s "$SICHER/abfahrt.json" "$CF"; then
+        echo "<OK> Konfiguration aus der Update-Sicherung wiederhergestellt."
     else
+        ALLES_GUT=0
         echo "<FAIL> Die gesicherte Konfiguration liess sich NICHT zurueckspielen."
         echo "<INFO> Sie bleibt liegen: $SICHER/abfahrt.json"
     fi
 else
-    ZURUECKGESPIELT=1
-    echo "<INFO> Keine gesicherte Konfiguration vorhanden."
-fi
-
-# Zweitschrift der Oberflaeche. Sie liegt NEBEN dem Plugin-Ordner und
-# uebersteht damit ein Update - eine DEINSTALLATION nicht: uninstall/uninstall
-# raeumt sie ausdruecklich ab. Bis 1.6.6 stand hier das Gegenteil.
-BK="$BASE/config/plugins/$PFOLDER.backup.json"
-CF="$BASE/config/plugins/$PFOLDER/abfahrt.json"
-if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
-        mkdir -p "$BASE/config/plugins/$PFOLDER"
-        cp -p "$BK" "$CF"
-        echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
-    fi
+    echo "<INFO> Keine Update-Sicherung vorhanden - die Konfiguration bleibt, wie sie ist."
 fi
 if [ -f "$SICHER/abfahrt.log" ]; then
-    mkdir -p "$BASE/log/plugins/$PFOLDER"
-    cp -p "$SICHER/abfahrt.log" "$BASE/log/plugins/$PFOLDER/abfahrt.log"
-    echo "<INFO> Logdatei wiederhergestellt."
+    mkdir -p "$BASE/log/plugins/$PFOLDER" 2>/dev/null
+    if cp -p "$SICHER/abfahrt.log" "$BASE/log/plugins/$PFOLDER/abfahrt.log" 2>/dev/null \
+       && cmp -s "$SICHER/abfahrt.log" "$BASE/log/plugins/$PFOLDER/abfahrt.log"; then
+        echo "<INFO> Logdatei wiederhergestellt."
+    else
+        ALLES_GUT=0
+        echo "<WARNING> Die Logdatei liess sich nicht zurueckspielen; sie bleibt in $SICHER."
+    fi
 fi
-# Der API-Key des Kartendienstes steht in dieser Datei - nur fuer den
-# Eigentuemer lesbar. Gilt auch fuer die Sicherung daneben.
-chmod 600 "$BASE/config/plugins/$PFOLDER/abfahrt.json" 2>/dev/null
-chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
+# cp -p bringt die Rechte der Sicherung mit; deshalb das chmod DANACH
+# (ein chmod vor cp -p ist wirkungslos, Regeln/06).
+chmod 600 "$CF" 2>/dev/null
+[ -f "$BASE/config/plugins/$PFOLDER.backup.json" ] && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
 
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.
-# Aber NUR, wenn das Zurueckspielen nachweislich geklappt hat.
-if [ "$ZURUECKGESPIELT" = "1" ]; then
+if [ "$ALLES_GUT" = "1" ] && [ -d "$SICHER" ]; then
     rm -rf "$SICHER" 2>/dev/null
+    if [ -d "$SICHER" ]; then
+        echo "<WARNING> Die Update-Sicherung liess sich nicht entfernen: $SICHER"
+    fi
 fi
+echo "<OK> Aktualisierung abgeschlossen. Beim ersten Oeffnen der Oberflaeche wird die Konfiguration um neue Einstellungen vervollstaendigt."
 exit 0

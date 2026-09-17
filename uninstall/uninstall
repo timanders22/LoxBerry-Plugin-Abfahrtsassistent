@@ -7,10 +7,10 @@
 # Was NEBEN diesen Ordnern liegt, bleibt liegen - und genau dorthin gehoert
 # alles, was ein Update ueberstehen soll. Beides raeumt dieses Skript ab:
 #
-#   config/plugins/<x>.backup.json       - die Zweitschrift der Einstellungen,
-#                                          von der Oberflaeche beim Speichern
-#                                          geschrieben
+#   config/plugins/<x>.backup.json       - die Zweitschrift der Einstellungen
 #   data/plugins/<x>.upgrade_sicherung   - die Sicherung waehrend des Updates
+#
+# Dazu der Zwischenordner /tmp/<x> (Zwischenstaende, Kalenderkopien).
 #
 # Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
 # ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
@@ -18,12 +18,38 @@
 UN_FOLDER="${3:-abfahrtsassistent}"
 UN_BASE="${5:-$LBHOMEDIR}"
 
-if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE" ]; then
-    echo "<INFO> Kein Wurzelverzeichnis uebergeben - nichts abgeraeumt."
+# Fail-closed (Regeln/06): sieht die Lage nicht wie ein LoxBerry aus, wird
+# nichts geloescht. Bis 1.6.9 genuegte ein beliebiges vorhandenes Verzeichnis.
+if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE/config/plugins" ] || [ ! -f "$UN_BASE/config/system/general.json" ]; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$UN_BASE') - nichts abgeraeumt."
+    echo "<WARNING> Von Hand nachsehen: config/plugins/$UN_FOLDER.backup.json (traegt Zugangsdaten)."
     exit 0
 fi
+# Der Ordnername darf keinen Pfadtrenner tragen, sonst griffe rm daneben.
+case "$UN_FOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$UN_FOLDER' - nichts abgeraeumt."; exit 0 ;;
+esac
 
-rm -f  "$UN_BASE/config/plugins/$UN_FOLDER.backup.json" 2>/dev/null
-rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
-echo "<OK> Zweitschrift und Update-Sicherung entfernt."
+# Jede Stelle wird nachgezaehlt und einzeln gemeldet: entfernt, war nicht da,
+# oder konnte nicht entfernt werden. Bis 1.6.9 stand "<OK> ... entfernt"
+# unbedingt da, auch wenn rm gescheitert war - und die Zweitschrift traegt
+# den Schluessel des Kartendienstes und das Merkwort.
+entferne() {
+    ziel="$1"
+    if [ ! -e "$ziel" ]; then
+        echo "<INFO> War nicht vorhanden: $ziel"
+        return 0
+    fi
+    rm -rf "$ziel" 2>/dev/null
+    if [ -e "$ziel" ]; then
+        echo "<WARNING> Konnte nicht entfernt werden: $ziel"
+        return 1
+    fi
+    echo "<OK> Entfernt: $ziel"
+    return 0
+}
+
+entferne "$UN_BASE/config/plugins/$UN_FOLDER.backup.json"
+entferne "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung"
+entferne "/tmp/$UN_FOLDER"
 exit 0

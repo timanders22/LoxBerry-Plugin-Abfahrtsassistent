@@ -81,9 +81,27 @@ if (isset($_GET['text']) && !is_string($_GET['text'])) {
     echo "FEHLER: Der Parameter text muss ein einzelner Text sein.\n";
     exit;
 }
+$eigener = isset($_GET['text']) ? abfahrt_tts_sauber($_GET['text']) : '';
+
+/* Keine Ansage ohne gueltigen Termin (seit 1.6.10).
+ *
+ * abfahrt_berechnen() loescht titel.json, sobald kein Termin mehr gilt, und
+ * begruendet das damit, dass keine Ansage fuer einen ungueltigen Termin
+ * entstehen soll. Hier wurde trotzdem gesprochen - mit dem allgemeinen Satz
+ * "Dein naechster Termin steht an". Ausgeloest wird dieser Endpunkt vom
+ * Miniserver, und der entscheidet nach SEINEN Eingaengen: haengt die
+ * MQTT-Weiterleitung (gemessen 16.09.2026: der Miniserver zeigte "Abfahrt in
+ * 734 Min", das Plugin meldete seit Stunden OK=0), spraeche das Haus fuer
+ * einen Termin, den es nicht gibt. Mit ?force=1 oder eigenem ?text= bleibt
+ * die Ansage moeglich (Testknopf). */
+$abf_stand = abfahrt_stand();
+if (!abfahrt_schalter('force') && $eigener === '' && (int) $abf_stand['ok'] !== 1) {
+    abfahrt_log('Ansage unterdrueckt: kein gueltiger Termin (OK=0, FEHLER=' . (int) $abf_stand['fehler'] . ')');
+    echo "SKIP: kein gueltiger Termin (OK=0)\n";
+    exit;
+}
 $info = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true);
 if (!is_array($info)) { $info = []; }
-$eigener = isset($_GET['text']) ? abfahrt_tts_sauber($_GET['text']) : '';
 $text = ($eigener !== '') ? $eigener : abfahrt_ansagetext($info, $abfcfg);
 
 if ($tts['mode'] === 'audioserver') {

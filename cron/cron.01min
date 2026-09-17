@@ -22,10 +22,16 @@
 # - genau das hat diese Linie von 1.5.0 bis 1.5.7 blind gemacht. Nur die
 # normale Ausgabe wird unterdrueckt.
 #
-# Nebenwirkung, die hier willkommen ist: die Umlenkung legt cron.err bei
-# JEDEM Lauf an und frischt ihre mtime auf. log/plugins liegt auf der
-# RAM-Scheibe, und log_maint.pl loescht dort stuendlich alles bis auf die 24
-# juengsten Dateien (gemessen 06.09.2026, Regeln/06) - eine Datei, die jede
-# Minute angefasst wird, ueberlebt das.
+# cron.err wird bei jedem Lauf ausdruecklich angefasst (touch). log/plugins
+# liegt auf der RAM-Scheibe, und log_maint.pl loescht dort stuendlich alles
+# bis auf die 24 juengsten Dateien (gemessen 06.09.2026, Regeln/06).
+# BERICHTIGT 1.6.10: bis dahin stand hier, die Umlenkung allein frische die
+# Aenderungszeit auf. Das tut sie nicht - ein Anhaengen ohne Inhalt aendert
+# nichts. Gemessen am Geraet: cron.err vom 10.09.2026 00:16, am 16.09.2026
+# nach sechs Tagen Minutentakt unveraendert. Das Verzeichnis wird vorher
+# angelegt, falls es weggeraeumt wurde - sonst scheitert die Umlenkung, und
+# der Dienst liefe gar nicht erst an.
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
 /usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
 exit 0

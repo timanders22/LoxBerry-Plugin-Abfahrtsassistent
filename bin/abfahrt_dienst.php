@@ -37,11 +37,11 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * Im entpackten Archiv liegen bin/ und webfrontend/ nebeneinander, dort geht
  * das auf. Auf dem installierten LoxBerry liegen sie in GETRENNTEN Baeumen:
  *
- *     /opt/loxberry/bin/plugins/<ordner>/abfahrt_dienst.php
- *     /opt/loxberry/webfrontend/html/plugins/<ordner>/abfahrt_lib.php
+ *     <LoxBerry-Wurzel>/bin/plugins/<ordner>/abfahrt_dienst.php
+ *     <LoxBerry-Wurzel>/webfrontend/html/plugins/<ordner>/abfahrt_lib.php
  *
- * dirname(__DIR__) ergibt dort /opt/loxberry/bin/plugins, gesucht wurde also
- * /opt/loxberry/bin/plugins/webfrontend/html/abfahrt_lib.php. Die gibt es
+ * dirname(__DIR__) ergibt dort <LoxBerry-Wurzel>/bin/plugins, gesucht wurde
+ * also <LoxBerry-Wurzel>/bin/plugins/webfrontend/html/abfahrt_lib.php. Die gibt es
  * nicht. Der Dienst brach bei JEDEM Cron-Lauf mit einem fatalen Fehler ab -
  * seit 1.5.0, also seit das Rechnen ueberhaupt hierher verlagert wurde.
  *
@@ -193,8 +193,30 @@ if ($modus === 'zeile') {
    Kartendienst und verbrauchen zwei Kontingente fuer eine Antwort. */
 $sperre = abfahrt_tmpdir() . '/dienst.lock';
 $fh = @fopen($sperre, 'c');
-if ($fh === false) { exit(1); }
+if ($fh === false) {
+    /* Nicht lautlos. Eintrittsweg: ein Handstart als root hinterlaesst die
+     * Sperrdatei als root:root, und jeder weitere Cron-Lauf als loxberry
+     * scheiterte hier mit Rueckgabewert 1 - ohne eine Zeile, obwohl der Cron
+     * die Fehlerausgabe seit 1.6.8 nach cron.err umlenkt. */
+    $abf_msg = 'Abfahrts-Assistent: Sperrdatei ' . $sperre . ' laesst sich nicht oeffnen'
+             . (is_file($sperre) && function_exists('posix_getpwuid')
+                ? ' (gehoert ' . (string) (@posix_getpwuid((int) @fileowner($sperre))['name'] ?? '?') . ')' : '')
+             . '. Der Dienst rechnet nicht.';
+    fwrite(STDERR, $abf_msg . "\n");
+    abfahrt_log($abf_msg);
+    exit(1);
+}
 if (!flock($fh, LOCK_EX | LOCK_NB)) { exit(0); }
+
+/* Konfiguration pruefen und, wo noetig, heilen - einmal, gemeldet
+ * (abfahrt_config_heilen() in der Bibliothek). Hier und in der Oberflaeche,
+ * nie im unangemeldeten Endpunkt. Danach neu lesen. */
+abfahrt_config_heilen();
+$abfcfg = abfahrt_config();
+
+/* Das Lebenszeichen geht bei JEDEM Lauf hinaus, auch wenn gleich nicht
+ * gerechnet wird (Hausstandard, Regeln/07). */
+abfahrt_lebenszeichen($abfcfg, abfahrt_stand());
 
 /**
  * Wie oft wird ueberhaupt neu gerechnet?
@@ -256,21 +278,28 @@ $merker = abfahrt_tmpdir() . '/mqtt_letzte.json';
 $vorher = @json_decode((string) @file_get_contents($merker), true);
 if (!is_array($vorher)) { $vorher = []; }
 
-/* Vollversand im Takt (neu in 1.6.0, ab Werk aus).
+/* Vollversand im Takt (neu in 1.6.0; ab Werk alle 15 Minuten).
+ *
+ * BERICHTIGT 1.6.10: hier stand "ab Werk aus" und "ab Werk bleibt es beim
+ * Senden nur bei Aenderung". Die Vorgabe in abfahrt_vorgaben() ist seit 1.6.0
+ * 15 Minuten - gemessen am Geraet am 06.09.2026 (wirksamer Wert 15).
  *
  * WOZU: Startet der MINISERVER neu, ohne dass der LoxBerry neu startet, sind
  * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
- * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Bei einem Termin,
- * der erst in Stunden ansteht, kann das Stunden dauern.
+ * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Seit 1.6.8 gehen
+ * die Zustaende retained hinaus; der Vollversand heilt zusaetzlich jedes
+ * Datagramm, das der UDP-Eingang des Gateways verworfen hat.
  *
- * Umgekehrt ist Dauersenden auch nichts: dieselben unveraenderten Freigaben
- * stuenden hundertmal am Tag im Broker. Deshalb ein einstellbarer Abstand,
- * und ab Werk bleibt es beim Senden nur bei Aenderung.
+ * DIE ZEITMARKE IST EINE EIGENE DATEI (seit 1.6.10). Bis dahin diente die
+ * Aenderungszeit von mqtt_letzte.json als Marke - und die wird bei JEDEM
+ * Versand fortgeschrieben. Laeuft ein Countdown, aendert sich MINSTART jede
+ * Minute, und der Vollversand wurde nie faellig.
  */
+$stempel = abfahrt_tmpdir() . '/mqtt_voll.stamp';
 $voll = false;
 $vollAlle = (int) $abfcfg['mqtt_vollsend_min'];
 if ($vollAlle > 0) {
-    $letzterVoll = is_file($merker) ? (int) filemtime($merker) : 0;
+    $letzterVoll = is_file($stempel) ? (int) filemtime($stempel) : 0;
     if (time() - $letzterVoll >= $vollAlle * 60) {
         $voll = true;
     }
@@ -278,18 +307,30 @@ if ($vollAlle > 0) {
 
 $neu = [];
 foreach ($werte as $k => $v) {
+    if (!abfahrt_feld_mqtt($k)) { continue; }   // ALTER nur ueber HTTP
     if ($voll || !array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) {
         $neu[$k] = $v;
     }
 }
 if ($neu) {
-    abfahrt_mqtt_senden($neu, $abfcfg);
-    $js = json_encode($werte);
-    if ($js !== false) { @file_put_contents($merker, $js); }
+    /* Merker und Zeitmarke nur fortschreiben, wenn wirklich abgeschickt
+     * wurde. Bis 1.6.9 wurde der Rueckgabewert nicht angesehen: war das
+     * Gateway kurz weg, galten die Werte trotzdem als gesendet, und die
+     * unveraenderten Zustaende kamen erst nach der naechsten Frist. Dass
+     * "abgeschickt" nicht "angekommen" heisst, steht bei
+     * abfahrt_mqtt_senden(). */
+    $abf_raus = abfahrt_mqtt_senden($neu, $abfcfg);
+    if ($abf_raus !== false) {
+        $js = json_encode($werte);
+        if ($js !== false) { abfahrt_cache_schreiben($merker, $js); }
+        if ($voll) { @touch($stempel); }
+    } elseif (!empty($abfcfg['mqtt_ein'])) {
+        abfahrt_log_gedrosselt('mqtt_fehl', 'MQTT: Versand nicht moeglich - naechster Versuch im naechsten Lauf.', 900);
+    }
 } elseif ($voll) {
     // Nichts zu senden, aber die Frist ist abgelaufen - Zeitstempel
     // trotzdem fortschreiben, sonst laeuft der Vollversand jede Minute an.
-    @touch($merker);
+    @touch($stempel);
 }
 
 flock($fh, LOCK_UN);

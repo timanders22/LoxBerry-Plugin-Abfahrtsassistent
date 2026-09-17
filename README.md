@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.9 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.10 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,84 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.10
+
+Eine Durchsicht mit Messungen am Gerät (LoxBerry 4.0.0.15, 06. und 16.09.2026).
+Wichtig für bestehende Anlagen stehen oben.
+
+- **Eine beschädigte Konfigurationsdatei kostet keine Einstellungen mehr.**
+  Bis 1.6.9 las die Oberfläche eine halb geschriebene `abfahrt.json` als leer,
+  würfelte ein neues Merkwort und schrieb die Werkseinstellung über die Datei
+  **und** über die Zweitschrift. Schlüssel des Kartendienstes, Kalender und
+  alle in Loxone Config eingetragenen Adressen waren danach weg, ohne eine
+  Zeile im Protokoll (am Prüfstand unter PHP 7.4 und 8.4 vorgeführt). Jetzt
+  wird die Datei als `abfahrt.json.kaputt-<Zeit>` beiseitegelegt und aus der
+  Zweitschrift wiederhergestellt; entschieden wird nach Inhalt (steht ein
+  Merkwort darin?), nicht nach Form. Jeder Schritt steht im Protokoll.
+  Konfiguration und Zweitschrift werden unteilbar geschrieben, mit Rechten
+  0600 vor dem Inhalt. Fehlen in der Datei Einstellungen aus neueren
+  Fassungen, werden sie einmal mit ihrer Vorgabe eingetragen.
+- **Jeder Wert der Konfiguration wird geprüft**, auch beim Lesen und beim
+  Speichern im Formular, nicht nur beim Zurückspielen – und jetzt auch die
+  Sprachausgabe, die Sperrzeiten, das Ortsbuch und die Benachrichtigungen.
+  Eine Sicherungsdatei mit der Sperrzeit „XX bis YY“ sperrte bisher die
+  Ansage auf Dauer; eine Adressvorlage, die auf einen fremden Rechner zeigte,
+  schickte den Titel des nächsten Termins aus dem Haus. Beides wird jetzt
+  abgewiesen und gemeldet. Ein ungültiger Wert wird nicht still
+  zurechtgebogen: im Formular bleibt der bisherige stehen, beim Lesen gilt die
+  Vorgabe, und in beiden Fällen steht eine Meldung da.
+- **`ALTER` geht nicht mehr über MQTT.** Der Dienst rechnete den Wert
+  unmittelbar nach der Berechnung, über MQTT war er deshalb immer 0 (am Gerät
+  gemessen). Ausfallerkennung über MQTT ist jetzt das **Lebenszeichen**
+  `abfahrt/status/ts`, `abfahrt/status/zaehler` und `abfahrt/status/ok`, das
+  bei jedem Minutentakt hinausgeht und nie zurückbehalten wird. Über den
+  HTTP-Weg bleibt `ALTER` unverändert. Wer in Loxone `abfahrt_ALTER`
+  verdrahtet hat, stellt auf `abfahrt_status_zaehler` oder `abfahrt_status_ts`
+  um.
+- **Keine Ansage ohne gültigen Termin.** `termin_say.php` spricht nur noch,
+  wenn das Plugin einen gültigen Termin kennt (`OK=1`) – außer mit `force=1`
+  oder eigenem Text. Anlass: hängt die Weiterleitung des MQTT-Gateways, rechnet
+  der Miniserver mit alten Werten weiter (am 16.09.2026 zeigte er „Abfahrt in
+  734 Min“, während das Plugin seit Stunden keinen Termin meldete).
+- **`FEHLER=8`** heißt jetzt „kein einziger Kalender ließ sich lesen“. Bis 1.6.9
+  trug dieser Fall dieselbe 5 wie „Kalender nicht erreichbar, der letzte Stand
+  gilt weiter“.
+- **Die Antwort auf ein falsches Merkwort trägt zusätzlich `ERR=`**
+  (Hausstandard); `GRUND=` bleibt unverändert stehen. Jede Abweisung wird mit
+  der Adresse des Anfragenden protokolliert, nie mit dem übergebenen Merkwort.
+- **Nach jedem Absenden leitet die Oberfläche um.** Ein Neuladen wiederholt
+  nichts mehr; bisher würfelte ein F5 nach „Merkwort neu würfeln“ ein zweites.
+- **Einbindung in Loxone:** die Tabelle der Befehlserkennungen führt alle neun
+  Felder (bisher sieben, `ALTER` und `ANKUNFT` fehlten) und kommt aus derselben
+  Quelle wie die Importdatei. Die Namen der MQTT-Eingänge stehen so da, wie das
+  Gateway sie vergibt (`abfahrt_ABFAHRT_IN`, nicht „Abfahrt ABFAHRT_IN“).
+- **Importdatei:** Einheiten (`min`, `s`), kurze Kachelnamen (höchstens 40
+  Zeichen, bisher bis 100), Fehlwerte als Vorgabe, Kopf nach der Ausfuhr von
+  Loxone Config.
+- **Kalender:** unmögliche Daten (30. Februar, Monat 13) werden verworfen statt
+  umgerechnet; `FREQ=MONTHLY;BYMONTH=…` gilt nur noch in den genannten Monaten.
+- **Der unangemeldete Endpunkt legt nichts mehr an** und fragt das
+  Ferien-Plugin nicht mehr; er liest, was der Dienst hinterlegt hat.
+- **MQTT:** zwischen zwei Datagrammen liegen 50 ms. Der UDP-Eingang des
+  Gateways verwirft unter Last stumm (am Gerät gemessen: 15 % aller
+  Datagramme). Der Vollversand hat eine eigene Zeitmarke und wird nach einem
+  gescheiterten Versand nicht mehr als geleistet vermerkt.
+- **`cron.err` wird bei jedem Lauf angefasst**, wie der Kommentar es schon
+  seit 1.6.8 zusagte (gemessen: die Datei blieb sechs Tage unverändert).
+- **Installer:** `preupgrade.sh` erkennt einen LoxBerry, bevor es sichert;
+  zurückgespielt wird an genau einer Stelle; jede Kopie wird mit `cmp`
+  nachgeprüft; `uninstall` meldet je Datei, was geschah, und räumt auch den
+  Zwischenordner ab.
+- **Oberfläche:** CSS-Block und Reiterleiste nach der Hausvorlage, alle Texte
+  als ganze Sätze, „Speichern“ in der Aktionsfarbe, die Selbstprüfung zählt
+  „nicht feststellbar“ getrennt und prüft zusätzlich Konfiguration,
+  Minutentakt und Lebenszeichen.
+- Der Zwischenordner trägt den Ordnernamen des Plugins; für die übliche
+  Installation bleibt er `/tmp/abfahrtsassistent`.
+
+**1.6.9** brachte nur die Sprach- und Hilfedateien mit direkten Zeichen statt
+HTML-Entitäten.
 
 ## Neu in 1.6.8
 
@@ -75,7 +153,7 @@ es nicht gab.
 rechnete das Plugin unbegrenzt lange mit der letzten heruntergeladenen Fassung
 weiter, und zwar mit `OK=1;FEHLER=0`. Jetzt gilt die alte Fassung höchstens
 sechs Stunden, danach meldet die Statuszeile `FEHLER=5`. Lässt sich gar kein
-Kalender lesen, steht ebenfalls `FEHLER=5` statt `FEHLER=4` („kein Termin") —
+Kalender lesen, stand ebenfalls `FEHLER=5` statt `FEHLER=4` („kein Termin"; seit 1.6.10 `FEHLER=8`) —
 ein toter Kalender sah in Loxone bisher aus wie ein freier Tag.
 
 **Zeitzonen aus Outlook und Exchange.** `TZID:Eastern Standard Time` ist kein
@@ -149,7 +227,7 @@ unterscheidet die beiden Fälle. **Ab Werk eingeschaltet**, siehe den Kasten obe
 ### Ortsbuch: „Büro" ist keine Adresse
 
 Im Kalenderfeld `LOCATION` steht selten eine Adresse, sondern „Büro",
-„Besprechungsraum 3" oder „Praxis Dr. Weber". Der Kartendienst kann damit
+„Besprechungsraum 3" oder „Zahnarzt". Der Kartendienst kann damit
 nichts anfangen, und die Berechnung endete mit `FEHLER=6`.
 
 Die neue Tabelle im Reiter *Einstellungen* übersetzt das. Verglichen wird
@@ -232,7 +310,7 @@ bestehende Anlagen unmittelbar:**
   Archiv liegen `bin/` und `webfrontend/` nebeneinander, dort geht das auf; auf
   dem installierten LoxBerry liegen sie in **getrennten Bäumen**, und der
   Aufruf endete bei jedem Cron-Lauf mit
-  `Failed opening required '/opt/loxberry/bin/plugins/webfrontend/html/abfahrt_lib.php'`.
+  `Failed opening required '<LoxBerry-Wurzel>/bin/plugins/webfrontend/html/abfahrt_lib.php'`.
   Damit wurde seit 1.5.0 nie gerechnet: kein `stand.json`, nichts über MQTT,
   und `termin.php` lieferte an Loxone dauerhaft `OK=0;MINSTART=9999`. Bemerkt
   hat es niemand, weil der Cron nach `/dev/null` schreibt und `OK=0` in Loxone
@@ -485,7 +563,7 @@ Oberfläche erzeugt und steht im Reiter *Einbindung in Loxone*, zusammen mit der
 fertigen Adresse zum Übernehmen.
 
 **Bruch gegenüber 1.4.0:** Die Befehlserkennungen im Miniserver brauchen ein
-**führendes Semikolon** — aus `\iABFAHRT_IN=\i\v` wird `\i;ABFAHRT_IN=\i\v`.
+**führendes Semikolon** vor dem Feldnamen: `\i;ABFAHRT_IN=\i\v`.
 Grund: Loxone sucht wörtlich und nimmt den ersten Treffer; ohne Semikolon fände
 `FAHRT=` auch die Stelle in `ABFAHRT_IN=`, sobald sich die Feldreihenfolge
 einmal ändert. Die alten Muster funktionieren weiter, solange die Reihenfolge

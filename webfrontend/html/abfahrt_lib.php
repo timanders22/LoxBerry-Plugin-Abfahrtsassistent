@@ -11,6 +11,11 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+/* display_errors aus - auch hier, nicht nur in der Oberflaeche. Diese
+ * Bibliothek wird von den beiden Endpunkten im UNANGEMELDETEN Bereich
+ * geladen; eine Warnung, die dort vor der Antwortzeile hinausgeht, verhindert
+ * den Statuscode und zeigt dem Anfragenden Dateipfade. */
+ini_set('display_errors', '0');
 date_default_timezone_set('Europe/Berlin');
 
 
@@ -76,16 +81,26 @@ function abfahrt_paths() {
     } else {
         $plugindir = $self;
     }
+    /* Der Zwischenordner traegt den ermittelten Ordnernamen (seit 1.6.10).
+     * Bis 1.6.9 stand hier fest /tmp/abfahrtsassistent: eine zweite
+     * Installation (LoxBerry haengt dann _01 an) teilte sich stand.json,
+     * titel.json, dienst.lock und alle Zwischenspeicher mit der ersten - je
+     * Minute rechnete nur einer der beiden Dienste, und beide Endpunkte
+     * gaben denselben Termin aus. Fuer die uebliche Installation aendert
+     * sich der Pfad nicht. Der Ordnername wird auf sichere Zeichen
+     * beschraenkt, weil er aus der Umgebung kommen kann. */
+    $tmpname = preg_replace('/[^A-Za-z0-9_\-]/', '', (string) $plugindir);
+    if ($tmpname === '') { $tmpname = 'abfahrtsassistent'; }
     if ($lbhomedir) {
         return [
             'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/abfahrt.json',
-            'tmp' => '/tmp/abfahrtsassistent',
+            'tmp' => '/tmp/' . $tmpname,
         ];
     }
     // Fallback (Entwicklung/Test): relativ zum Skript
     return [
         'config' => dirname(__DIR__, 2) . '/config/abfahrt.json',
-        'tmp' => sys_get_temp_dir() . '/abfahrtsassistent',
+        'tmp' => sys_get_temp_dir() . '/' . $tmpname,
     ];
 }
 
@@ -107,10 +122,18 @@ function abfahrt_vorgaben()
     'tts' => [],
     'notify' => [],
     'quiet' => [],
+    /* MQTT steht ab Werk AN - seit 1.5.x, also keine neue Funktion. Die
+     * Vorgabe bleibt 1, entschieden am 16.09.2026: auf jeder Anlage, deren
+     * abfahrt.json aus der Zeit vor dem MQTT-Reiter stammt, fehlt der
+     * Schluessel, und dort greift die Vorgabe. Gemessen an der Anlage des
+     * Hausherrn: Konfiguration vom 11.08.2026 ohne mqtt_ein, die Projektdatei
+     * liest alle neun Werte ueber abfahrt_*-Eingaenge des Gateways. Eine 0
+     * haette dort beim Update jede Uebertragung abgeschaltet. */
     'mqtt_ein' => 1,
     'mqtt_topic' => 'abfahrt',
     /* --- neu in 1.6.0 -------------------------------------------------
-     * Bis auf zwei stehen alle ab Werk aus beziehungsweise leer.
+     * Bis auf zwei stehen alle ab Werk aus beziehungsweise leer (mqtt_ein
+     * oben ist aelter und zaehlt hier nicht mit).
      *
      * ZWEI STEHEN AB WERK AN, und das ist eine bewusste Entscheidung vom
      * 16.08.2026 gegen die Hausregel "neue Funktionen ab Werk aus":
@@ -154,11 +177,80 @@ function abfahrt_vorgaben()
 ];
 }
 
+/**
+ * Die Konfigurationsdatei roh lesen und sagen, in welchem Zustand sie ist.
+ *
+ * Rueckgabe: array(Feld|null, Zustand) mit Zustand
+ *   'fehlt'   - keine Datei
+ *   'leer'    - Datei ohne Inhalt oder nur "{}"
+ *   'kaputt'  - Inhalt, aber kein gueltiges JSON-Objekt
+ *   'ok'      - gueltiges Objekt
+ *
+ * ANLASS (gemessen 06.09.2026 an 1.6.9): hier stand json_decode(...) ?: [].
+ * Eine halb geschriebene abfahrt.json wurde damit still zu einer leeren
+ * Konfiguration, die Oberflaeche sah kein Merkwort, wuerfelte ein neues und
+ * schrieb die Werkseinstellung ueber Konfiguration UND Zweitschrift -
+ * Kartendienst-Schluessel, Kalender und alle Loxone-Adressen weg, ohne eine
+ * Zeile im Protokoll. Ungueltiges JSON ist ein Fehler, kein leerer Zustand.
+ */
+function abfahrt_config_roh($datei = null) {
+    if ($datei === null) {
+        $p = abfahrt_paths();
+        $datei = $p['config'];
+    }
+    if (!is_file($datei)) { return array(null, 'fehlt'); }
+    $roh = @file_get_contents($datei);
+    if ($roh === false) { return array(null, 'kaputt'); }
+    $roh = trim($roh);
+    if ($roh === '' || $roh === '{}' || $roh === '[]') { return array(array(), 'leer'); }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || ($d !== array() && array_keys($d) === range(0, count($d) - 1))) {
+        return array(null, 'kaputt');
+    }
+    return array($d, 'ok');
+}
+
+/**
+ * Welche Werte hat abfahrt_config() beim letzten Lesen abgewiesen, und in
+ * welchem Zustand war die Datei? Wird von der Selbstheilung und vom Reiter
+ * Test gelesen, damit ein abgewiesener Wert nicht nur still auf die Vorgabe
+ * faellt.
+ */
+function abfahrt_config_lage($neu = null) {
+    static $lage = array('zustand' => 'fehlt', 'abgewiesen' => array(), 'fehlend' => array());
+    if ($neu !== null) { $lage = $neu; }
+    return $lage;
+}
+
 function abfahrt_config() {
-    $p = abfahrt_paths();
-    $abfcfg = is_file($p['config']) ? (json_decode((string) file_get_contents($p['config']), true) ?: []) : [];
-    // Defaults
-    $abfcfg += abfahrt_vorgaben();
+    list($abfcfg, $zustand) = abfahrt_config_roh();
+    if (!is_array($abfcfg)) { $abfcfg = array(); }
+    $vorgaben = abfahrt_vorgaben();
+    /* Jeder vorhandene Wert wird gegen dieselben Grenzen geprueft wie beim
+     * Zurueckspielen einer Sicherung. Bis 1.6.9 sass die Pruefung nur dort:
+     * eine von Hand bearbeitete abfahrt.json mit arrival_min=-999 oder
+     * api_key als Feld lief ungeprueft in die Berechnung (unter PHP 8 ein
+     * TypeError im Minutentakt). Ein abgewiesener Wert faellt auf die Vorgabe
+     * und wird GEMELDET - abfahrt_config_lage(), Protokoll ueber
+     * abfahrt_config_heilen(). Unbekannte Schluessel bleiben unberuehrt
+     * stehen; sie koennen aus einer neueren Fassung stammen. */
+    $abgewiesen = array();
+    foreach ($vorgaben as $k => $v) {
+        if (!array_key_exists($k, $abfcfg)) { continue; }
+        $grund = '';
+        $gut = abfahrt_wert_pruefen($k, $abfcfg[$k], $grund);
+        if ($gut === null) {
+            $abgewiesen[$k] = $grund;
+            unset($abfcfg[$k]);
+        } else {
+            $abfcfg[$k] = $gut;
+        }
+    }
+    $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($abfcfg)));
+    abfahrt_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen,
+                              'fehlend' => $fehlend));
+    // Vorgaben fuer das, was fehlt oder abgewiesen wurde
+    $abfcfg += $vorgaben;
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
     $abfcfg['mqtt_topic'] = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
@@ -242,21 +334,46 @@ function abfahrt_token_erzeugen() {
  */
 function abfahrt_token_ok(array $abfcfg) {
     $soll = isset($abfcfg['aktionstoken']) ? (string) $abfcfg['aktionstoken'] : '';
-    $ist  = isset($_GET['token']) ? (string) $_GET['token'] : '';
+    /* is_string() vor der Umwandlung: ?token[]=x gab sonst unter PHP 7.4 und
+     * 8.4 "Array to string conversion" aus (gemessen 06.09.2026). Am Geraet
+     * folgenlos, weil display_errors aus ist - auf einer Anlage mit
+     * eingeschalteter Anzeige ginge die Warnung vor der 403 hinaus. */
+    $ist  = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
     if ($soll === '' || $ist === '') { return false; }
     return hash_equals($soll, $ist);
 }
 
-/** Antwort bei fehlendem oder falschem Merkwort. Beendet das Skript. */
+/**
+ * Antwort bei fehlendem oder falschem Merkwort. Beendet das Skript.
+ *
+ * Die Antwortzeile traegt seit 1.6.10 ERR= nach Hausstandard (Regeln/03,
+ * Abschnitt 4) UND weiterhin GRUND= mit dem bisherigen Wert. GRUND= bleibt
+ * stehen, weil an ihm eine Befehlserkennung in einer fremden Anlage haengen
+ * kann (Hausregel: bestehende Namen behalten ihre Bedeutung).
+ *
+ * Jede Abweisung wird protokolliert - mit Anfragendem und Grund, NIE mit
+ * dem uebergebenen Merkwort. Bis 1.6.9 hinterliess eine Abweisung keine
+ * Spur; "der Miniserver ruft nicht an" war von "er ruft an und wird
+ * abgewiesen" nicht zu unterscheiden. Geschrieben wird nur, wenn das
+ * Protokollverzeichnis schon besteht (der unangemeldete Bereich legt nichts
+ * an), und dieselbe Abweisung vom selben Absender hoechstens einmal je
+ * Viertelstunde, damit ein falsch eingetragener Ausgang das Protokoll nicht
+ * fuellt.
+ */
 function abfahrt_token_abweisen($praefix, array $abfcfg) {
+    $kein = empty($abfcfg['aktionstoken']);
+    $wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : 'unbekannt';
+    abfahrt_log_gedrosselt('abweisung_' . $praefix . '_' . $wer . ($kein ? '_kein' : ''),
+        'Abgewiesen: ' . $praefix . ' von ' . $wer . ' - '
+        . ($kein ? 'kein Merkwort eingerichtet' : 'Merkwort fehlt oder falsch'), 900);
     header('Content-Type: text/plain; charset=utf-8');
     http_response_code(403);
-    if (empty($abfcfg['aktionstoken'])) {
-        echo $praefix . ";OK=0;GRUND=KEIN_TOKEN_GESETZT\n"
+    if ($kein) {
+        echo $praefix . ";OK=0;ERR=KEIN_TOKEN_EINGERICHTET;GRUND=KEIN_TOKEN_GESETZT\n"
            . "Einmal die Plugin-Oberflaeche oeffnen - dort wird eines erzeugt und\n"
            . "im Reiter \"Einbindung in Loxone\" samt fertiger Adresse angezeigt.\n";
     } else {
-        echo $praefix . ";OK=0;GRUND=TOKEN\n";
+        echo $praefix . ";OK=0;ERR=TOKEN;GRUND=TOKEN\n";
     }
     exit;
 }
@@ -384,6 +501,11 @@ function abfahrt_http_grund($errno, $fehler, $status) {
 function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
     $grund = '';
     $status = 0;
+    if (!preg_match('#^https?://#i', (string) $url)) {
+        // Beide Abrufwege: file://, php:// und Verwandte werden nie geoeffnet.
+        $grund = 'Adresse ohne http:// oder https:// - nicht abgerufen';
+        return false;
+    }
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -394,6 +516,12 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
             CURLOPT_CONNECTTIMEOUT => min(8, $timeout),
             CURLOPT_HTTPHEADER => abfahrt_http_kopf(),
         ]);
+        /* Nur http und https - auch nach einer Weiterleitung. Ohne diese
+         * Grenze las curl eine von Hand eingetragene file:///-Adresse. */
+        if (defined('CURLOPT_PROTOCOLS') && defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+            curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+            curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+        }
         $r = curl_exec($ch);
         $errno = curl_errno($ch);
         $fehler = curl_error($ch);
@@ -505,18 +633,40 @@ function abfahrt_lokal_url($pfad) {
     return 'http://127.0.0.1' . ($port === 80 ? '' : ':' . $port) . $pfad;
 }
 
+/**
+ * Nur-Lese-Betrieb fuer den unangemeldeten Endpunkt.
+ *
+ * termin.php schaltet ihn ein. Dann fragt abfahrt_daytype() weder das
+ * Ferien-Plugin ueber HTTP, noch bindet es dessen Bibliothek ein, noch
+ * schreibt es seinen Zwischenspeicher - es liest nur, was der Dienst
+ * hinterlegt hat. Bis 1.6.9 legte ein anonymer GET ohne jeden Parameter
+ * /tmp/abfahrt_daytype.json an (gemessen 06.09.2026: 0 -> 1 Datei), gegen die
+ * Zusage im Kopf von termin.php.
+ */
+function abfahrt_nur_lesen($setzen = null) {
+    static $an = false;
+    if ($setzen !== null) { $an = (bool) $setzen; }
+    return $an;
+}
+
 function abfahrt_daytype() {
     static $cacheMem = null;
     if ($cacheMem !== null) {
         return $cacheMem;
     }
     $leer = ['feiertag' => 0, 'ferien' => 0, 'urlaub' => 0, 'quelle' => 'keine', 'name' => ''];
-    $tmp = sys_get_temp_dir() . '/abfahrt_daytype.json';
+    /* Im eigenen Zwischenordner, nicht im gemeinsamen /tmp - der Name traegt
+     * sonst keinen Bezug zur Installation (zwei Installationen teilten ihn). */
+    $tmp = abfahrt_tmpdir(false) . '/daytype.json';
     if (is_file($tmp) && time() - filemtime($tmp) < 900) {
         $c = json_decode((string) @file_get_contents($tmp), true);
         if (is_array($c) && ($c['datum'] ?? '') === date('Y-m-d')) {
             return $cacheMem = ($c + $leer);
         }
+    }
+    if (abfahrt_nur_lesen()) {
+        // Nichts Frisches da: ohne Sondertage rechnen, nichts nachfragen.
+        return $cacheMem = $leer;
     }
     $res = $leer;
     /* 1) JSON-Schnittstelle des Ferien-Plugins (laeuft dort mit korrekter Umgebung)
@@ -576,7 +726,9 @@ function abfahrt_daytype() {
         }
     }
     $res['datum'] = date('Y-m-d');
-    @file_put_contents($tmp, json_encode($res));
+    if (is_dir(dirname($tmp))) {
+        abfahrt_cache_schreiben($tmp, json_encode($res));
+    }
     return $cacheMem = $res;
 }
 
@@ -671,7 +823,7 @@ function abfahrt_audio_allowed(array $abfcfg, &$why = '') {
  * Ortsangabe aus dem Kalender in eine Adresse uebersetzen (Ortsbuch).
  *
  * WOZU: Im Feld LOCATION steht fast nie eine Adresse, sondern "Buero",
- * "Besprechungsraum 3" oder "Praxis Dr. Weber". Der Kartendienst kann damit
+ * "Besprechungsraum 3" oder "Zahnarzt". Der Kartendienst kann damit
  * nichts anfangen, die Berechnung endete mit FEHLER=6, und der Anwender sah
  * nur, dass nichts geht.
  *
@@ -754,14 +906,36 @@ function abfahrt_logfile($anlegen = true) {
     return $dir . '/abfahrt.log';
 }
 
-function abfahrt_log($msg) {
-    $f = abfahrt_logfile();
+function abfahrt_log($msg, $anlegen = true) {
+    $f = abfahrt_logfile($anlegen);
+    if (!$anlegen && !is_dir(dirname($f))) { return; }
     clearstatcache(true, $f);
-    if (is_file($f) && filesize($f) > 512000) { // Rotation: letzte 200 Zeilen behalten
+    /* Rotation unter einer Sperre und unteilbar. Bis 1.6.9 wurde die Datei
+     * ohne Sperre gekuerzt: schrieben Dienst und Endpunkt gleichzeitig,
+     * gingen Zeilen verloren oder die gekuerzte Fassung ueberschrieb eine
+     * eben angehaengte Zeile. */
+    $fh = @fopen($f . '.lock', 'c');
+    if ($fh) { @flock($fh, LOCK_EX); }
+    if (is_file($f) && filesize($f) > 512000) { // letzte 200 Zeilen behalten
         $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: [], -200);
-        @file_put_contents($f, implode("\n", $tail) . "\n");
+        abfahrt_cache_schreiben($f, implode("\n", $tail) . "\n");
     }
-    @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
+    @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND | LOCK_EX);
+    if ($fh) { @flock($fh, LOCK_UN); @fclose($fh); }
+}
+
+/**
+ * Eine Protokollzeile hoechstens einmal je $sekunden je Schluessel - und
+ * ohne etwas anzulegen. Fuer die Wege im unangemeldeten Bereich.
+ */
+function abfahrt_log_gedrosselt($schluessel, $msg, $sekunden) {
+    $tmp = abfahrt_tmpdir(false);
+    if (!is_dir($tmp)) { return; }
+    $merker = $tmp . '/drossel_' . md5((string) $schluessel);
+    clearstatcache(true, $merker);
+    if (is_file($merker) && time() - (int) @filemtime($merker) < (int) $sekunden) { return; }
+    @touch($merker);
+    abfahrt_log($msg, false);
 }
 
 /* ---------------- iCal ---------------- */
@@ -968,9 +1142,34 @@ function abfahrt_unesc($s)
 /**
  * DTSTART/EXDATE/RECURRENCE-ID-Rohwert -> Unix-ts (null bei Ganztages-/Parsefehler).
  */
+/**
+ * Ist ein iCal-Datum (JJJJMMTT, optional THHMMSS) ein Datum, das es gibt?
+ *
+ * ANLASS (gemessen 06.09.2026, PHP 7.4 und 8.4): DateTime::createFromFormat()
+ * rechnet Ueberlaeufe still um. 20261301T000000 wurde zum 01.01.2027,
+ * 20260230T100000 zum 02.03.2026. Ein Termin, den es nicht gibt, lief damit
+ * mit OK=1 in Countdown, Ansage und Push; ein vertauschtes EXDATE traf nicht.
+ * Eingaben werden abgewiesen, nicht zurechtgebogen.
+ */
+function abfahrt_ical_datum_gueltig($raw) {
+    if (!preg_match('/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?$/', (string) $raw, $m)) {
+        return false;
+    }
+    if (!checkdate((int) $m[2], (int) $m[3], (int) $m[1])) { return false; }
+    if (isset($m[4]) && $m[4] !== '') {
+        if ((int) $m[4] > 23 || (int) $m[5] > 59 || (int) $m[6] > 60) { return false; }
+    }
+    return true;
+}
+
 function abfahrt_dt2ts($raw, $tzid, $ganztagsZeit = null) {
-    $raw = trim($raw);
-    if (strlen($raw) == 8 && ctype_digit($raw)) {
+    $raw = trim((string) $raw);
+    if (!abfahrt_ical_datum_gueltig($raw)) {
+        return null;
+    }
+    // preg_match statt ctype_digit: ctype ist eine Erweiterung, die nicht
+    // garantiert geladen ist (Regeln/02).
+    if (strlen($raw) == 8 && preg_match('/^\d{8}$/', $raw)) {
         /* Reines Datum, also ein Ganztagestermin.
          *
          * Bis 1.5.8 wurde er ausnahmslos verworfen - richtig, solange niemand
@@ -1049,7 +1248,7 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
      * daraus einen Fehlercode fuer den Miniserver bilden. Die Zeilen in
      * $diag reichen dafuer nicht: sie gehen nur nach ?debug=1 und in die
      * Oberflaeche, nie in die Statuszeile. */
-    $kallage = array('eingerichtet' => 0, 'gelesen' => 0, 'veraltet' => 0, 'tot' => 0);
+    $kallage = array('eingerichtet' => 0, 'gelesen' => 0, 'veraltet' => 0, 'tot' => 0, 'mit_ort' => 0);
     $now = time();
     $maxTs = $now + max(1, (int) $abfcfg['lookahead_hours']) * 3600;
     $WD = ['MO' => 1, 'TU' => 2, 'WE' => 3, 'TH' => 4, 'FR' => 5, 'SA' => 6, 'SU' => 7];
@@ -1411,9 +1610,16 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         break;   // die ganze Periode liegt hinter dem Fenster
                     }
                     $jahr = (int) $per->format('Y');
-                    $mons = ($freq == 'MONTHLY')
-                          ? [(int) $per->format('n')]
-                          : ($bymonat ?: [(int) $start->format('n')]);
+                    /* Bei MONTHLY ist BYMONTH ein FILTER (RFC 5545, 3.3.10):
+                     * "jeden ersten Montag, aber nur im Maerz und September".
+                     * Bis 1.6.9 fiel er weg, die Serie lief in jedem Monat. */
+                    if ($freq == 'MONTHLY') {
+                        $mons = ($bymonat && !in_array((int) $per->format('n'), $bymonat, true))
+                              ? []
+                              : [(int) $per->format('n')];
+                    } else {
+                        $mons = $bymonat ?: [(int) $start->format('n')];
+                    }
 
                     $kandidaten = [];
                     foreach ($mons as $mon) {
@@ -1488,6 +1694,7 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                 $best = [$ts, $loc, $sum, $name];
             }
         }
+        $kallage['mit_ort'] += $count2;
         $diag[] = "Kalender '$name': $count2 Termin(e) mit Ort im Zeitfenster";
     }
     return $best;
@@ -1666,6 +1873,12 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
                  . ($grund !== '' ? ' - ' . $grund : '')
                  . (isset($r['status']) ? ' (' . $r['status'] . ')' : '');
         }
+    } elseif ($provider !== 'tomtom' && $provider !== 'here') {
+        /* VOR dem Geokodieren. Bis 1.6.9 stand dieser Zweig hinter der
+         * Geokodierung, die bei einem unbekannten Dienst schon gescheitert
+         * war - er wurde nie erreicht, und gemeldet wurde "Adresse konnte
+         * nicht umgesetzt werden", waehrend die Adresse stimmte. */
+        $err = 'Unbekannter Kartendienst: ' . $provider;
     } else {
         // Kein vorzeitiges return: auch ein misslungenes Geocoding soll unten
         // noch in die Gnadenfrist laufen duerfen, sonst flattert es genauso.
@@ -1694,8 +1907,6 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
             } else {
                 $err = 'HERE-Routing fehlgeschlagen' . ($grund !== '' ? ' - ' . $grund : '');
             }
-        } else {
-            $err = 'Unbekannter Kartendienst: ' . $provider;
         }
     }
     if ($minutes !== false) {
@@ -1862,20 +2073,45 @@ function abfahrt_felder() {
      * hinaus (--retained-only auf abfahrt/# blieb leer), und zwischen zwei
      * Vollversaenden - ab Werk alle 15 Minuten - standen die Eingaenge
      * eines neu gestarteten Miniservers leer. */
+    /* Seit 1.6.10 drei weitere Elemente:
+     *   [5] geht ueber MQTT hinaus (1/0)
+     *   [6] Einheit fuer die Importvorlage ('' = keine)
+     *   [7] Fehlwert - DefVal der Importvorlage, damit ein Eingang vor dem
+     *       ersten Wert nicht "jetzt losfahren" (ABFAHRT_IN=0) behauptet
+     *
+     * ALTER GEHT NICHT MEHR UEBER MQTT. Gemessen 06.09.2026: der Dienst
+     * rechnet ALTER unmittelbar nach der Berechnung, der Wert war ueber MQTT
+     * ausnahmslos 0 (mqtt_letzte.json am Geraet: "ALTER":0). Ein Eingang, der
+     * immer 0 zeigt, ist keine Ausfallerkennung, sondern das Gegenteil. Ueber
+     * MQTT gibt es kein Alter, nur einen Zeitstempel (Regeln/07): dafuer geht
+     * jetzt das Lebenszeichen abfahrt/status/ts, .../zaehler und .../ok bei
+     * JEDEM Cron-Lauf hinaus, nie retained. Ueber HTTP bleibt ALTER, dort
+     * stimmt es (termin.php liest zum Abrufzeitpunkt). */
     return [
-        'OK'         => [0, 0, 1, 'FELD.OK', 1],
-        'MINSTART'   => [1, 0, 99999, 'FELD.MINSTART', 0],
-        'FAHRT'      => [1, 0, 1440, 'FELD.FAHRT', 0],
-        'ABFAHRT_IN' => [1, -9999, 9999, 'FELD.ABFAHRT_IN', 0],
-        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER', 1],
-        'ALTER'      => [1, 0, 86400, 'FELD.ALTER', 0],
-        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO', 1],
-        'PUSH'       => [0, 0, 1, 'FELD.PUSH', 1],
+        'OK'         => [0, 0, 1, 'FELD.OK', 1, 1, '', 0],
+        'MINSTART'   => [1, 0, 99999, 'FELD.MINSTART', 0, 1, 'min', 9999],
+        'FAHRT'      => [1, 0, 1440, 'FELD.FAHRT', 0, 1, 'min', 0],
+        'ABFAHRT_IN' => [1, -9999, 9999, 'FELD.ABFAHRT_IN', 0, 1, 'min', 9999],
+        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER', 1, 1, '', 0],
+        'ALTER'      => [1, 0, 86400, 'FELD.ALTER', 0, 0, 's', 86400],
+        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO', 1, 1, '', 0],
+        'PUSH'       => [0, 0, 1, 'FELD.PUSH', 1, 1, '', 0],
         // Neu in 1.6.0. Steht am ENDE, damit die Reihenfolge der bisherigen
         // Felder - und damit jede eingetragene Befehlserkennung - gleich
         // bleibt. 1440 heisst "unbekannt"; gueltige Werte sind 0..1439.
-        'ANKUNFT'    => [1, 0, 1440, 'FELD.ANKUNFT', 0],
+        'ANKUNFT'    => [1, 0, 1440, 'FELD.ANKUNFT', 0, 1, '', 1440],
     ];
+}
+
+/** Geht dieses Feld ueber MQTT hinaus? Eine Quelle: abfahrt_felder(). */
+function abfahrt_feld_mqtt($name) {
+    $f = abfahrt_felder();
+    return !empty($f[$name][5]);
+}
+
+/** Der Suchtext eines Feldes - fuer Vorlage UND Anleitung, eine Stelle. */
+function abfahrt_suchtext($name) {
+    return '\\i;' . $name . '=\\i\\v';
 }
 
 /** Wird dieses Feld retained gesendet? Eine Quelle: abfahrt_felder(). */
@@ -1946,7 +2182,11 @@ function abfahrt_stand_write(array $st) {
     $js = json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($js === false) { return false; }
     abfahrt_tmpdir();   // wer schreibt, legt an - und nur der
-    return @file_put_contents(abfahrt_standfile(), $js, LOCK_EX) !== false;
+    /* Unteilbar. LOCK_EX half nur gegen andere Schreiber; termin.php liest
+     * ohne Sperre, und file_put_contents kuerzt die Datei vor dem Schreiben.
+     * Wer dazwischen las, bekam die Vorgaben - OK=0 bei FEHLER=0, eine
+     * Kombination, die die Fehlertabelle nicht kennt. */
+    return abfahrt_cache_schreiben(abfahrt_standfile(), $js);
 }
 
 /**
@@ -1959,7 +2199,6 @@ function abfahrt_stand_write(array $st) {
  * die Reihenfolge einmal wechselt, stuende der falsche Wert im Eingang.
  */
 function abfahrt_zeile(array $st, array $abfcfg) {
-    $why = '';
     $werte = abfahrt_werte($st, $abfcfg);
     $teile = ['TERMIN'];
     foreach ($werte as $k => $v) { $teile[] = $k . '=' . $v; }
@@ -2046,7 +2285,12 @@ function abfahrt_berechnen(?array $abfcfg = null) {
          * wie "kein Termin". Vorher stand in beiden Faellen FEHLER=4, und in
          * Loxone sah ein toter Kalender aus wie ein freier Tag. */
         if (!empty($kallage['eingerichtet']) && (int) $kallage['gelesen'] === 0) {
-            return [$setz(5, 'Kein Kalender liess sich lesen (' . (int) $kallage['tot']
+            /* FEHLER=8 seit 1.6.10. Bis dahin stand hier die 5 - dieselbe
+             * Zahl wie "Kalender nicht erreichbar, es gilt der letzte
+             * gelesene Stand" (OK=1). Ein Statusbaustein nach der Tabelle
+             * zeigte bei einem abgelaufenen Kalendertoken also die
+             * beruhigende Meldung, waehrend nichts mehr gelesen wurde. */
+            return [$setz(8, 'Kein Kalender liess sich lesen (' . (int) $kallage['tot']
                             . ' von ' . (int) $kallage['eingerichtet'] . ').'), $diag];
         }
         return [$setz(4, 'Kein Termin mit Ort in den naechsten ' . (int) $abfcfg['lookahead_hours'] . ' Stunden.'), $diag];
@@ -2144,7 +2388,7 @@ function abfahrt_berechnen(?array $abfcfg = null) {
         'beginn' => $st['beginn'], 'minstart' => $minstart,
         'fahrt' => $fahrt, 'abfahrt_in' => $st['abfahrt_in'],
     ], JSON_UNESCAPED_UNICODE);
-    if ($js !== false) { @file_put_contents(abfahrt_tmpdir() . '/titel.json', $js); }
+    if ($js !== false) { abfahrt_cache_schreiben(abfahrt_tmpdir() . '/titel.json', $js); }
 
     return [$st, $diag];
 }
@@ -2220,32 +2464,88 @@ function abf_mqtt_wert_saeubern($v)
     return trim(preg_replace('/ {2,}/', ' ', $wert));
 }
 
-function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null) {
+/* Abstand zwischen zwei Datagrammen an den UDP-Eingang des Gateways, in
+ * Mikrosekunden. Gemessen an dieser Anlage (Regeln/07, 13.09.2026): ein Stoss
+ * von 90 Datagrammen ohne Pause kam zu 0 bis 7 % an, mit 50 ms zu 44 %; der
+ * Eingang verwirft stumm, und sendto() meldet trotzdem Erfolg. Bei neun
+ * Themen kostet die Pause knapp eine halbe Sekunde je Vollversand. */
+define('ABFAHRT_MQTT_PAUSE_US', 50000);
+
+/**
+ * Werte an das MQTT-Gateway schieben.
+ *
+ * Rueckgabe: Zahl der VERSUCHTEN Zeilen, oder false, wenn gar nicht gesendet
+ * werden konnte (MQTT aus, kein Gateway, kein Sockel). Eine Zahl heisst
+ * "abgeschickt", NICHT "angekommen" - UDP kennt keine Empfangsbestaetigung,
+ * und der Eingang dieser Anlage verwirft unter Last (gemessen 16.09.2026:
+ * 1 220 023 von 8 001 444 Datagrammen, 15 %).
+ *
+ * $extra nimmt Themen ausserhalb der Feldtabelle auf (das Lebenszeichen):
+ * array(thema_ohne_vorsatz => wert), immer "publish".
+ */
+function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra = array()) {
     if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
     if (empty($abfcfg['mqtt_ein'])) { return false; }
     $m = abfahrt_mqtt_zustand();
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
-    if (!$sock) { return false; }
+    if (!$sock) {
+        abfahrt_log('MQTT: UDP-Eingang ' . (int) $m['udpport'] . ' liess sich nicht oeffnen (' . (string) $es . ').');
+        return false;
+    }
     /* Der UDP-Eingang des Gateways kennt vier Befehle: publish, retain,
      * reconnect, save_relayed_states - gemessen 06.09.2026 im Quelltext des
      * Geraets (sbin/mqttgateway.pl, Zeile 293). Ein Zustand geht mit
      * "retain", ein Messwert mit "publish"; was das ist, sagt die
-     * Feldtabelle, nicht diese Stelle. */
-    $raus = 0;
+     * Feldtabelle, nicht diese Stelle. Ein leerer Wert geht nie retained
+     * hinaus - eine leere Nutzlast loescht ein zurueckbehaltenes Thema. */
+    $zeilen = array();
     foreach ($werte as $name => $wert) {
-        $befehl = abfahrt_feld_retain($name) ? 'retain' : 'publish';
-        if (@fwrite($sock, $befehl . ' ' . $abfcfg['mqtt_topic'] . '/' . $name . ' '
-                . abf_mqtt_wert_saeubern($wert) . "\n") !== false) {
+        if (!abfahrt_feld_mqtt($name)) { continue; }
+        $w = abf_mqtt_wert_saeubern($wert);
+        $befehl = (abfahrt_feld_retain($name) && $w !== '') ? 'retain' : 'publish';
+        $zeilen[] = $befehl . ' ' . $abfcfg['mqtt_topic'] . '/' . $name . ' ' . $w;
+    }
+    foreach ($extra as $thema => $wert) {
+        $zeilen[] = 'publish ' . $abfcfg['mqtt_topic'] . '/' . $thema . ' ' . abf_mqtt_wert_saeubern($wert);
+    }
+    $raus = 0;
+    foreach ($zeilen as $i => $z) {
+        if ($i > 0) { usleep(ABFAHRT_MQTT_PAUSE_US); }
+        if (@fwrite($sock, $z . "\n") !== false) {
             $raus++;
         }
     }
     @fclose($sock);
-    if ($werte && $raus === 0) {
+    if ($zeilen && $raus === 0) {
         abfahrt_log('MQTT: keine Zeile liess sich absenden (UDP-Eingang ' . (int) $m['udpport'] . ').');
         return false;
     }
-    return true;
+    return $raus;
+}
+
+/**
+ * Das Lebenszeichen: bei JEDEM Cron-Lauf, nie retained, am
+ * Doppelt-senden-Filter vorbei (Hausstandard, Regeln/07).
+ *
+ *   <thema>/status/ts       Unix-Sekunden dieses Laufs. In Loxone:
+ *                           Alter = (Loxone-Zeit + 1230768000) - ts
+ *   <thema>/status/zaehler  laeuft 0..999 um - bleibt er stehen, steht der Dienst
+ *   <thema>/status/ok       1 = die letzte Berechnung ist hoechstens 11 Minuten alt
+ *
+ * Einen Dauerlaeufer gibt es nicht, also kein viertes Thema.
+ */
+function abfahrt_lebenszeichen(array $abfcfg, array $st) {
+    $datei = abfahrt_tmpdir() . '/zaehler.txt';
+    $n = is_file($datei) ? (int) trim((string) @file_get_contents($datei)) : -1;
+    $n = ($n + 1) % 1000;
+    @file_put_contents($datei, (string) $n);
+    $frisch = ((int) $st['zeit'] > 0 && time() - (int) $st['zeit'] <= 660) ? 1 : 0;
+    return abfahrt_mqtt_senden(array(), $abfcfg, array(
+        'status/ts'      => time(),
+        'status/zaehler' => $n,
+        'status/ok'      => $frisch,
+    ));
 }
 
 /* ==================================================================
@@ -2263,12 +2563,18 @@ function abfahrt_x($s) {
 function abfahrt_xml_virtual_in_http($kopf, $cmds) {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
+    /* Aufbau nach den massgeblichen Ausfuhren von Loxone Config
+     * (VI_Rasenmaeher und VI_Marstek, 12.08.2026): HintText als erstes
+     * Wurzelattribut, <Info> als erstes Kind, je Befehl Unit und HintText
+     * hinter MaxVal. Bis 1.6.9 fehlten alle vier; in der App stand eine nackte
+     * Zahl statt "12 min". */
+    $o .= '<VirtualInHttp HintText="" ';
     $o .= 'Title="' . abfahrt_x($kopf['title']) . '" ';
     $o .= 'Comment="' . abfahrt_x($kopf['comment'] ?? '') . '" ';
     $o .= 'Address="' . abfahrt_x($kopf['address'] ?? '') . '" ';
     $o .= 'PollingTime="' . abfahrt_x($kopf['polling'] ?? '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . abfahrt_x($c['title']) . '" ';
@@ -2280,9 +2586,11 @@ function abfahrt_xml_virtual_in_http($kopf, $cmds) {
         $o .= 'DestValLow="0" ';
         $o .= 'SourceValHigh="1" ';
         $o .= 'DestValHigh="1" ';
-        $o .= 'DefVal="0" ';
+        $o .= 'DefVal="' . (int) ($c['defval'] ?? 0) . '" ';
         $o .= 'MinVal="' . (int) $c['min'] . '" ';
-        $o .= 'MaxVal="' . (int) $c['max'] . '"';
+        $o .= 'MaxVal="' . (int) $c['max'] . '" ';
+        $o .= 'Unit="' . abfahrt_x($c['unit'] ?? '<v>') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -2295,12 +2603,19 @@ function abfahrt_vorlage($host = '') {
     $plugindir = getenv('LBPPLUGINDIR') ?: 'abfahrtsassistent';
     $cmds = [];
     foreach (abfahrt_felder() as $name => $d) {
-        list($analog, $min, $max, $schluessel) = $d;
+        list($analog, $min, $max) = $d;
+        /* Der Comment wird beim Import zum Kachelnamen - daher der kurze
+         * Name (hoechstens 40 Zeichen), nicht die Erklaerung aus FELD.*.
+         * Bis 1.6.9 trug ANKUNFT hier einen Satz mit 100 Zeichen. */
+        $einheit = (string) $d[6];
+        $nachkomma = ($name === 'FAHRT') ? 1 : 0;
         $cmds[] = [
             'title'   => 'ABFAHRT_' . $name,
-            'comment' => trim(strip_tags(html_entity_decode(abfahrt_t($schluessel), ENT_QUOTES, 'UTF-8'))),
-            'check'   => '\i;' . $name . '=\i\v',
+            'comment' => trim(strip_tags(html_entity_decode(abfahrt_t('FELDKURZ.' . $name), ENT_QUOTES, 'UTF-8'))),
+            'check'   => abfahrt_suchtext($name),
             'analog'  => $analog, 'min' => $min, 'max' => $max,
+            'defval'  => (int) $d[7],
+            'unit'    => '<v.' . $nachkomma . '>' . ($einheit !== '' ? ' ' . $einheit : ''),
         ];
     }
     return ['VI_abfahrtsassistent.xml', abfahrt_xml_virtual_in_http([
@@ -2319,9 +2634,7 @@ function abfahrt_vorlage($host = '') {
                       ? ':' . abfahrt_webport() : '')
                    . '/plugins/' . $plugindir . '/termin.php',
         'polling' => '60',
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Abfahrts-Assistent (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
-                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+        'comment' => abfahrt_t('LOX.VORLAGE_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
     ], $cmds)];
 }
 
@@ -2427,6 +2740,71 @@ function abfahrt_pruefungen(?array $abfcfg = null) {
             sprintf(abfahrt_t('TEST.A_MQTT_OK'), (int) $m['udpport'], abfahrt_e($abfcfg['mqtt_topic'])));
     }
 
+    /* Konfiguration heil und vollstaendig? (neu in 1.6.10)
+     * Liest nur, was abfahrt_config() eben festgestellt hat - kein
+     * Schreibzugriff im Seitenaufbau. */
+    abfahrt_config();
+    $lage = abfahrt_config_lage();
+    if ($lage['zustand'] === 'kaputt') {
+        $zeile(0, abfahrt_t('TEST.F_CFG'), abfahrt_t('TEST.A_CFG_KAPUTT'));
+    } elseif ($lage['zustand'] !== 'ok') {
+        $zeile(-1, abfahrt_t('TEST.F_CFG'), abfahrt_t('TEST.A_CFG_FEHLT'));
+    } elseif ($lage['abgewiesen']) {
+        $teile = array();
+        foreach ($lage['abgewiesen'] as $k => $g) { $teile[] = abfahrt_e($k . ': ' . $g); }
+        $zeile(0, abfahrt_t('TEST.F_CFG'), sprintf(abfahrt_t('TEST.A_CFG_ABGEWIESEN'), implode('; ', $teile)));
+    } elseif ($lage['fehlend']) {
+        $zeile(-1, abfahrt_t('TEST.F_CFG'), sprintf(abfahrt_t('TEST.A_CFG_FEHLEND'),
+            count($lage['fehlend']), abfahrt_e(implode(', ', $lage['fehlend']))));
+    } else {
+        $zeile(1, abfahrt_t('TEST.F_CFG'), sprintf(abfahrt_t('TEST.A_CFG_OK'), count(abfahrt_vorgaben())));
+    }
+
+    /* Steht der Cron-Eintrag da, und ist er eine Datei? MarstekVenus hatte
+     * an dieser Stelle monatelang ein Verzeichnis (Regeln/06). */
+    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
+    $ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+    if ($lb === '') {
+        $zeile(-1, abfahrt_t('TEST.F_CRON'), abfahrt_t('TEST.A_CRON_UNBEKANNT'));
+    } else {
+        $cron = $lb . '/system/cron/cron.01min/' . $ordner;
+        if (is_file($cron)) {
+            $zeile(1, abfahrt_t('TEST.F_CRON'), sprintf(abfahrt_t('TEST.A_CRON_OK'), abfahrt_e($cron)));
+        } elseif (file_exists($cron)) {
+            $zeile(0, abfahrt_t('TEST.F_CRON'), sprintf(abfahrt_t('TEST.A_CRON_KEINE_DATEI'), abfahrt_e($cron)));
+        } else {
+            $zeile(0, abfahrt_t('TEST.F_CRON'), sprintf(abfahrt_t('TEST.A_CRON_FEHLT'), abfahrt_e($cron)));
+        }
+    }
+
+    /* Geht das Lebenszeichen hinaus? Gemessen wird der eigene Zaehler, den
+     * nur der Dienst beim Senden fortschreibt - ob es am Broker ankommt,
+     * kann das Plugin nicht wissen (UDP, siehe abfahrt_mqtt_senden()). */
+    $zdatei = abfahrt_tmpdir(false) . '/zaehler.txt';
+    if (empty($abfcfg['mqtt_ein'])) {
+        $zeile(-1, abfahrt_t('TEST.F_LEBENSZEICHEN'), abfahrt_t('TEST.A_MQTT_AUS'));
+    } elseif (!is_file($zdatei)) {
+        $zeile(0, abfahrt_t('TEST.F_LEBENSZEICHEN'), abfahrt_t('TEST.A_LEBENSZEICHEN_NIE'));
+    } else {
+        $za = time() - (int) @filemtime($zdatei);
+        $zeile($za <= 150 ? 1 : 0, abfahrt_t('TEST.F_LEBENSZEICHEN'),
+            sprintf(abfahrt_t($za <= 150 ? 'TEST.A_LEBENSZEICHEN_OK' : 'TEST.A_LEBENSZEICHEN_ALT'),
+                    abfahrt_e($abfcfg['mqtt_topic']), $za));
+    }
+
+    /* Trifft jeder Suchtext genau EINE Stelle der Antwortzeile? (Regeln/03)
+     * Gemessen an der erzeugten Zeile, nicht am Quelltext: ohne das
+     * fuehrende Semikolon faende FAHRT= auch die Stelle in ABFAHRT_IN=. */
+    $abf_zeile = abfahrt_zeile(abfahrt_stand(), $abfcfg);
+    $abf_mehr = array();
+    foreach (array_keys(abfahrt_felder()) as $abf_f) {
+        $abf_nadel = ';' . $abf_f . '=';
+        if (substr_count($abf_zeile, $abf_nadel) !== 1) { $abf_mehr[] = $abf_f; }
+    }
+    $zeile($abf_mehr ? 0 : 1, abfahrt_t('TEST.F_SUCHTEXT'),
+        $abf_mehr ? sprintf(abfahrt_t('TEST.A_SUCHTEXT_FEHL'), abfahrt_e(implode(', ', $abf_mehr)))
+                  : sprintf(abfahrt_t('TEST.A_SUCHTEXT_OK'), count(abfahrt_felder())));
+
     /* Vorlage wohlgeformt - gehoert hierher, nicht erst in die Pruefung vor
        dem Ausliefern: eine kaputte Vorlage merkt der Anwender sonst erst in
        Loxone Config, und dort sucht er den Fehler bei sich. */
@@ -2484,10 +2862,12 @@ function abfahrt_kalender_diagnose(?array $abfcfg = null) {
         $einzeln = $abfcfg;
         $einzeln['calendars'] = [$cal];
         $d = [];
-        $best = abfahrt_next_event($einzeln, $d);
-        foreach ($d as $zeile) {
-            if (preg_match('/: (\d+) Termin/', $zeile, $m)) { $z['mit_ort'] = (int) $m[1]; }
-        }
+        $lage = null;
+        $best = abfahrt_next_event($einzeln, $d, $lage);
+        /* Die Zahl kommt als Wert, nicht aus der eigenen Prosa: bis 1.6.9
+         * wurde sie mit einem Suchmuster aus der deutschen Diagnosezeile
+         * gelesen - eine umformulierte Zeile haette still 0 ergeben. */
+        $z['mit_ort'] = is_array($lage) ? (int) $lage['mit_ort'] : 0;
         if ($best !== null) {
             $z['naechste'][] = ['zeit' => date('d.m.Y H:i', $best[0]),
                                 'titel' => $best[2], 'ort' => $best[1]];
@@ -2664,6 +3044,157 @@ function abfahrt_t($schluessel)
  * Der Schreibweg ist der, den die Linie ohnehin benutzt - hier wird kein
  * Verhalten geaendert, nur ein vorhandenes zusammengefasst.
  */
+/**
+ * Eine Datei mit Rechten 0600 unteilbar schreiben.
+ *
+ * Nebendatei im selben Verzeichnis, Rechte VOR dem Inhalt, Laengenvergleich,
+ * dann rename(). Bis 1.6.9 schrieb abfahrt_config_speichern() direkt mit
+ * file_put_contents(...) === false: eine Kurzschreibung (volle Karte) liefert
+ * aber die Zahl der geschriebenen Bytes, nicht false, und die halbe Datei
+ * wurde anschliessend auch noch ueber die Zweitschrift kopiert. Zwischen
+ * Schreiben und chmod lag der Schluessel des Kartendienstes mit den
+ * Umask-Rechten da.
+ */
+function abfahrt_datei_geheim_schreiben($datei, $inhalt) {
+    $inhalt = (string) $inhalt;
+    $verz = dirname($datei);
+    if (!is_dir($verz)) { @mkdir($verz, 0775, true); }
+    $neben = $datei . '.' . getmypid() . '.neu';
+    if (@file_put_contents($neben, '') === false) { return false; }
+    @chmod($neben, 0600);
+    $n = @file_put_contents($neben, $inhalt);
+    if ($n !== strlen($inhalt)) { @unlink($neben); return false; }
+    if (!@rename($neben, $datei)) { @unlink($neben); return false; }
+    clearstatcache(true, $datei);
+    return @file_get_contents($datei) === $inhalt;
+}
+
+/**
+ * Liegt ein Rechner im Heimnetz? Fuer tts.ip und die Vorlage der Ansage.
+ *
+ * Zugelassen: Loopback, die privaten IPv4-Bereiche, und Namen ohne Punkt
+ * oder mit den ueblichen Heimnetz-Endungen. Alles andere wird abgewiesen:
+ * die Ansage traegt den Titel des naechsten Termins in der Adresse.
+ */
+function abfahrt_heimnetz_host($h) {
+    $h = strtolower(trim((string) $h));
+    if ($h === '' || $h === 'localhost') { return $h === 'localhost'; }
+    if (preg_match('/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/', $h, $m)) {
+        foreach (array_slice($m, 1) as $o) { if ((int) $o > 255) { return false; } }
+        $a = (int) $m[1]; $b = (int) $m[2];
+        return $a === 10 || $a === 127 || ($a === 192 && $b === 168)
+            || ($a === 172 && $b >= 16 && $b <= 31) || ($a === 169 && $b === 254);
+    }
+    if (!preg_match('/^[a-z0-9]([a-z0-9\-]{0,62})(\.[a-z0-9]([a-z0-9\-]{0,62}))*$/', $h)) {
+        return false;
+    }
+    if (strpos($h, '.') === false) { return true; }
+    return (bool) preg_match('/\.(local|lan|home|home\.arpa|internal|fritz\.box|intern)$/', $h);
+}
+
+/**
+ * Die Konfiguration pruefen und, wo noetig, heilen - EINMAL, und gemeldet.
+ *
+ * Aufgerufen von der Oberflaeche und vom Dienst, NIE vom unangemeldeten
+ * Endpunkt (der schreibt nichts). Entscheidet nach INHALT, nicht nach Form
+ * (Hausstandard, Regeln/05): eine Konfiguration gilt als heil, wenn sie
+ * gueltiges JSON ist und ein Merkwort traegt.
+ *
+ *   1. Datei kaputt (kein JSON):   nach <datei>.kaputt-<zeit> verschieben.
+ *   2. Datei fehlt, leer oder ohne Merkwort, Zweitschrift traegt eines:
+ *      aus der Zweitschrift zurueckschreiben (fehlt nur das Merkwort, wird
+ *      NUR das Merkwort uebernommen - die uebrigen Werte sind juenger).
+ *   3. Datei heil, aber Schluessel aus neueren Fassungen fehlen:
+ *      vervollstaendigen (Hausstandard: vervollstaendigen, nicht ergaenzen).
+ *   4. Abgewiesene Werte: melden. Sie werden NICHT ueberschrieben - wer die
+ *      Datei von Hand bearbeitet hat, soll seinen Wert wiederfinden.
+ *
+ * Jeder Schritt schreibt eine Protokollzeile. Rueckgabe: Liste der Meldungen
+ * (leer, wenn nichts zu tun war).
+ */
+function abfahrt_config_heilen() {
+    $p = abfahrt_paths();
+    $datei = $p['config'];
+    $zweit = dirname($datei) . '.backup.json';
+    $meldungen = array();
+
+    list($roh, $zustand) = abfahrt_config_roh($datei);
+    list($zroh, $zzustand) = abfahrt_config_roh($zweit);
+    $zweit_gut = ($zzustand === 'ok' && isset($zroh['aktionstoken'])
+                  && is_string($zroh['aktionstoken']) && $zroh['aktionstoken'] !== '');
+
+    if ($zustand === 'kaputt') {
+        $ziel = $datei . '.kaputt-' . date('Ymd-His');
+        if (@rename($datei, $ziel)) {
+            @chmod($ziel, 0600);
+            $meldungen[] = sprintf(abfahrt_t('MELDUNG.CFG_KAPUTT'), basename($ziel));
+        } else {
+            // Nicht verschiebbar: nichts weiter anfassen, sonst ginge der
+            // Inhalt verloren. Die Oberflaeche erzeugt dann auch kein Merkwort.
+            $meldungen[] = abfahrt_t('MELDUNG.CFG_KAPUTT_FEST');
+            foreach ($meldungen as $m) { abfahrt_log('Konfiguration: ' . strip_tags($m)); }
+            return $meldungen;
+        }
+        $roh = null;
+        $zustand = 'fehlt';
+    }
+
+    $hat_token = is_array($roh) && isset($roh['aktionstoken'])
+                 && is_string($roh['aktionstoken']) && $roh['aktionstoken'] !== '';
+
+    if (!$hat_token && $zweit_gut) {
+        if ($zustand === 'ok' && $roh) {
+            // Nur das Merkwort fehlt - die uebrigen Werte der Datei sind juenger.
+            $roh['aktionstoken'] = $zroh['aktionstoken'];
+            $inhalt = $roh;
+            $meldungen[] = abfahrt_t('MELDUNG.CFG_TOKEN_AUS_ZWEIT');
+        } else {
+            $inhalt = $zroh;
+            $meldungen[] = abfahrt_t('MELDUNG.CFG_AUS_ZWEIT');
+        }
+        $js = json_encode($inhalt, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($js === false || !abfahrt_datei_geheim_schreiben($datei, $js)) {
+            $meldungen[] = sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $datei);
+        }
+        list($roh, $zustand) = abfahrt_config_roh($datei);
+    }
+
+    if ($zustand === 'ok' && is_array($roh)) {
+        $fehlend = array_diff(array_keys(abfahrt_vorgaben()), array_keys($roh));
+        if ($fehlend && isset($roh['aktionstoken']) && $roh['aktionstoken'] !== '') {
+            $voll = $roh;
+            foreach (abfahrt_vorgaben() as $k => $v) {
+                if (!array_key_exists($k, $voll)) { $voll[$k] = $v; }
+            }
+            if (abfahrt_config_speichern($voll)) {
+                $meldungen[] = sprintf(abfahrt_t('MELDUNG.CFG_VERVOLLSTAENDIGT'),
+                                       count($fehlend), implode(', ', $fehlend));
+            }
+        }
+    }
+
+    foreach ($meldungen as $m) {
+        abfahrt_log('Konfiguration: ' . strip_tags($m));
+    }
+    /* Abgewiesene Werte stehen bei JEDEM Aufruf auf dem Bildschirm, ins
+     * Protokoll aber nur, wenn sich die Liste geaendert hat - der Dienst
+     * ruft diese Funktion jede Minute. */
+    abfahrt_config();
+    $lage = abfahrt_config_lage();
+    $abgew = array();
+    foreach ($lage['abgewiesen'] as $k => $g) {
+        $abgew[] = sprintf(abfahrt_t('MELDUNG.CFG_WERT_ABGEWIESEN'), $k, $g);
+    }
+    $merker = abfahrt_tmpdir() . '/cfg_abgewiesen.txt';
+    $sig = $abgew ? md5(implode("\n", $abgew)) : '';
+    $alt = is_file($merker) ? trim((string) @file_get_contents($merker)) : '';
+    if ($sig !== $alt) {
+        foreach ($abgew as $m) { abfahrt_log('Konfiguration: ' . strip_tags($m)); }
+        @file_put_contents($merker, $sig);
+    }
+    return array_merge($meldungen, $abgew);
+}
+
 function abfahrt_config_speichern($cfg)
 {
     $p = abfahrt_paths();
@@ -2673,8 +3204,7 @@ function abfahrt_config_speichern($cfg)
         return false;   /* ungueltiges UTF-8 - lieber gar nicht schreiben
                            als eine halbe Datei hinterlassen */
     }
-    @mkdir(dirname($p['config']), 0775, true);
-    if (@file_put_contents($p['config'], $js) === false) {
+    if (!abfahrt_datei_geheim_schreiben($p['config'], $js)) {
         return false;
     }
     /* Rechte und Zweitschrift gehoeren HIERHIN, nicht in die vier Aufrufer.
@@ -2687,10 +3217,13 @@ function abfahrt_config_speichern($cfg)
      * dem Zurueckspielen. Aus genau dieser Zweitschrift heilen sich
      * index.php und postupgrade.sh selbst - das Zurueckspielen waere beim
      * naechsten Anlass stillschweigend wieder verworfen worden. */
-    @chmod($p['config'], 0600);
+    /* Die Zweitschrift ebenso unteilbar. Scheitert sie, ist das Speichern
+     * trotzdem gelungen - gemeldet wird es im Protokoll, weil die Heilung
+     * sonst beim naechsten Anlass auf einen alten Stand zurueckfiele. */
     $zweit = dirname($p['config']) . '.backup.json';
-    @copy($p['config'], $zweit);
-    @chmod($zweit, 0600);
+    if (!abfahrt_datei_geheim_schreiben($zweit, $js)) {
+        abfahrt_log('Konfiguration: Zweitschrift ' . $zweit . ' liess sich nicht schreiben.');
+    }
     return true;
 }
 
@@ -2830,17 +3363,132 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                 $aus[] = array('name' => $n, 'url' => $u);
             }
             return $aus;
-        case 'tts':
+        /* Die vier Felder werden seit 1.6.10 bis in die Unterschluessel
+         * geprueft.
+         *
+         * BERICHTIGT: hier stand nur "ist es ein Feld?", und der Kommentar
+         * behauptete, abfahrt_config() klemme den Rest. Das tat es nie - es
+         * setzte nur fehlende Unterschluessel. Gemessen 06.09.2026 unter PHP
+         * 7.4 und 8.4: eine Sicherungsdatei mit der Sperrzeit "XX" bis "YY"
+         * wurde angenommen und sperrte die Ansage auf Dauer; eine tts-Vorlage
+         * mit einem fremden Rechner schickte den Titel des naechsten Termins
+         * aus dem Haus, file:/// wurde ebenso gebaut. */
         case 'notify':
-        case 'quiet':
-        case 'ortsbuch':
             if (!is_array($wert)) { $grund = 'kein Feld'; return null; }
-            /* Der Feinschliff dieser vier uebernimmt abfahrt_config(): es
-             * setzt fehlende Unterschluessel, klemmt die Sperrzeiten und
-             * wirft alles weg, was keine Zeile ist. Hier wird nur die Form
-             * geprueft - alles andere waere eine zweite Stelle, die
-             * auseinanderlaeuft. */
-            return $wert;
+            $aus = array();
+            foreach ($wert as $uk => $uw) {
+                if (!in_array((string) $uk, array('audio', 'push'), true)) {
+                    $grund = 'unbekannter Eintrag ' . $uk; return null;
+                }
+                $s = $schalter($uw);
+                if ($s === null) { return null; }
+                $aus[(string) $uk] = $s;
+            }
+            return $aus;
+        case 'quiet':
+            if (!is_array($wert)) { $grund = 'kein Feld'; return null; }
+            $aus = array();
+            foreach ($wert as $tag => $zeile) {
+                $t = is_int($tag) ? $tag : (preg_match('/^\d{1,2}$/', (string) $tag) ? (int) $tag : 0);
+                if (!in_array($t, abfahrt_quiet_keys(), true)) {
+                    $grund = 'unbekannter Tag ' . $tag; return null;
+                }
+                if (!is_array($zeile)) { $grund = 'Tag ' . $t . ' ist keine Zeile'; return null; }
+                $neu = array();
+                foreach ($zeile as $uk => $uw) {
+                    if ($uk === 'on') {
+                        $s = $schalter($uw);
+                        if ($s === null) { return null; }
+                        $neu['on'] = $s;
+                    } elseif ($uk === 'from' || $uk === 'to') {
+                        if (is_array($uw) || !preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', (string) $uw)) {
+                            $grund = 'Tag ' . $t . ': keine Uhrzeit HH:MM'; return null;
+                        }
+                        $neu[$uk] = (string) $uw;
+                    } else {
+                        $grund = 'Tag ' . $t . ': unbekannter Eintrag ' . $uk; return null;
+                    }
+                }
+                $aus[$t] = $neu;
+            }
+            return $aus;
+        case 'ortsbuch':
+            if (!is_array($wert)) { $grund = 'keine Liste'; return null; }
+            if (count($wert) > 10) { $grund = 'mehr als 10 Zeilen'; return null; }
+            $aus = array();
+            foreach ($wert as $e) {
+                if (!is_array($e)) { $grund = 'Eintrag ist keine Zeile'; return null; }
+                $m = $text(isset($e['muster']) ? $e['muster'] : '', 100);
+                $a = $text(isset($e['adresse']) ? $e['adresse'] : '', 300);
+                if ($m === null || $a === null) { return null; }
+                if (trim($m) === '' || trim($a) === '') {
+                    $grund = 'Zeile ohne Ortsangabe oder ohne Adresse'; return null;
+                }
+                $aus[] = array('muster' => $m, 'adresse' => $a);
+            }
+            return $aus;
+        case 'tts':
+            if (!is_array($wert)) { $grund = 'kein Feld'; return null; }
+            $aus = array();
+            foreach ($wert as $uk => $uw) {
+                switch ((string) $uk) {
+                    case 'mode':
+                        if (is_array($uw) || !in_array((string) $uw, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+                            $grund = 'tts.mode unbekannt'; return null;
+                        }
+                        $aus['mode'] = (string) $uw;
+                        break;
+                    case 'ip':
+                        $s = $text($uw, 253);
+                        if ($s === null) { return null; }
+                        if (trim($s) !== '' && !abfahrt_heimnetz_host(trim($s))) {
+                            $grund = 'tts.ip liegt nicht im Heimnetz'; return null;
+                        }
+                        $aus['ip'] = trim($s);
+                        break;
+                    case 'port':
+                        $z = $zahl($uw, 1, 65535);
+                        if ($z === null) { $grund = 'tts.port ' . $grund; return null; }
+                        $aus['port'] = $z;
+                        break;
+                    case 'volume':
+                        $z = $zahl($uw, 1, 100);
+                        if ($z === null) { $grund = 'tts.volume ' . $grund; return null; }
+                        $aus['volume'] = $z;
+                        break;
+                    case 'zones':
+                        $s = $text($uw, 200);
+                        if ($s === null) { return null; }
+                        if (!preg_match('/^[0-9~,\s]*$/', $s)) {
+                            $grund = 'tts.zones: nur Ziffern, Komma und ~'; return null;
+                        }
+                        $aus['zones'] = $s;
+                        break;
+                    case 'lang':
+                        if (is_array($uw) || !preg_match('/^[a-z]{2}$/', (string) $uw)) {
+                            $grund = 'tts.lang: zwei Kleinbuchstaben'; return null;
+                        }
+                        $aus['lang'] = (string) $uw;
+                        break;
+                    case 'template':
+                        $s = $text($uw, 500);
+                        if ($s === null) { return null; }
+                        $s = trim($s);
+                        if ($s !== '') {
+                            if (!preg_match('#^https?://([^/:?]+)#i', $s, $mh)) {
+                                $grund = 'tts.template muss mit http:// oder https:// beginnen'; return null;
+                            }
+                            if ($mh[1] !== '{ip}' && !abfahrt_heimnetz_host($mh[1])) {
+                                $grund = 'tts.template zeigt nicht ins Heimnetz'; return null;
+                            }
+                        }
+                        $aus['template'] = $s;
+                        break;
+                    default:
+                        $grund = 'tts: unbekannter Eintrag ' . $uk; return null;
+                }
+            }
+            return $aus;
     }
     $grund = 'unbekannte Einstellung';
     return null;

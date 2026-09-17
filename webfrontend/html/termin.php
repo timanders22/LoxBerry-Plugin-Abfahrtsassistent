@@ -25,6 +25,13 @@
  *                6 Kartendienst nicht erreichbar (keine Fahrzeit)
  *                7 Kartendienst nicht erreichbar, letzte bekannte Fahrzeit
  *                  wird weiterbenutzt - OK bleibt 1, die Werte gelten
+ *                8 kein einziger Kalender liess sich lesen, und es gibt
+ *                  keinen gueltigen Stand mehr - OK=0 (neu in 1.6.10; bis
+ *                  dahin trug dieser Fall ebenfalls die 5)
+ *
+ *   ALTER steht nur in dieser Zeile, nicht ueber MQTT (seit 1.6.10): ueber
+ *   MQTT war der Wert immer 0. Dort heisst die Ausfallerkennung
+ *   abfahrt/status/ts.
  *
  * WARUM EINE ZAHL UND KEIN TEXT bei FEHLER: In Loxone laesst sich eine Zahl
  * auf einen Statusbaustein legen und dort in Klartext uebersetzen. Eine
@@ -58,6 +65,13 @@ header('Cache-Control: no-store');
  * bei ?force=0 in termin_say.php wurden die Sperrzeiten umgangen. Das blosse
  * ?debug ohne Wert bleibt eingeschaltet, dafuer ist es da. */
 $debug = abfahrt_schalter('debug');
+
+/* Nur-Lese-Betrieb, solange nicht ein Mensch mit Merkwort neu rechnet: dann
+ * fragt die Sondertag-Pruefung weder das Ferien-Plugin noch schreibt sie einen
+ * Zwischenspeicher (abfahrt_nur_lesen() in der Bibliothek). Bis 1.6.9 legte
+ * ein anonymer GET ohne Parameter /tmp/abfahrt_daytype.json an - gegen die
+ * Zusage weiter unten. */
+abfahrt_nur_lesen(true);
 
 $abfcfg = abfahrt_config();
 
@@ -95,6 +109,7 @@ if (abfahrt_schalter('selftest')) {
 $diag = [];
 if ($debug) {
     // Nur im Debug-Fall wird gerechnet - und dann bewusst und sichtbar.
+    abfahrt_nur_lesen(false);
     list($st, $diag) = abfahrt_berechnen($abfcfg);
 } else {
     $st = abfahrt_stand();
