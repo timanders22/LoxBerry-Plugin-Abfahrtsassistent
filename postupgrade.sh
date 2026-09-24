@@ -70,5 +70,22 @@ if [ "$ALLES_GUT" = "1" ] && [ -d "$SICHER" ]; then
         echo "<WARNING> Die Update-Sicherung liess sich nicht entfernen: $SICHER"
     fi
 fi
-echo "<OK> Aktualisierung abgeschlossen. Beim ersten Oeffnen der Oberflaeche wird die Konfiguration um neue Einstellungen vervollstaendigt."
+# Die Schlusszeile nach INHALT, nicht nach dem Umstand "Upgrade".
+# postinstall.sh schweigt im Aktualisierungsfall (dort: "wird im naechsten
+# Schritt zurueckgespielt"); die Anleitung muss deshalb HIER stehen, wenn
+# nach dem Zurueckspielen keine eingerichtete Konfiguration da ist - leere
+# Sicherung, gescheitertes Zurueckspielen oder gar keine Sicherung. Bis 1.6.11
+# stand hier unbedingt "Aktualisierung abgeschlossen", auch ueber "{}"
+# (gemessen 24.09.2026, Pruefung-Abfahrtsassistent-1.6.12/postinstall_hinweis.md,
+# Fall c). Merkmal ist dasselbe Merkwort, nach dem postinstall.sh die
+# Zweitschrift beurteilt: ein nicht leeres aktionstoken.
+hat_merkwort() {
+    [ -f "$1" ] && grep -q '"aktionstoken": *"[^"]' "$1"
+}
+if hat_merkwort "$CF"; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen. Beim ersten Oeffnen der Oberflaeche wird die Konfiguration um neue Einstellungen vervollstaendigt."
+else
+    echo "<WARNING> Nach der Aktualisierung liegt keine eingerichtete Konfiguration vor."
+    echo "<OK> Dateien aktualisiert. Bitte die Plugin-Oberflaeche oeffnen und konfigurieren."
+fi
 exit 0
