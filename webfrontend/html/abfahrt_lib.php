@@ -3272,6 +3272,14 @@ function abfahrt_sicherung_bauen(array $cfg)
  * Geprueft wird gegen dieselben Grenzen, die der Speichern-Handler der
  * Oberflaeche schon immer angelegt hat - dort war es richtig, nur hier
  * nicht. Rueckgabe: der gepruefte Wert, oder null mit Begruendung.
+ *
+ * Die Muster enden auf \z, nicht auf $: in PCRE passt $ auch vor einem
+ * Zeilenumbruch am Ende, und $text() laesst Umbrueche mit Absicht zu. Bis
+ * 1.6.10 nahm eine Sicherungsdatei deshalb "aktionstoken": "abc123\n" an,
+ * und jede in Loxone eingetragene Adresse war danach stumm ungueltig
+ * (gemessen 24.09.2026 unter PHP 7.4 und 8.4; zuerst an AWM-Abfuhr 1.4.10).
+ * tts.zones bleibt bei \s - dort ist Weissraum gewollt und wird vor der
+ * Benutzung abgestreift.
  */
 function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
 {
@@ -3323,7 +3331,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'mqtt_topic':
             $s = $text($wert, 64);
             if ($s === null) { return null; }
-            if ($s !== '' && !preg_match('#^[A-Za-z0-9_/\-]+$#', $s)) {
+            if ($s !== '' && !preg_match('#^[A-Za-z0-9_/\-]+\z#', $s)) {
                 $grund = 'unzulaessiges Zeichen im Thema'; return null;
             }
             return $s;
@@ -3344,7 +3352,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
              * abfahrt_sicherung_lesen(), nicht diese Wertpruefung. */
             $s = $text($wert, 64);
             if ($s === null) { return null; }
-            if ($s !== '' && !preg_match('/^[A-Za-z0-9_.\-]+$/', $s)) {
+            if ($s !== '' && !preg_match('/^[A-Za-z0-9_.\-]+\z/', $s)) {
                 $grund = 'unzulaessiges Zeichen im Merkwort'; return null;
             }
             return $s;
@@ -3401,7 +3409,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         if ($s === null) { return null; }
                         $neu['on'] = $s;
                     } elseif ($uk === 'from' || $uk === 'to') {
-                        if (is_array($uw) || !preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', (string) $uw)) {
+                        if (is_array($uw) || !preg_match('/^([01]?\d|2[0-3]):[0-5]\d\z/', (string) $uw)) {
                             $grund = 'Tag ' . $t . ': keine Uhrzeit HH:MM'; return null;
                         }
                         $neu[$uk] = (string) $uw;
@@ -3465,7 +3473,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         $aus['zones'] = $s;
                         break;
                     case 'lang':
-                        if (is_array($uw) || !preg_match('/^[a-z]{2}$/', (string) $uw)) {
+                        if (is_array($uw) || !preg_match('/^[a-z]{2}\z/', (string) $uw)) {
                             $grund = 'tts.lang: zwei Kleinbuchstaben'; return null;
                         }
                         $aus['lang'] = (string) $uw;
