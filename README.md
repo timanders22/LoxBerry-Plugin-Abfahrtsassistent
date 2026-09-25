@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.14 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,16 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.14
+
+- **Ein hängender Lauf fällt auf.** Findet der Minutentakt die Sperre von
+  einem Lauf belegt, der schon länger als 10 Minuten rechnet, steht das
+  einmal je Stunde im Protokoll, mit dessen Prozessnummer. Bisher endeten alle
+  weiteren Läufe wortlos, und solange der eine hing, wurde nichts mehr
+  gerechnet. Der hängende Lauf wird nicht beendet.
+- Vorbereitung auf PHP 8.5: im Abrufweg ohne php-curl kommen die Kopfzeilen
+  einer Antwort, wo vorhanden, aus `http_get_last_response_headers()`.
 
 ## Neu in 1.6.13
 

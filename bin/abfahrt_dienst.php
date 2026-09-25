@@ -232,7 +232,31 @@ if ($fh === false) {
     abfahrt_log($abf_msg);
     exit(1);
 }
-if (!flock($fh, LOCK_EX | LOCK_NB)) { exit(0); }
+if (!flock($fh, LOCK_EX | LOCK_NB)) {
+    /* Belegt: ein anderer Lauf rechnet noch. Bis 1.6.13 endete jeder weitere
+     * Lauf hier ohne eine Zeile - hing ein Lauf, rechnete keiner mehr, und im
+     * Protokoll stand nichts (in WSL gemessen, Pruefung-Abfahrtsassistent-1.6.14,
+     * Faelle S3-S5). Die Sperrdatei traegt Startzeit und PID des Halters
+     * (gleich unten). Laeuft er nachweislich laenger als 10 Minuten: eine Zeile
+     * je Stunde ins Protokoll und nach stderr. Beendet wird er nicht. Ein
+     * Inhalt, der nicht genau "<Unixzeit> <PID>" ist, bleibt still - mit ihm
+     * wird nicht gerechnet (Fall S6). */
+    $abf_halter = trim((string) @file_get_contents($sperre));
+    if (preg_match('/^([0-9]{1,12}) ([0-9]{1,10})$/', $abf_halter, $abf_m)
+        && time() - (int) $abf_m[1] > 600) {
+        $abf_msg = 'Abfahrts-Assistent: Ein Lauf (PID ' . $abf_m[2] . ') haelt die Sperre seit '
+                 . (int) floor((time() - (int) $abf_m[1]) / 60) . ' Minuten; bis er endet, rechnet'
+                 . ' kein weiterer Lauf. Er wird nicht beendet.';
+        if (abfahrt_log_gedrosselt('dienst_sperre_lang', $abf_msg, 3600)) {
+            fwrite(STDERR, $abf_msg . "\n");
+        }
+    }
+    exit(0);
+}
+/* Startzeit und PID des Halters - fuer einen Lauf, der die Sperre belegt findet. */
+@ftruncate($fh, 0);
+@fwrite($fh, time() . ' ' . getmypid() . "\n");
+@fflush($fh);
 
 /* Konfiguration pruefen und, wo noetig, heilen - einmal, gemeldet
  * (abfahrt_config_heilen() in der Bibliothek). Hier und in der Oberflaeche,

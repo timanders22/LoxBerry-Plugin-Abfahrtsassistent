@@ -1178,7 +1178,7 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 <?php foreach ($abf_kaldiag as $abf_kd) { if (!is_array($abf_kd)) { continue; } ?>
 <tr><td><?= e(($abf_kd['name'] ?? '') !== '' ? $abf_kd['name'] : '#' . (int) ($abf_kd['nr'] ?? 0)) ?></td>
     <td><span class="sm-mono"><?= e($abf_kd['gastgeber'] ?? '') ?></span></td>
-    <td><?= !isset($abf_kd['alter']) || $abf_kd['alter'] === null ? '&mdash;' : ((int) round($abf_kd['alter'] / 60) . ' min') ?></td>
+    <td><?= !isset($abf_kd['alter']) ? '&mdash;' : ((int) round($abf_kd['alter'] / 60) . ' min') ?></td>
     <td><?= ($abf_kd['grund'] ?? '') !== '' ? '<span class="sm-aus">' . e(abfahrt_t('TEST.KAL_NICHT_LADBAR')) . '</span>' : (int) ($abf_kd['vevents'] ?? 0) ?></td>
     <td><?= (int) ($abf_kd['mit_ort'] ?? 0) ?></td>
     <td><?php if (!empty($abf_kd['naechste'][0])) {

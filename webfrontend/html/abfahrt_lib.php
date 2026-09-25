@@ -660,10 +660,20 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
     ]]);
     $r = @file_get_contents($url, false, $ctx);
     /* Die LETZTE Statuszeile zaehlt, nicht die erste: wurde gefolgt, stehen
-     * beide in $http_response_header, und $http_response_header[0] waere
-     * dauerhaft die 302. */
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $kopf) {
+     * beide in den Kopfzeilen, und die erste waere dauerhaft die 302.
+     *
+     * $http_response_header ist in PHP 8.5 missbilligt; wo es
+     * http_get_last_response_headers() gibt (ab 8.4), gilt die. Unter 7.4 und
+     * 8.4 liefern beide Wege denselben Status, auch nach einem gescheiterten
+     * Abruf (gemessen, Pruefung-Abfahrtsassistent-1.6.14, Faelle P1-P6). */
+    $abf_koepfe = null;
+    if (function_exists('http_get_last_response_headers')) {
+        $abf_koepfe = http_get_last_response_headers();
+    } elseif (isset($http_response_header)) {
+        $abf_koepfe = $http_response_header;
+    }
+    if (is_array($abf_koepfe)) {
+        foreach ($abf_koepfe as $kopf) {
             if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $kopf, $m)) {
                 $status = (int) $m[1];
             }
@@ -888,7 +898,7 @@ function abfahrt_quiet_rule(array $abfcfg, $tagversatz = 0) {
  */
 function abfahrt_in_quiet(array $abfcfg, &$info = '') {
     $now = (int) date('H') * 60 + (int) date('i');
-    $p = function ($s) { $x = explode(':', (string) $s); return ((int) ($x[0] ?? 0)) * 60 + (int) ($x[1] ?? 0); };
+    $p = function ($s) { $x = explode(':', (string) $s); return ((int) $x[0]) * 60 + (int) ($x[1] ?? 0); };
     foreach ([0, -1] as $versatz) {
         list($k, $bez) = abfahrt_quiet_rule($abfcfg, $versatz);
         if ($k === 0 || !isset($abfcfg['quiet'][$k])) {
@@ -1038,15 +1048,18 @@ function abfahrt_log($msg, $anlegen = true) {
 /**
  * Eine Protokollzeile hoechstens einmal je $sekunden je Schluessel - und
  * ohne etwas anzulegen. Fuer die Wege im unangemeldeten Bereich.
+ * Rueckgabe: true, wenn die Zeile diesmal an der Reihe war (der Dienst gibt
+ * sie dann auch nach stderr), sonst false.
  */
 function abfahrt_log_gedrosselt($schluessel, $msg, $sekunden) {
     $tmp = abfahrt_tmpdir(false);
-    if (!is_dir($tmp)) { return; }
+    if (!is_dir($tmp)) { return false; }
     $merker = $tmp . '/drossel_' . md5((string) $schluessel);
     clearstatcache(true, $merker);
-    if (is_file($merker) && time() - (int) @filemtime($merker) < (int) $sekunden) { return; }
+    if (is_file($merker) && time() - (int) @filemtime($merker) < (int) $sekunden) { return false; }
     @touch($merker);
     abfahrt_log($msg, false);
+    return true;
 }
 
 /* ---------------- iCal ---------------- */
