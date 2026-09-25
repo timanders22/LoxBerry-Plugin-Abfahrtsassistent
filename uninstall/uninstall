@@ -59,15 +59,32 @@ entferne() {
 # nachgelesen (abfahrt_mqtt_leeren() in webfrontend/html/abfahrt_lib.php;
 # Bauart AWM-Abfuhr 1.4.13). Als loxberry, nicht als root; stdin geschlossen,
 # damit su nie auf eine Eingabe wartet.
+#
+# 'timeout -k 5 120': ohne -k schickt timeout nach 120 s nur SIGTERM - ein
+# Lauf, der es nicht annimmt, hielt die Deinstallation an, bis er von selbst
+# endete, und die Zweitschrift mit den Zugangsdaten (unten) blieb so lange
+# liegen. Bis 1.6.14 stand hier 'timeout 120' und dahinter '|| true': ein
+# Abbruch erschien in der Ausgabe des Installers gar nicht. Gemessen in WSL
+# mit einem SIGTERM-festen Platzhalter an der Stelle von abfahrt_dienst.php
+# (Pruefung-Abfahrtsassistent-1.6.15, Faelle K0-K7; Bauart Weissware 0.9.34).
+# Rueckgabe 0-2 meldet der Dienst selbst (abfahrt_mqtt_leeren(); 1 auch,
+# wenn er seine Bibliothek nicht findet - das steht dann auf stderr).
 UN_DIENST="$UN_BASE/bin/plugins/$UN_FOLDER/abfahrt_dienst.php"
 if command -v php >/dev/null 2>&1 && [ -f "$UN_DIENST" ]; then
+    UN_RC=0
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
         su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$UN_BASE" "LBPPLUGINDIR=$UN_FOLDER" \
-            timeout 120 php "$UN_DIENST" --mqtt-leeren)" < /dev/null 2>&1 || true
+            timeout -k 5 120 php "$UN_DIENST" --mqtt-leeren)" < /dev/null 2>&1 || UN_RC=$?
     else
-        env "LBHOMEDIR=$UN_BASE" "LBPPLUGINDIR=$UN_FOLDER" timeout 120 php "$UN_DIENST" --mqtt-leeren \
-            < /dev/null 2>&1 || true
+        env "LBHOMEDIR=$UN_BASE" "LBPPLUGINDIR=$UN_FOLDER" timeout -k 5 120 php "$UN_DIENST" --mqtt-leeren \
+            < /dev/null 2>&1 || UN_RC=$?
     fi
+    case "$UN_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 120 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 120 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $UN_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen." ;;
+    esac
 else
     echo "<INFO> PHP oder $UN_DIENST fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi

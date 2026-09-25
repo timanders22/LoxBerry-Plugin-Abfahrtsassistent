@@ -658,20 +658,35 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
         'max_redirects' => 2,
         'ignore_errors' => true,   // sonst gibt es bei 404 gar keinen Rumpf zum Ansehen
     ]]);
-    $r = @file_get_contents($url, false, $ctx);
-    /* Die LETZTE Statuszeile zaehlt, nicht die erste: wurde gefolgt, stehen
-     * beide in den Kopfzeilen, und die erste waere dauerhaft die 302.
-     *
-     * $http_response_header ist in PHP 8.5 missbilligt; wo es
-     * http_get_last_response_headers() gibt (ab 8.4), gilt die. Unter 7.4 und
-     * 8.4 liefern beide Wege denselben Status, auch nach einem gescheiterten
-     * Abruf (gemessen, Pruefung-Abfahrtsassistent-1.6.14, Faelle P1-P6). */
+    /* Seit 1.6.15 ueber fopen und stream_get_meta_data statt file_get_contents:
+     * die magische Kopfzeilenvariable, die file_get_contents hinterlaesst,
+     * meldet PHP 8.5 schon beim Uebersetzen als "Deprecated" - auch in einem
+     * Rueckfallzweig, der unter 8.5 nie laeuft (1.6.14, Zeile 673). wrapper_data
+     * traegt dieselben Zeilen, bei einer Weiterleitung alle Antworten, in PHP
+     * 7.4 bis 8.5 gleich; mit ignore_errors oeffnet fopen auch 4xx und 5xx.
+     * Scheitert fopen (kein Strom), gilt http_get_last_response_headers(), wo
+     * es sie gibt (ab 8.4) - sonst kein Status. Einzige Abweichung von 1.6.14:
+     * PHP < 8.4 ohne php-curl, eine Weiterleitung auf ein Ziel, das nicht
+     * antwortet - statt "HTTP 302 - Weiterleitung, der nicht gefolgt wurde"
+     * heisst es dann "Abruf gescheitert"; false bleibt false. An der
+     * Weiterleitungsgrenze liefert fopen mit ignore_errors den Strom der
+     * letzten Antwort, dort ist alles wie vorher (gemessen 7.4/8.4/8.5,
+     * Pruefung-Abfahrtsassistent-1.6.15, http_15.sh, Faelle Q3-Q10). */
+    $r = false;
     $abf_koepfe = null;
-    if (function_exists('http_get_last_response_headers')) {
+    $abf_fh = @fopen($url, 'rb', false, $ctx);
+    if ($abf_fh !== false) {
+        $r = stream_get_contents($abf_fh);
+        $abf_meta = stream_get_meta_data($abf_fh);
+        fclose($abf_fh);
+        if (isset($abf_meta['wrapper_data']) && is_array($abf_meta['wrapper_data'])) {
+            $abf_koepfe = $abf_meta['wrapper_data'];
+        }
+    } elseif (function_exists('http_get_last_response_headers')) {
         $abf_koepfe = http_get_last_response_headers();
-    } elseif (isset($http_response_header)) {
-        $abf_koepfe = $http_response_header;
     }
+    /* Die LETZTE Statuszeile zaehlt, nicht die erste: wurde gefolgt, stehen
+     * beide in den Kopfzeilen, und die erste waere dauerhaft die 302. */
     if (is_array($abf_koepfe)) {
         foreach ($abf_koepfe as $kopf) {
             if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $kopf, $m)) {
