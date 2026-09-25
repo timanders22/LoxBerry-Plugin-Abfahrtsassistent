@@ -18,8 +18,14 @@ ARGV5=$5 # LoxBerry base folder
 PFOLDER="${ARGV3:-abfahrtsassistent}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    echo "<FAIL> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE')."
+# Ohne erkennbaren LoxBerry wird nichts angelegt: config/plugins, data/plugins
+# UND config/system/general.json (Regeln/06, Raumklima-Vorfall; wie
+# preupgrade.sh und uninstall/uninstall). Bis 1.6.12 genuegte config/plugins -
+# in einem fremden Baum legte dieses Skript config/plugins/<ordner>/abfahrt.json
+# an (in WSL gemessen, Pruefung-Abfahrtsassistent-1.6.13, Fall H4).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
+    echo "<FAIL> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts angelegt und nichts zurueckgespielt."
     exit 1
 fi
 
@@ -35,9 +41,19 @@ if [ ! -d "$CFGDIR" ]; then
     exit 1
 fi
 
-# Heil heisst: die Datei traegt ein Merkwort (Inhalt, nicht Form - Regeln/05).
+# Heil heisst: die Datei ist ein lesbares JSON-Objekt und traegt ein nicht
+# leeres Merkwort - dieselbe Frage wie abfahrt_config_heilen() in der
+# Bibliothek (Inhalt, nicht Form - Regeln/05). Bis 1.6.12 genuegte eine Zeile
+# mit dem Merkwort: eine abgeschnittene Zweitschrift wurde zurueckgespielt und
+# als "wiederhergestellt" gemeldet (in WSL gemessen,
+# Pruefung-Abfahrtsassistent-1.6.13, Fall N1). Ohne PHP gilt eine Datei als
+# ohne Inhalt.
 hat_merkwort() {
-    [ -f "$1" ] && grep -q '"aktionstoken": *"[^"]' "$1"
+    [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d) || !isset($d["aktionstoken"]) || !is_string($d["aktionstoken"])
+            || $d["aktionstoken"] === "") { exit(1); }
+        exit(0);' "$1" 2>/dev/null
 }
 
 if [ -f "$SICHER/abfahrt.json" ]; then

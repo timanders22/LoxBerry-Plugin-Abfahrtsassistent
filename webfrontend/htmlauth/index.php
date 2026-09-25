@@ -11,52 +11,6 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 // das Fehlerprotokoll des Webservers.
 ini_set('display_errors', '0');
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
- *
- * DIESER BLOCK STEHT GANZ OBEN, und das war er bis 1.5.7 nicht: er stand rund
- * 260 Zeilen tiefer, wurde aber schon in der ersten Anweisung gebraucht.
- * Bedingte Funktionsdefinitionen zieht PHP nicht vor - ohne gesetztes
- * LBHOMEDIR endete die Seite deshalb mit "Call to undefined function
- * lb_wurzel_ermitteln()", also weiss.
- *
- * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt.
- */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
-}
-
-$lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-$plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-if ($lbhomedir && is_dir($lbhomedir . '/bin/plugins/' . $plugindir) === false && is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
-    $plugindir = basename(dirname(__DIR__));
-}
-if ($lbhomedir) {
-    $sdk_system = $lbhomedir . '/libs/phplib/loxberry_system.php';
-    $sdk_web = $lbhomedir . '/libs/phplib/loxberry_web.php';
-    if (file_exists($sdk_system)) {
-        require_once $sdk_system;
-        require_once $sdk_web;
-    }
-    $data_dir = $lbhomedir . '/data/plugins/' . $plugindir;
-    $log_file = $lbhomedir . '/log/plugins/' . $plugindir . '/abfahrt.log';
-} else {
-    $data_dir = sys_get_temp_dir() . '/abfahrtsassistent_daten';
-    $log_file = sys_get_temp_dir() . '/abfahrtsassistent/abfahrt.log';
-}
-
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
  *
@@ -67,14 +21,24 @@ if ($lbhomedir) {
  * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
  * ALLE Handler samt Downloads und Umleitung, dann lbheader(), dann HTML.
  * ================================================================== */
-/* Bibliothek einbinden. Beide Kandidaten sind noetig, weil html/ und
- * htmlauth/ auf dem installierten LoxBerry in GETRENNTEN Baeumen liegen, im
- * entpackten Archiv dagegen nebeneinander. FEHLT SIE, WIRD ABGEBROCHEN - mit
- * dem Satz, welche Datei wo erwartet wurde. */
-$abf_kandidaten = [
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $plugindir . '/abfahrt_lib.php',
-    dirname(__DIR__) . '/html/abfahrt_lib.php',
-];
+/* Bibliothek einbinden - nach dem EIGENEN Ablageort, nicht ueber eine
+ * Kandidatenliste. Installiert liegt diese Datei unter
+ * <Wurzel>/webfrontend/htmlauth/plugins/<ordner>/, die Bibliothek unter
+ * <Wurzel>/webfrontend/html/plugins/<ordner>/ (getrennte Baeume); im
+ * entpackten Archiv liegen htmlauth/ und html/ nebeneinander. Bis 1.6.12
+ * standen beide in einer Liste, der erste Eintrag mit dirname(__DIR__)
+ * dreimal hinauf - aus einem Archiv unter / hiess das
+ * //html/plugins/htmlauth/abfahrt_lib.php, und eine fremde Datei dort wurde
+ * eingebunden (in WSL gemessen, Pruefung-Abfahrtsassistent-1.6.13, Fall C4).
+ * Dazu trug diese Datei eine eigene Wurzelsuche ohne general.json (Fall H3).
+ * Wurzel, Ordner und alle Pfade kommen jetzt aus abfahrt_paths(). Bauart
+ * ZendureSolarFlow 0.9.26. FEHLT DIE BIBLIOTHEK, WIRD ABGEBROCHEN - mit dem
+ * Satz, welche Datei wo erwartet wurde. */
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $abf_kandidaten = [dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/abfahrt_lib.php'];
+} else {
+    $abf_kandidaten = [dirname(__DIR__) . '/html/abfahrt_lib.php'];
+}
 $abf_geladen = false;
 foreach ($abf_kandidaten as $abf_cand) {
     if (is_file($abf_cand)) { require_once $abf_cand; $abf_geladen = true; break; }
@@ -82,8 +46,8 @@ foreach ($abf_kandidaten as $abf_cand) {
 if (!$abf_geladen || !function_exists('abfahrt_config')) {
     header('Content-Type: text/html; charset=utf-8');
     echo '<h2>Abfahrts-Assistent</h2>';
-    echo '<p>Die Programmbibliothek <code>abfahrt_lib.php</code> wurde an keiner '
-       . 'der beiden erwarteten Stellen gefunden. Bitte das Plugin neu '
+    echo '<p>Die Programmbibliothek <code>abfahrt_lib.php</code> wurde an der '
+       . 'erwarteten Stelle nicht gefunden. Bitte das Plugin neu '
        . 'installieren.</p><ul>';
     foreach ($abf_kandidaten as $abf_cand) {
         echo '<li><code>' . htmlspecialchars($abf_cand, ENT_QUOTES, 'UTF-8') . '</code></li>';
@@ -92,6 +56,20 @@ if (!$abf_geladen || !function_exists('abfahrt_config')) {
     exit;
 }
 $abf_p = abfahrt_paths();
+$lbhomedir = $abf_p['lbhome'];
+$plugindir = $abf_p['plugin'];
+if ($lbhomedir !== '') {
+    $sdk_system = $lbhomedir . '/libs/phplib/loxberry_system.php';
+    $sdk_web = $lbhomedir . '/libs/phplib/loxberry_web.php';
+    if (file_exists($sdk_system)) {
+        require_once $sdk_system;
+        require_once $sdk_web;
+    }
+}
+/* Datenordner und Protokoll aus der Bibliothek - im Archivmodus deren
+ * Ersatzpfade im Temp-Ordner, nie die der Anlage (Fall B7). */
+$data_dir = $abf_p['data'];
+$log_file = abfahrt_logfile(false);
 $config_file = $abf_p['config'];
 
 function e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }

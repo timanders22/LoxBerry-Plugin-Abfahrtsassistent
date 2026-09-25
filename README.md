@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.12 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.13 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,41 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.13
+
+- **Kein MQTT-Thema geht mehr zurückbehalten (retained) hinaus.** `OK` und
+  `FEHLER` sagen, ob der Dienst gerechnet hat und woran es scheiterte; `AUDIO`
+  und `PUSH` hängen an den Sperrzeiten. Zurückbehalten stand nach einem Ausfall
+  des Dienstes weiter „in Ordnung“ bzw. „Ansage erlaubt“ im Broker, und nach
+  jedem Neustart von Broker oder Gateway bekam der Miniserver diese Werte von
+  einem Dienst, der nicht mehr rechnet. Nach einem Neustart des Miniservers
+  fehlen die Werte jetzt bis zum nächsten Vollversand (ab Werk spätestens nach
+  15 Minuten; wer den Vollversand abgeschaltet hat, bis sich ein Wert ändert).
+- **Die Altwerte aus 1.6.8 bis 1.6.12 räumt das Plugin selbst ab.** Der Dienst
+  fragt den Broker (Zugang aus der LoxBerry-Einstellung), welche der vier
+  Themen er noch hält, und schickt vor deren nächstem Wert eine leere
+  Nachricht, die sie löscht. Erst wenn der Broker bestätigt, dass keines mehr
+  dasteht, merkt es sich das; ist der Broker nicht zu fragen, wird in jedem
+  Lauf gelöscht. Die Deinstallation leert die Themen ebenso. Grenze: Themen
+  unter einem früher eingestellten Präfix bleiben stehen
+  (`mosquitto_pub -r -n -t <thema>`).
+- **Ein ausgepacktes Archiv wirkt nicht mehr auf die Anlage.** Der Dienst aus
+  einem Archiv unter dem LoxBerry schrieb bisher in dessen Protokoll und
+  sendete an dessen MQTT-Gateway, die Oberfläche legte eine Konfiguration an.
+  Die Pfade der Anlage gelten jetzt nur für das installierte Plugin (oder mit
+  ausdrücklich gesetztem `LBHOMEDIR` und `LBPPLUGINDIR`); sonst meldet der
+  Dienst den Grund und rechnet nicht.
+- **Der LoxBerry-Ordner wird nur noch an `config/system/general.json`
+  erkannt**, in Bibliothek, Oberfläche und Installationsskripten. Ein fester
+  Rückfall auf das Heimverzeichnis des Benutzers `loxberry` und Pfade ab der
+  Laufwerkswurzel
+  (Sprachdateien, Ferien-Plugin, Bibliothekssuche) sind entfernt.
+- **Installation:** eine abgeschnittene Zweitschrift oder Update-Sicherung
+  gilt nicht mehr als „eingerichtet“ (entschieden wird am lesbaren Inhalt mit
+  Merkwort); eine Update-Sicherung ohne Inhalt bleibt liegen, und das
+  Protokoll wird nach einem Update nicht mehr durch seine Kopie aus der
+  Sicherung ersetzt — Zeilen aus dem Update selbst bleiben erhalten.
 
 ## Neu in 1.6.12
 

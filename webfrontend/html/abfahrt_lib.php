@@ -22,11 +22,18 @@ date_default_timezone_set('Europe/Berlin');
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort;
+ * liegt das Plugin als entpacktes Archiv ausserhalb eines LoxBerry, findet
+ * die Suche nichts und gibt einen Leerstring zurueck.
+ *
+ * general.json ist die entscheidende Bedingung (Regeln/06, Raumklima-Vorfall).
+ * Bis 1.6.12 genuegten config/plugins und webfrontend - genau diese Ordner
+ * hinterlaesst ein Pruefstand auf einem Arbeitsrechner. In WSL gemessen
+ * (Pruefung-Abfahrtsassistent-1.6.13, Faelle H1 bis H3): in einem fremden
+ * Baum ohne general.json nahm diese Bibliothek den Baum als Wurzel; der
+ * Dienst schrieb sein Protokoll dorthin, die Oberflaeche legte dort eine
+ * Konfiguration samt Merkwort an.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -36,7 +43,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -47,39 +55,94 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und danach nichts mehr, kein fester Pfad.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter;
+ * general.json wird hier nicht verlangt, damit die Attrappen der
+ * Pruefwerkzeuge weiter tragen. Rueckgabe '' heisst "keine Wurzel"; jeder
+ * Aufrufer muss das abfangen. Bauart awm_lbhome() aus AWM-Abfuhr 1.4.13. */
+function abfahrt_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/**
+ * Die Pfade - der Anlage, oder im Archivmodus die Ersatzpfade.
+ *
+ * Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+ * liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen)
+ * oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+ * $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe, und so
+ * ruft die Deinstallation den Dienst). Sonst ist das ein ausgepacktes Archiv
+ * oder ein Pruefordner, und es gelten Ersatzpfade im Temp-Ordner unter einem
+ * eigenen Namen - nie ein Pfad der Anlage, nie einer ab der Laufwerkswurzel
+ * und nie der Zwischenordner /tmp/<ordner> der Anlage.
+ *
+ * Bis 1.6.12 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel und
+ * den Ordnernamen "html": der Dienst aus dem Archiv schrieb sein Protokoll
+ * nach log/plugins/html/ der Anlage und sendete OK, FEHLER und das
+ * Lebenszeichen an deren MQTT-Gateway; die Oberflaeche legte beim Oeffnen
+ * config/plugins/html/abfahrt.json samt Merkwort an - mit $LBHOMEDIR allein,
+ * wie es am Geraet in /etc/environment steht, ebenso (in WSL gemessen,
+ * Pruefung-Abfahrtsassistent-1.6.13, Faelle B1, B2, B6, B7). Ohne Wurzel lag
+ * die Konfiguration im Archiv selbst, aus /webfrontend/html also ab der
+ * Laufwerkswurzel (Fall C7), und das Protokoll im Zwischenordner der Anlage.
+ * Bauart awm_paths() aus AWM-Abfuhr 1.4.13.
+ *
+ * Einmal je Prozess bestimmt: abfahrt_daytype() setzt LBPPLUGINDIR fuer die
+ * Bibliothek des Ferien-Plugins voruebergehend um - danach darf diese
+ * Funktion nicht auf fremde Pfade zeigen.
+ */
 function abfahrt_paths() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
+    static $p = null;
+    if ($p !== null) {
+        return $p;
+    }
+    $home = abfahrt_lbhome();
     /* basename(__DIR__), NICHT basename(dirname(__DIR__, 1)).
      *
      * Gemessen am 04.09.2026: installiert liegt diese Datei unter
      * .../webfrontend/html/plugins/<ordner>/. dirname(__DIR__, 1) ergibt
      * dort .../plugins, und basename davon ist "plugins" - der Pfad zeigte
      * ohne gesetztes LBPPLUGINDIR auf config/plugins/plugins/abfahrt.json.
-     * Gerettet hat das nur die is_dir()-Pruefung zwei Zeilen tiefer.
      *
      * Die zweite Wirkung war schlimmer, weil sie ein Werkzeug blind machte:
      * index.php leitet den Ordner aus basename(__DIR__) ab, diese Datei aus
      * dem Elternordner. Im Archivbau landeten beide auf VERSCHIEDENEN
      * Dateien (config/plugins/htmlauth gegen config/plugins/html), und
      * wirkungstest.py meldete deshalb bei JEDEM Lauf, das Aktionstoken gehe
-     * bei jeder Absendung verloren. Ein Fehlalarm bei jedem Lauf ist eine
-     * abgeschaltete Pruefung - und zwar an genau der Stelle, die diese Linie
-     * schon einmal gekostet hat. */
+     * bei jeder Absendung verloren. Seit 1.6.13 nimmt index.php Ordner und
+     * Pfade von hier. */
     $self = basename(__DIR__);
-    $umgebung = (string) getenv('LBPPLUGINDIR');
-    if ($umgebung !== '') {
-        /* DIE UMGEBUNG STICHT. Vorher ueberschrieb die is_dir()-Ruckfrage
-         * darunter auch ein gesetztes LBPPLUGINDIR - und weil im Archivbau
-         * $self den Wert "html" hat, genuegte ein liegengebliebener Ordner
-         * config/plugins/html, damit Bibliothek und Oberflaeche in
-         * VERSCHIEDENE Dateien schrieben. Gemessen am 05.09.2026: der
-         * Wirkungstest meldete daraufhin bei jeder Absendung ein verlorenes
-         * Aktionstoken, obwohl es am Geraet unveraendert ueberlebt. */
-        $plugindir = $umgebung;
-    } elseif ($lbhomedir && is_dir($lbhomedir . '/config/plugins/' . $self)) {
+    /* DIE UMGEBUNG STICHT: LBPPLUGINDIR ist die Auskunft von LoxBerry selbst
+     * (gemessen am 05.09.2026: sonst schrieben Bibliothek und Oberflaeche im
+     * Archivbau in verschiedene Dateien). Von ihr zaehlt nur der letzte
+     * Pfadteil, und die Namen, die nachweislich kein Pluginordner sind,
+     * gelten auch dort nicht. Der feste Name greift nur, wo der abgeleitete
+     * kein Pluginordner sein KANN - aus dem ausgepackten Archiv heisst er
+     * "html". */
+    $nie = array('', '.', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend');
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = !in_array($lbp, $nie, true);
+    if ($lbp_gilt) {
+        $plugindir = $lbp;
+    } elseif (!in_array($self, $nie, true)) {
         $plugindir = $self;
     } else {
-        $plugindir = $self;
+        $plugindir = 'abfahrtsassistent';
+    }
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . $self);
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
     }
     /* Der Zwischenordner traegt den ermittelten Ordnernamen (seit 1.6.10).
      * Bis 1.6.9 stand hier fest /tmp/abfahrtsassistent: eine zweite
@@ -91,17 +154,63 @@ function abfahrt_paths() {
      * beschraenkt, weil er aus der Umgebung kommen kann. */
     $tmpname = preg_replace('/[^A-Za-z0-9_\-]/', '', (string) $plugindir);
     if ($tmpname === '') { $tmpname = 'abfahrtsassistent'; }
-    if ($lbhomedir) {
-        return [
-            'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/abfahrt.json',
-            'tmp' => '/tmp/' . $tmpname,
-        ];
+    if ($home !== '') {
+        $p = array(
+            'config'  => $home . '/config/plugins/' . $plugindir . '/abfahrt.json',
+            'backup'  => $home . '/config/plugins/' . $plugindir . '.backup.json',
+            'tmp'     => '/tmp/' . $tmpname,
+            'log'     => $home . '/log/plugins/' . $plugindir . '/abfahrt.log',
+            'data'    => $home . '/data/plugins/' . $plugindir,
+            'lbhome'  => $home,
+            'plugin'  => $plugindir,
+            'general' => $home . '/config/system/general.json',
+            'archiv'  => '',
+        );
+        return $p;
     }
-    // Fallback (Entwicklung/Test): relativ zum Skript
-    return [
-        'config' => dirname(__DIR__, 2) . '/config/abfahrt.json',
-        'tmp' => sys_get_temp_dir() . '/' . $tmpname,
-    ];
+    /* Keine Wurzel (Entwicklung, Pruefstand, fremder Baum) oder Archivmodus:
+     * die Ersatzpfade unter dem Temp-Ordner. Der Dienst steigt in beiden
+     * Faellen vorher aus (abfahrt_keine_wurzel_abbruch()); MQTT verlangt eine
+     * Wurzel. */
+    $a = sys_get_temp_dir() . '/abfahrtsassistent-archiv';
+    $p = array(
+        'config'  => $a . '/abfahrt.json',
+        'backup'  => $a . '/abfahrt.backup.json',
+        'tmp'     => $a . '/tmp',
+        'log'     => $a . '/abfahrt.log',
+        'data'    => $a . '/data',
+        'lbhome'  => '',
+        'plugin'  => $plugindir,
+        'general' => '',
+        // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+        // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+        'archiv'  => $gefunden,
+    );
+    return $p;
+}
+
+/* Fuer den Dienst: ohne Pfade der Anlage (keine Wurzel oder ausgepacktes
+ * Archiv) nichts tun, eine Meldung auf stderr, Rueckgabewert 1. Steht dort
+ * VOR der Sperre, denn schon die legt eine Datei an. Bauart
+ * awm_keine_wurzel_abbruch() aus AWM-Abfuhr 1.4.13. */
+function abfahrt_keine_wurzel_abbruch($programm)
+{
+    $p = abfahrt_paths();
+    if ($p['lbhome'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts berechnet, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner>' . "\n"
+            . 'aufrufen oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts berechnet, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
 }
 
 function abfahrt_vorgaben()
@@ -611,9 +720,9 @@ function abfahrt_webport() {
     static $port = null;
     if ($port !== null) { return $port; }
     $port = 80;
-    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    if ($lb !== '') {
-        $f = $lb . '/config/system/general.json';
+    $abf_p = abfahrt_paths();
+    if ($abf_p['general'] !== '') {
+        $f = $abf_p['general'];
         if (is_file($f)) {
             $g = json_decode((string) @file_get_contents($f), true);
             foreach (array('Webserver', 'WEBSERVER') as $ab) {
@@ -676,9 +785,16 @@ function abfahrt_daytype() {
      * Anlage ohne das Ferien-Plugin - dort lief sie ins Leere und stand in
      * jedem Prueflauf als Warnung. Der Weg 2 weiter unten sucht ohnehin nach
      * derselben Datei; hier wird nur vorgezogen, was dort schon steht. */
-    $abf_lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    $abf_ferien_da = ($abf_lb !== '' && is_dir($abf_lb . '/webfrontend/html/plugins/ferien'))
-                  || is_dir(dirname(__DIR__, 3) . '/html/plugins/ferien');
+    /* Nur unter der Wurzel der Anlage (abfahrt_paths()). Bis 1.6.12 stand
+     * hier zusaetzlich dirname(__DIR__, 3) . '/html/plugins/ferien' - aus
+     * einem ausgepackten Archiv ein Pfad neben dem Archiv, aus
+     * /webfrontend/html einer ab der Laufwerkswurzel; eine fremde
+     * ferien_lib.php dort wurde eingebunden und ausgefuehrt (in WSL gemessen,
+     * Pruefung-Abfahrtsassistent-1.6.13, Fall C6). Installiert ergab der
+     * Ausdruck denselben Ordner wie die Wurzel. */
+    $abf_pp = abfahrt_paths();
+    $abf_lb = $abf_pp['lbhome'];
+    $abf_ferien_da = ($abf_lb !== '' && is_dir($abf_lb . '/webfrontend/html/plugins/ferien'));
     $js = false;
     if ($abf_ferien_da) {
         $js = @file_get_contents(abfahrt_lokal_url('/plugins/ferien/ferien.php?json=1'), false,
@@ -696,10 +812,8 @@ function abfahrt_daytype() {
     //    hier auf den Abfahrts-Assistenten - ohne Umschalten wuerde das Ferien-
     //    Plugin im falschen Konfigurations- und Datenverzeichnis suchen.
     if ($res['quelle'] === 'keine') {
-        $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
         $kandidaten = [];
-        if ($lb !== '') { $kandidaten[] = $lb . '/webfrontend/html/plugins/ferien/ferien_lib.php'; }
-        $kandidaten[] = dirname(__DIR__, 3) . '/html/plugins/ferien/ferien_lib.php';
+        if ($abf_lb !== '') { $kandidaten[] = $abf_lb . '/webfrontend/html/plugins/ferien/ferien_lib.php'; }
         $treffer = '';
         foreach ($kandidaten as $cand) {
             if (is_file($cand)) { $treffer = $cand; break; }
@@ -890,20 +1004,17 @@ function abfahrt_loc_ignored($loc, array $abfcfg) {
 /* ---------------- Logging ---------------- */
 
 function abfahrt_logfile($anlegen = true) {
-    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    // Dieselbe Reihenfolge wie in abfahrt_paths(): erst die Umgebung, dann
-    // der eigene Ablageort. Vorher stand hier nur der Ablageort, und das
-    // Protokoll lag im Prueflauf unter log/plugins/html/.
-    $self = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-    if ($lbhomedir) {
-        $dir = $lbhomedir . '/log/plugins/' . $self;
-    } else {
-        $dir = sys_get_temp_dir() . '/abfahrtsassistent';
-    }
+    /* Aus abfahrt_paths(), wie alle anderen Pfade. Bis 1.6.12 rechnete diese
+     * Funktion selbst: aus einem Archiv unter der Anlage schrieb sie nach
+     * log/plugins/html/ der Anlage, ohne Wurzel in den Zwischenordner
+     * /tmp/abfahrtsassistent der Anlage (in WSL gemessen,
+     * Pruefung-Abfahrtsassistent-1.6.13, Faelle B6 und H2). */
+    $p = abfahrt_paths();
+    $dir = dirname($p['log']);
     if ($anlegen && !is_dir($dir)) {
         @mkdir($dir, 0775, true);
     }
-    return $dir . '/abfahrt.log';
+    return $p['log'];
 }
 
 function abfahrt_log($msg, $anlegen = true) {
@@ -2059,20 +2170,28 @@ function abfahrt_tts_url($text, array $tts) {
 function abfahrt_felder() {
     /* Das fuenfte Element sagt, ob das MQTT-Thema RETAINED gesendet wird.
      *
-     * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, damit
-     * Loxone nach einem Neustart des Miniservers oder des Gateways sofort
-     * den Stand hat; Messwerte mit Zeitbezug NICHT retained, damit nach
-     * einem Ausfall kein alter Wert als aktueller erscheint.
+     * SEIT 1.6.13 KEINES. Von 1.6.8 bis 1.6.12 gingen OK, FEHLER, AUDIO und
+     * PUSH zurueckbehalten hinaus ("Zustaende retained", Hausstandard vom
+     * 03.09.2026). Die Entscheidungen des Hausherrn vom 18., 19. und
+     * 24.09.2026 (Regeln/07, Abschnitt 3) ordnen alle vier anders ein:
+     *   OK      "Termin und Route berechnet" - eine Aussage des Dienstes ueber
+     *           seine eigene Rechnung; ok ist nie retained.
+     *   FEHLER  Fehlergrund 0-8, darunter "Kalender bzw. Kartendienst nicht
+     *           erreichbar" - ebenfalls der Dienst ueber sich selbst.
+     *   AUDIO   haengt an den Sperrzeiten, PUSH mit "Sperrzeit auch fuer Push"
+     *   PUSH    ebenso: beide werden allein durch die Uhr falsch (Zeitbezug).
+     * Stirbt der Dienst, bliebe jeder dieser Werte zurueckbehalten stehen, und
+     * nach einem Neustart von Broker oder Gateway laese Loxone "in Ordnung"
+     * bzw. "Ansage erlaubt" von einem Dienst, der nicht mehr rechnet. Preis:
+     * nach einem Neustart des Miniservers fehlen die Werte bis zum naechsten
+     * Vollversand (mqtt_vollsend_min, ab Werk 15 Minuten). Die Altwerte der
+     * Vorfassungen raeumt abfahrt_mqtt_altlast() ab, die Deinstallation
+     * abfahrt_mqtt_leeren(). In WSL gemessen: Pruefung-Abfahrtsassistent-1.6.13,
+     * Faelle R1 bis R23 und U1 bis U7.
      *
-     * Danach sind Zustaende: OK, FEHLER, AUDIO, PUSH. Die fuenf uebrigen
-     * beschreiben einen Zeitpunkt oder eine Dauer und bleiben ohne Retain -
-     * ALTER ganz besonders: es IST die Ausfallerkennung, und retained
-     * behauptete es fuer immer, die Rechnung sei eben erst gelaufen.
-     *
-     * Gemessen 06.09.2026 am Geraet: bis 1.6.7 ging alles ohne Retain
-     * hinaus (--retained-only auf abfahrt/# blieb leer), und zwischen zwei
-     * Vollversaenden - ab Werk alle 15 Minuten - standen die Eingaenge
-     * eines neu gestarteten Miniservers leer. */
+     * Die fuenf Zahlen mit Zeitbezug waren nie retained - ALTER ganz
+     * besonders: es IST die Ausfallerkennung, und retained behauptete es fuer
+     * immer, die Rechnung sei eben erst gelaufen. */
     /* Seit 1.6.10 drei weitere Elemente:
      *   [5] geht ueber MQTT hinaus (1/0)
      *   [6] Einheit fuer die Importvorlage ('' = keine)
@@ -2088,14 +2207,14 @@ function abfahrt_felder() {
      * JEDEM Cron-Lauf hinaus, nie retained. Ueber HTTP bleibt ALTER, dort
      * stimmt es (termin.php liest zum Abrufzeitpunkt). */
     return [
-        'OK'         => [0, 0, 1, 'FELD.OK', 1, 1, '', 0],
+        'OK'         => [0, 0, 1, 'FELD.OK', 0, 1, '', 0],
         'MINSTART'   => [1, 0, 99999, 'FELD.MINSTART', 0, 1, 'min', 9999],
         'FAHRT'      => [1, 0, 1440, 'FELD.FAHRT', 0, 1, 'min', 0],
         'ABFAHRT_IN' => [1, -9999, 9999, 'FELD.ABFAHRT_IN', 0, 1, 'min', 9999],
-        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER', 1, 1, '', 0],
+        'FEHLER'     => [1, 0, 9, 'FELD.FEHLER', 0, 1, '', 0],
         'ALTER'      => [1, 0, 86400, 'FELD.ALTER', 0, 0, 's', 86400],
-        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO', 1, 1, '', 0],
-        'PUSH'       => [0, 0, 1, 'FELD.PUSH', 1, 1, '', 0],
+        'AUDIO'      => [0, 0, 1, 'FELD.AUDIO', 0, 1, '', 0],
+        'PUSH'       => [0, 0, 1, 'FELD.PUSH', 0, 1, '', 0],
         // Neu in 1.6.0. Steht am ENDE, damit die Reihenfolge der bisherigen
         // Felder - und damit jede eingetragene Befehlserkennung - gleich
         // bleibt. 1440 heisst "unbekannt"; gueltige Werte sind 0..1439.
@@ -2398,10 +2517,13 @@ function abfahrt_berechnen(?array $abfcfg = null) {
  * ================================================================== */
 
 function abfahrt_mqtt_zustand() {
-    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
+    /* Nur mit den Pfaden der Anlage (abfahrt_paths()): aus einem Archiv geht
+     * nichts an das Gateway der Anlage (Pruefung-Abfahrtsassistent-1.6.13,
+     * Fall B6). */
+    $abf_p = abfahrt_paths();
     $aus = ['gefunden' => false, 'udpport' => 0, 'autostart' => false];
-    if ($lb === '') { return $aus; }
-    $f = $lb . '/config/system/general.json';
+    if ($abf_p['general'] === '') { return $aus; }
+    $f = $abf_p['general'];
     if (!is_file($f)) { return $aus; }
     $d = json_decode((string) @file_get_contents($f), true);
     if (!isset($d['Mqtt'])) { return $aus; }
@@ -2482,8 +2604,12 @@ define('ABFAHRT_MQTT_PAUSE_US', 50000);
  *
  * $extra nimmt Themen ausserhalb der Feldtabelle auf (das Lebenszeichen):
  * array(thema_ohne_vorsatz => wert), immer "publish".
+ *
+ * $raeumen (feldname => true): vor diesen Feldern geht zuerst eine leere
+ * retain-Nutzlast hinaus, die den Altwert einer Vorfassung loescht
+ * (abfahrt_mqtt_altlast()).
  */
-function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra = array()) {
+function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra = array(), array $raeumen = array()) {
     if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
     if (empty($abfcfg['mqtt_ein'])) { return false; }
     $m = abfahrt_mqtt_zustand();
@@ -2503,16 +2629,26 @@ function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra =
     foreach ($werte as $name => $wert) {
         if (!abfahrt_feld_mqtt($name)) { continue; }
         $w = abf_mqtt_wert_saeubern($wert);
+        if (isset($raeumen[$name])) {
+            /* Den Altwert einer Vorfassung abraeumen: die leere retain-Nutzlast
+             * geht UNMITTELBAR vor dem gueltigen Wert hinaus. "retain <thema> "
+             * mit dem Leerzeichen und ohne Zeilenende ist die Form, die das
+             * Gateway als Loeschung an den Broker gibt (mqttgateway.pl:281,
+             * :357; am Geraet am 19.09.2026 belegt, Regeln/07). Wer das Thema
+             * abonniert hat, bekommt die Loeschung als leere Nachricht und den
+             * Wert gleich dahinter. */
+            $zeilen[] = 'retain ' . $abfcfg['mqtt_topic'] . '/' . $name . ' ';
+        }
         $befehl = (abfahrt_feld_retain($name) && $w !== '') ? 'retain' : 'publish';
-        $zeilen[] = $befehl . ' ' . $abfcfg['mqtt_topic'] . '/' . $name . ' ' . $w;
+        $zeilen[] = $befehl . ' ' . $abfcfg['mqtt_topic'] . '/' . $name . ' ' . $w . "\n";
     }
     foreach ($extra as $thema => $wert) {
-        $zeilen[] = 'publish ' . $abfcfg['mqtt_topic'] . '/' . $thema . ' ' . abf_mqtt_wert_saeubern($wert);
+        $zeilen[] = 'publish ' . $abfcfg['mqtt_topic'] . '/' . $thema . ' ' . abf_mqtt_wert_saeubern($wert) . "\n";
     }
     $raus = 0;
     foreach ($zeilen as $i => $z) {
         if ($i > 0) { usleep(ABFAHRT_MQTT_PAUSE_US); }
-        if (@fwrite($sock, $z . "\n") !== false) {
+        if (@fwrite($sock, $z) !== false) {
             $raus++;
         }
     }
@@ -2522,6 +2658,376 @@ function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra =
         return false;
     }
     return $raus;
+}
+
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht
+ * mehr tun: OK, FEHLER, AUDIO und PUSH, retained gesendet von 1.6.8 bis
+ * 1.6.12 (gemessen am 25.09.2026 an den Archiven 1.6.4 bis 1.6.12; bis 1.6.7
+ * ging alles mit "publish" hinaus, das Lebenszeichen nie retained).
+ * Abgezogen wird, was heute noch zurueckbehalten hinausgeht. Ihre Altwerte
+ * stehen auf bestehenden Anlagen im Broker, bis jemand sie loescht - ein
+ * spaeteres "publish" ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function abfahrt_mqtt_frueher_behalten()
+{
+    $aus = array();
+    foreach (array('OK', 'FEHLER', 'AUDIO', 'PUSH') as $t) {
+        if (!abfahrt_feld_retain($t)) { $aus[] = $t; }
+    }
+    return $aus;
+}
+
+/**
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat oder heute
+ * sendet - fuer die Deinstallation.
+ */
+function abfahrt_mqtt_leer_themen()
+{
+    $t = array();
+    foreach (abfahrt_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(abfahrt_felder()) as $k) {
+        if (abfahrt_feld_retain($k)) { $t[$k] = true; }
+    }
+    return array_keys($t);
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat JEDES Abonnement bestaetigt; was dann nicht
+ * unter 'belegt' steht, ist leer. 'unbekannt': er war nicht zu fragen
+ * (keine Wurzel, keine Verbindung, Anmeldung abgewiesen - CONNACK ungleich 0 -,
+ * ein Abonnement abgelehnt - SUBACK-Rueckgabebyte ab 0x80 -, eine unpassende
+ * oder gar keine Antwort). "Nicht zu fragen" heisst nie "nichts belegt".
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet sendto() auch fuer ein verworfenes Datagramm Erfolg. Am
+ * Geraet gemessen (Regeln/07, "Ein Absender merkt nichts davon", Nachtraege
+ * vom 19.09.2026): Beschattungswaechter 0.9.19 und KODI-NG 1.2.7 setzten
+ * ihren Merker nach dem Senden, der Eingang verwarf, und der Altwert stand
+ * weiter im Broker. Belegt ist das Abraeumen erst, wenn der Broker selbst
+ * sagt, dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; Bauart awm_mqtt_behalten_liste() aus AWM-Abfuhr 1.4.14
+ * (dort aus Spotpreis-Tibber 0.9.19, SUBACK-Pruefung aus
+ * Beschattungswaechter 0.9.21). Die Anmeldung nimmt Brokeruser/Brokerpass
+ * aus der general.json (Regeln/07, Abschnitt 2); das Kennwort steht nur im
+ * CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
+ */
+function abfahrt_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = abfahrt_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('abfrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        /* CONNACK: Rueckgabecode im zweiten Byte, nur 0 heisst angemeldet. */
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $pakete = array_chunk(array_keys($soll), 50);
+            $kennung = 0;
+            foreach ($pakete as $teil) {
+                $kennung++;
+                $sub = pack('n', $kennung);
+                foreach ($teil as $t) { $sub .= $zk($t) . chr(0); }
+                @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            }
+            $bestaetigt = 0;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Hinter der Paketkennung je Filter ein Rueckgabebyte, in der
+                       Reihenfolge des SUBSCRIBE mit dieser Kennung; ab 0x80 heisst
+                       abgelehnt (etwa durch eine ACL). Danach schickt der Broker
+                       nichts - ein bloss gezaehltes SUBACK hiesse dann "nichts
+                       belegt", und der Merker laege auf einer Antwort, die keine
+                       war (AWM-Abfuhr 1.4.14; hier Faelle R18 und R19). Ein
+                       abgelehntes oder unpassendes SUBACK zaehlt nicht, die
+                       Rueckfrage endet "nicht zu fragen". */
+                    $rc = (string) substr($pk[1], 2);
+                    $nr = (strlen($pk[1]) >= 2) ? (int) unpack('n', substr($pk[1], 0, 2))[1] : 0;
+                    if (!isset($pakete[$nr - 1]) || strlen($rc) !== count($pakete[$nr - 1])) { break; }
+                    $abgelehnt = false;
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt++;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    if ($bestaetigt >= count($pakete)) {
+                        $ende = min($ende, microtime(true) + 1.0);
+                    }
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                    }
+                }
+            }
+            if ($bestaetigt >= count($pakete)) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<feldname>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus abfahrt_mqtt_frueher_behalten()
+ *      unter dem eingestellten Praefix fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt');
+ *      nicht zu fragen -> alle, in JEDEM Lauf, kein Merker ('unbekannt').
+ * Der Dienst schickt die genannten Themen in diesem Lauf mit, auch wenn sich
+ * ihr Wert nicht geaendert hat, jeweils mit der leeren retain-Nutzlast
+ * unmittelbar davor. Ueber den UDP-Eingang gibt es keinen Merker auf den
+ * Sendeerfolg (Regeln/07, Nachtrag 19.09.2026; Auftrag der Nachlese,
+ * berichtigt 25.09.2026). Der Merker traegt die Kennung
+ * "leer-bestaetigt <praefix>: <Themenliste>" - ein anderer Inhalt, ein
+ * anderes Praefix, eine andere Liste gilt nicht, ebenso wenig ein Merker, den
+ * eine Vorfassung angelegt haette. Er liegt im Datenordner;
+ * purge_installation raeumt ihn bei jedem Upgrade mit ab, dann wird genau
+ * einmal nachgefragt. Bauart awm_mqtt_altlast() aus AWM-Abfuhr 1.4.13.
+ */
+function abfahrt_mqtt_altlast(array $abfcfg)
+{
+    static $cache = array();
+    $praefix = (string) $abfcfg['mqtt_topic'];
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $liste = abfahrt_mqtt_frueher_behalten();
+    $p = abfahrt_paths();
+    if ($p['lbhome'] === '' || !$liste) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $merker = $p['data'] . '/.mqtt_altlast_geraeumt';
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = abfahrt_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (!is_dir($p['data'])) { @mkdir($p['data'], 0775, true); }
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            abfahrt_log_gedrosselt('mqtt_merker', 'MQTT: Der Merker ' . $merker . ' liess sich nicht schreiben - '
+                . 'der Broker wird im naechsten Lauf wieder gefragt.', 3600);
+        } else {
+            abfahrt_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
+        }
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    abfahrt_log_gedrosselt('mqtt_rueckfrage', 'MQTT: Der Broker liess sich nicht befragen, ob unter '
+        . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden deshalb in jedem '
+        . 'Lauf unmittelbar vor dem Wert geloescht, bis der Broker antwortet.', 86400);
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Aus der Deinstallation (abfahrt_dienst.php --mqtt-leeren): die
+ * zurueckbehaltenen Themen der Linie leeren - unter dem eingestellten Praefix.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (abfahrt_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Ist der Broker nicht zu fragen, gehen alle
+ * Themen in jeder Runde hinaus, und die Ausgabe sagt, dass nicht nachgelesen
+ * wurde - der Eingang verwirft unter Last Datagramme (Regeln/07), ein blosses
+ * Senden ist kein Beleg. Geleert wird auch bei ausgeschaltetem MQTT: die
+ * Altwerte koennen aus der Zeit stammen, als es an war.
+ *
+ * Bis 1.6.12 raeumte die Deinstallation nichts ab: die zurueckbehaltenen
+ * Themen blieben im Broker, und nach jedem Neustart von Broker oder Gateway
+ * bekam der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt
+ * (in WSL gemessen, Pruefung-Abfahrtsassistent-1.6.13, Faelle U1 bis U7).
+ * Bauart awm_mqtt_leeren() aus AWM-Abfuhr 1.4.13.
+ *
+ * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
+ * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * der Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function abfahrt_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $p = abfahrt_paths();
+    if ($p['lbhome'] === '') {
+        echo "<WARNING> MQTT: kein LoxBerry-Wurzelverzeichnis (oder ein ausgepacktes Archiv) - "
+           . "zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $cfg = abfahrt_config();
+    $basis = (string) $cfg['mqtt_topic'];
+    $gen = @json_decode((string) @file_get_contents($p['general']), true);
+    $udpport = 0;
+    if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
+    if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
+    if (!$udpport) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $alle = array();
+    foreach (abfahrt_mqtt_leer_themen() as $t) { $alle[] = $basis . '/' . $t; }
+    $n = count($alle);
+    $f = abfahrt_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $basis
+           . "/ steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $i => $t) {
+            if ($i > 0) { usleep(ABFAHRT_MQTT_PAUSE_US); }
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = abfahrt_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $basis . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $udpport . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', $offen) . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
 }
 
 /**
@@ -2762,8 +3268,9 @@ function abfahrt_pruefungen(?array $abfcfg = null) {
 
     /* Steht der Cron-Eintrag da, und ist er eine Datei? MarstekVenus hatte
      * an dieser Stelle monatelang ein Verzeichnis (Regeln/06). */
-    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    $ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+    $abf_pc = abfahrt_paths();
+    $lb = $abf_pc['lbhome'];
+    $ordner = $abf_pc['plugin'];
     if ($lb === '') {
         $zeile(-1, abfahrt_t('TEST.F_CRON'), abfahrt_t('TEST.A_CRON_UNBEKANNT'));
     } else {
@@ -2930,7 +3437,8 @@ function abfahrt_geo_verwerfen() {
  */
 function abfahrt_ms4h_suchen() {
     $aus = ['gefunden' => false, 'port' => 0, 'zonen' => '', 'quelle' => ''];
-    $lb = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
+    $abf_pm = abfahrt_paths();
+    $lb = $abf_pm['lbhome'];
 
     // 1) Konfiguration eines installierten MS4H-Plugins lesen
     if ($lb !== '') {
@@ -3000,17 +3508,19 @@ function abfahrt_t($schluessel)
     static $texte = null;
     if ($texte === null) {
         // Installiert liegen die Dateien unter
-        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
-        // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
+        // <home>/templates/plugins/<ordner>/lang/. Wurzel und Ordner kommen
+        // aus abfahrt_paths(). Bis 1.6.12 stand hier ein fester Rueckfall
+        // auf das Heimverzeichnis des Benutzers loxberry, und ohne Wurzel
+        // wurde der Pfad ab der Laufwerkswurzel gebildet
+        // (/templates/plugins/html/lang) - eine
+        // fremde Sprachdatei dort gewann (in WSL gemessen,
+        // Pruefung-Abfahrtsassistent-1.6.13, Faelle C1 und C2).
+        $abf_pt = abfahrt_paths();
+        $pfad = '';
+        if ($abf_pt['lbhome'] !== '') {
+            $pfad = $abf_pt['lbhome'] . '/templates/plugins/' . $abf_pt['plugin'] . '/lang';
         }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
@@ -3115,7 +3625,7 @@ function abfahrt_heimnetz_host($h) {
 function abfahrt_config_heilen() {
     $p = abfahrt_paths();
     $datei = $p['config'];
-    $zweit = dirname($datei) . '.backup.json';
+    $zweit = $p['backup'];
     $meldungen = array();
 
     list($roh, $zustand) = abfahrt_config_roh($datei);
@@ -3220,7 +3730,7 @@ function abfahrt_config_speichern($cfg)
     /* Die Zweitschrift ebenso unteilbar. Scheitert sie, ist das Speichern
      * trotzdem gelungen - gemeldet wird es im Protokoll, weil die Heilung
      * sonst beim naechsten Anlass auf einen alten Stand zurueckfiele. */
-    $zweit = dirname($p['config']) . '.backup.json';
+    $zweit = $p['backup'];
     if (!abfahrt_datei_geheim_schreiben($zweit, $js)) {
         abfahrt_log('Konfiguration: Zweitschrift ' . $zweit . ' liess sich nicht schreiben.');
     }

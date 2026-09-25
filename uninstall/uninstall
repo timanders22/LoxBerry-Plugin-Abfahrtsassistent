@@ -49,6 +49,29 @@ entferne() {
     return 0
 }
 
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn
+# das Praefix steht in der Konfiguration. Bis 1.6.12 blieben OK, FEHLER, AUDIO
+# und PUSH (von 1.6.8 bis 1.6.12 retained gesendet) nach dem Deinstallieren im
+# Broker stehen, und nach jedem Neustart von Broker oder Gateway bekam der
+# Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt (in WSL
+# gemessen, Pruefung-Abfahrtsassistent-1.6.13, Faelle U1 bis U7). Geleert wird
+# ueber den Weg der Linie, den UDP-Eingang des Gateways, und beim Broker
+# nachgelesen (abfahrt_mqtt_leeren() in webfrontend/html/abfahrt_lib.php;
+# Bauart AWM-Abfuhr 1.4.13). Als loxberry, nicht als root; stdin geschlossen,
+# damit su nie auf eine Eingabe wartet.
+UN_DIENST="$UN_BASE/bin/plugins/$UN_FOLDER/abfahrt_dienst.php"
+if command -v php >/dev/null 2>&1 && [ -f "$UN_DIENST" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$UN_BASE" "LBPPLUGINDIR=$UN_FOLDER" \
+            timeout 120 php "$UN_DIENST" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$UN_BASE" "LBPPLUGINDIR=$UN_FOLDER" timeout 120 php "$UN_DIENST" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder $UN_DIENST fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
+
 entferne "$UN_BASE/config/plugins/$UN_FOLDER.backup.json"
 entferne "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung"
 entferne "/tmp/$UN_FOLDER"

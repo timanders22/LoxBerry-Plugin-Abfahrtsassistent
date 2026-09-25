@@ -53,18 +53,29 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * Datei wo gesucht wurde - auf STDERR und mit Rueckgabewert 1, damit ein
  * kuenftiger Ausfall sichtbar ist statt lautlos.
  */
-$abf_lb = getenv('LBHOMEDIR');
-$abf_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+/* SEIT 1.6.13 ENTSCHEIDET DER EIGENE ABLAGEORT, welcher Kandidat gilt.
+ * Bis 1.6.12 stand hier eine Liste, deren zweiter Eintrag immer drei Ebenen
+ * hinaufrechnete: aus einem ausgepackten Archiv unter / hiess das
+ * //webfrontend/html/plugins/bin/abfahrt_lib.php, und eine fremde Datei dort
+ * wurde eingebunden und ausgefuehrt (in WSL gemessen,
+ * Pruefung-Abfahrtsassistent-1.6.13, Fall C5). Der erste Eintrag galt nur,
+ * wenn LBHOMEDIR UND LBPPLUGINDIR ausdruecklich gesetzt sind - so ruft die
+ * Deinstallation. Bauart ZendureSolarFlow 0.9.26. */
 $abf_kandidaten = array();
-if ($abf_lb) {
+$abf_lb = (string) getenv('LBHOMEDIR');
+$abf_ordner = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+if ($abf_lb !== '' && $abf_ordner !== ''
+    && !in_array($abf_ordner, array('.', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend'), true)) {
     $abf_kandidaten[] = $abf_lb . '/webfrontend/html/plugins/' . $abf_ordner . '/abfahrt_lib.php';
 }
-// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
-// .../bin/plugins/<ordner>  ->  .../webfrontend/html/plugins/<ordner>
-$abf_kandidaten[] = dirname(dirname(dirname(__DIR__)))
-                  . '/webfrontend/html/plugins/' . basename(__DIR__) . '/abfahrt_lib.php';
-// entpacktes Archiv: bin/ und webfrontend/ liegen nebeneinander
-$abf_kandidaten[] = dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php';
+if (basename(dirname(__DIR__)) === 'plugins') {
+    // installiert: .../bin/plugins/<ordner>  ->  .../webfrontend/html/plugins/<ordner>
+    $abf_kandidaten[] = dirname(dirname(dirname(__DIR__)))
+                      . '/webfrontend/html/plugins/' . basename(__DIR__) . '/abfahrt_lib.php';
+} else {
+    // entpacktes Archiv: bin/ und webfrontend/ liegen nebeneinander
+    $abf_kandidaten[] = dirname(__DIR__) . '/webfrontend/html/abfahrt_lib.php';
+}
 
 $abf_lib = '';
 foreach ($abf_kandidaten as $abf_k) {
@@ -178,6 +189,13 @@ function abfahrt_selbsttest(array $abfcfg)
 }
 
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
+
+/* Aus der Deinstallation (uninstall/uninstall): die zurueckbehaltenen
+ * MQTT-Themen der Linie leeren (abfahrt_mqtt_leeren()). Keine Rechnung, keine
+ * Sperre, keine Datei. */
+if ($modus === '--mqtt-leeren') {
+    exit(abfahrt_mqtt_leeren());
+}
 $abfcfg = abfahrt_config();
 
 if ($modus === '--selbsttest') {
@@ -188,6 +206,14 @@ if ($modus === 'zeile') {
     echo abfahrt_zeile(abfahrt_stand(), $abfcfg) . "\n";
     exit(0);
 }
+
+/* Rechnen und Senden nur mit den Pfaden der Anlage. Aus einem ausgepackten
+ * Archiv oder ohne Wurzel steigt der Dienst hier aus - vor der Sperre, denn
+ * schon die legt eine Datei an. Bis 1.6.12 lief er auch dann: aus einem
+ * Archiv unter der Anlage schrieb er in deren Protokoll und sendete an deren
+ * Gateway, aus einem fremden Baum schrieb er dort hinein (in WSL gemessen,
+ * Pruefung-Abfahrtsassistent-1.6.13, Faelle B6, H2, C8). */
+abfahrt_keine_wurzel_abbruch('abfahrt_dienst.php');
 
 /* Nur ein Lauf gleichzeitig - sonst fragen zwei Laeufe denselben
    Kartendienst und verbrauchen zwei Kontingente fuer eine Antwort. */
@@ -286,9 +312,12 @@ if (!is_array($vorher)) { $vorher = []; }
  *
  * WOZU: Startet der MINISERVER neu, ohne dass der LoxBerry neu startet, sind
  * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
- * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Seit 1.6.8 gehen
- * die Zustaende retained hinaus; der Vollversand heilt zusaetzlich jedes
- * Datagramm, das der UDP-Eingang des Gateways verworfen hat.
+ * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Von 1.6.8 bis
+ * 1.6.12 gingen die Zustaende retained hinaus; seit 1.6.13 geht nichts mehr
+ * zurueckbehalten hinaus (Regeln/07, Abschnitt 3, siehe abfahrt_felder()),
+ * und der Vollversand ist der Weg, auf dem ein neu gestarteter Miniserver
+ * seine Werte wiederbekommt. Er heilt zusaetzlich jedes Datagramm, das der
+ * UDP-Eingang des Gateways verworfen hat.
  *
  * DIE ZEITMARKE IST EINE EIGENE DATEI (seit 1.6.10). Bis dahin diente die
  * Aenderungszeit von mqtt_letzte.json als Marke - und die wird bei JEDEM
@@ -312,6 +341,27 @@ foreach ($werte as $k => $v) {
         $neu[$k] = $v;
     }
 }
+/* Altwerte der Vorfassungen abraeumen. Bis 1.6.12 gingen OK, FEHLER, AUDIO
+ * und PUSH zurueckbehalten hinaus; ein spaeteres "publish" ersetzt den
+ * zurueckbehaltenen Wert im Broker nicht - er stuende nach jedem Neustart von
+ * Broker oder Gateway wieder da, auch wenn dieser Dienst laengst nicht mehr
+ * laeuft. abfahrt_mqtt_altlast() fragt den Broker; die Themen, die er noch
+ * haelt (oder alle vier, wenn er nicht zu fragen ist), gehen in DIESEM Lauf
+ * mit, jeweils mit der leeren Nutzlast unmittelbar vor dem Wert - auch wenn
+ * sich ihr Wert nicht geaendert hat. Einen Merker gibt es erst, wenn der
+ * Broker bestaetigt, dass keines mehr dasteht; auf den Sendeerfolg baut er
+ * nicht (der UDP-Eingang verwirft stumm, Regeln/07). In WSL gemessen:
+ * Pruefung-Abfahrtsassistent-1.6.13, Faelle R7 bis R22. */
+$abf_raeumen = array();
+if (!empty($abfcfg['mqtt_ein'])) {
+    $abf_alt = abfahrt_mqtt_altlast($abfcfg);
+    foreach ($abf_alt['themen'] as $abf_t) {
+        if (array_key_exists($abf_t, $werte) && abfahrt_feld_mqtt($abf_t)) {
+            $neu[$abf_t] = $werte[$abf_t];
+            $abf_raeumen[$abf_t] = true;
+        }
+    }
+}
 if ($neu) {
     /* Merker und Zeitmarke nur fortschreiben, wenn wirklich abgeschickt
      * wurde. Bis 1.6.9 wurde der Rueckgabewert nicht angesehen: war das
@@ -319,7 +369,7 @@ if ($neu) {
      * unveraenderten Zustaende kamen erst nach der naechsten Frist. Dass
      * "abgeschickt" nicht "angekommen" heisst, steht bei
      * abfahrt_mqtt_senden(). */
-    $abf_raus = abfahrt_mqtt_senden($neu, $abfcfg);
+    $abf_raus = abfahrt_mqtt_senden($neu, $abfcfg, array(), $abf_raeumen);
     if ($abf_raus !== false) {
         $js = json_encode($werte);
         if ($js !== false) { abfahrt_cache_schreiben($merker, $js); }
