@@ -188,6 +188,112 @@ function abfahrt_selbsttest(array $abfcfg)
     return $fehler ? 1 : 0;
 }
 
+/**
+ * Die Werte an MQTT - bei Aenderung, im Vollversand und mit dem Abraeumen der
+ * Altwerte. Seit 1.6.16 eine Funktion (M2): sie laeuft in JEDEM Minutenlauf,
+ * auch in dem, der nicht rechnet. Dann kommen die Werte aus dem Stand, ohne
+ * Netz und ohne Kartendienst - AUDIO und PUSH folgen so der Sperrzeit binnen
+ * einer Minute. Bis 1.6.15 stieg der Dienst ohne Rechnung vorher aus, und
+ * AUDIO blieb nach Beginn der Sperrzeit bis zu fuenf Minuten auf 1 (gemessen,
+ * MQTT-Pruefer M2); auch der Vollversand wurde nur in rechnenden Laeufen
+ * geprueft. Ohne Aenderung entsteht kein Verkehr.
+ */
+function abfahrt_dienst_mqtt(array $st, array $abfcfg)
+{
+    /* MQTT nur bei Aenderung.
+     *
+     * Der Countdown aendert sich zwar jede Minute, aber Loxone braucht ihn auch
+     * jede Minute. Was NICHT jede Minute gesendet werden muss, sind die
+     * unveraenderten Freigaben und Fehlerzustaende - die stehen sonst
+     * hundertmal am Tag gleich im Broker. Verglichen wird deshalb feldweise. */
+    $werte = abfahrt_werte($st, $abfcfg);
+    $merker = abfahrt_tmpdir() . '/mqtt_letzte.json';
+    $vorher = @json_decode((string) @file_get_contents($merker), true);
+    if (!is_array($vorher)) { $vorher = []; }
+
+    /* Vollversand im Takt (neu in 1.6.0; ab Werk alle 15 Minuten).
+     *
+     * WOZU: Startet der MINISERVER neu, ohne dass der LoxBerry neu startet, sind
+     * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
+     * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Seit 1.6.13
+     * geht nichts mehr zurueckbehalten hinaus (Regeln/07, Abschnitt 3, siehe
+     * abfahrt_felder()), und der Vollversand ist der Weg, auf dem ein neu
+     * gestarteter Miniserver seine Werte wiederbekommt. Er heilt zusaetzlich
+     * jedes Datagramm, das der UDP-Eingang des Gateways verworfen hat.
+     *
+     * DIE ZEITMARKE IST EINE EIGENE DATEI (seit 1.6.10): die Aenderungszeit von
+     * mqtt_letzte.json wird bei JEDEM Versand fortgeschrieben, und bei
+     * laufendem Countdown wurde der Vollversand nie faellig.
+     */
+    $stempel = abfahrt_tmpdir() . '/mqtt_voll.stamp';
+    $voll = false;
+    $vollAlle = (int) $abfcfg['mqtt_vollsend_min'];
+    if ($vollAlle > 0) {
+        $letzterVoll = is_file($stempel) ? (int) filemtime($stempel) : 0;
+        if (time() - $letzterVoll >= $vollAlle * 60) {
+            $voll = true;
+        }
+    }
+
+    $neu = [];
+    foreach ($werte as $k => $v) {
+        if (!abfahrt_feld_mqtt($k)) { continue; }   // ALTER nur ueber HTTP
+        if ($voll || !array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) {
+            $neu[$k] = $v;
+        }
+    }
+    /* Altwerte der Vorfassungen abraeumen (bis 1.6.12 gingen OK, FEHLER, AUDIO
+     * und PUSH zurueckbehalten hinaus). abfahrt_mqtt_altlast() fragt den
+     * Broker; die Themen, die er noch haelt (oder alle vier, wenn er nicht zu
+     * fragen ist - seit 1.6.16 hoechstens einmal am Tag, M3), gehen in DIESEM
+     * Lauf mit, jeweils mit der leeren Nutzlast unmittelbar vor dem Wert. Einen
+     * Merker gibt es erst, wenn der Broker bestaetigt, dass keines mehr
+     * dasteht (Regeln/07). In WSL gemessen: Pruefung-Abfahrtsassistent-1.6.13,
+     * Faelle R7 bis R22. */
+    $abf_raeumen = array();
+    if (!empty($abfcfg['mqtt_ein'])) {
+        $abf_alt = abfahrt_mqtt_altlast($abfcfg);
+        foreach ($abf_alt['themen'] as $abf_t) {
+            if (array_key_exists($abf_t, $werte) && abfahrt_feld_mqtt($abf_t)) {
+                $neu[$abf_t] = $werte[$abf_t];
+                $abf_raeumen[$abf_t] = true;
+            }
+        }
+    }
+    if ($neu) {
+        /* Merker und Zeitmarke nur fortschreiben, wenn wirklich abgeschickt
+         * wurde ("abgeschickt" heisst nicht "angekommen", siehe
+         * abfahrt_mqtt_senden()). */
+        $abf_raus = abfahrt_mqtt_senden($neu, $abfcfg, array(), $abf_raeumen);
+        if ($abf_raus !== false) {
+            $js = json_encode($werte);
+            if ($js !== false) { abfahrt_cache_schreiben($merker, $js); }
+            if ($voll) { @touch($stempel); }
+        } elseif (!empty($abfcfg['mqtt_ein'])) {
+            abfahrt_log_gedrosselt('mqtt_fehl', 'MQTT: Versand nicht moeglich - naechster Versuch im naechsten Lauf.', 900);
+        }
+    } elseif ($voll) {
+        // Nichts zu senden, aber die Frist ist abgelaufen - Zeitstempel
+        // trotzdem fortschreiben, sonst laeuft der Vollversand jede Minute an.
+        @touch($stempel);
+    }
+}
+
+/**
+ * Das Lebenszeichen zu seinem Zeitpunkt (M7, Durchgang 29.09.2026): nicht mehr
+ * in Sekunde 0 des Cronlaufs, sondern 5 bis 40 s danach (Zufall je Lauf, beim
+ * erzwungenen Lauf sofort), und nach den Werten. Bis 1.6.15 ging es +0,05 s
+ * nach dem Start hinaus, mitten in der Spitze: laut Regeln/07 fallen 32 %
+ * aller UDP-IN-Zeilen des Gateways in die Sekunden 00 bis 05. Ob das den
+ * Verlust am Gateway mindert, ist nur am echten Geraet zu messen.
+ */
+function abfahrt_dienst_lebenszeichen(array $abfcfg, $ziel)
+{
+    $rest = (float) $ziel - microtime(true);
+    if ($rest > 0) { usleep((int) ($rest * 1000000)); }
+    abfahrt_lebenszeichen($abfcfg, abfahrt_stand());
+}
+
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
 
 /* Aus der Deinstallation (uninstall/uninstall): die zurueckbehaltenen
@@ -265,8 +371,13 @@ abfahrt_config_heilen();
 $abfcfg = abfahrt_config();
 
 /* Das Lebenszeichen geht bei JEDEM Lauf hinaus, auch wenn gleich nicht
- * gerechnet wird (Hausstandard, Regeln/07). */
-abfahrt_lebenszeichen($abfcfg, abfahrt_stand());
+ * gerechnet wird (Hausstandard, Regeln/07) - seit 1.6.16 aber erst am Ende
+ * des Laufs, 5 bis 40 s nach dem Start (M7, abfahrt_dienst_lebenszeichen()). */
+$abf_lz_ziel = microtime(true) + (($modus === 'jetzt') ? 0 : mt_rand(5, 40));
+
+/* M5: die Abo-Datei des Gateways im Takt auf das eingestellte Praefix
+ * nachfuehren - nur, wenn sie abweicht (abfahrt_abo_datei()). */
+abfahrt_abo_datei($abfcfg['mqtt_topic'], true);
 
 /**
  * Wie oft wird ueberhaupt neu gerechnet?
@@ -279,10 +390,16 @@ abfahrt_lebenszeichen($abfcfg, abfahrt_stand());
  */
 $stand = abfahrt_stand();
 $alter = $stand['zeit'] > 0 ? time() - (int) $stand['zeit'] : 999999;
-$nah = ((int) $stand['abfahrt_in'] <= 60 && (int) $stand['ok'] === 1);
-$faellig = ($modus === 'jetzt') || $alter >= ($nah ? 55 : 295);
+/* C4: der Takt kommt aus abfahrt_rechentakt() - derselben Stelle, an der
+ * die Altersgrenze von OK haengt (5 s Luft zum Minutentakt wie bisher:
+ * 55 bzw. 295 s). */
+$faellig = ($modus === 'jetzt') || $alter >= abfahrt_rechentakt($stand) - 5;
 
 if (!$faellig) {
+    /* M2: auch ohne Rechnung die Werte aus dem Stand bilden und Aenderungen
+     * senden (ohne Netz); danach das Lebenszeichen. */
+    abfahrt_dienst_mqtt($stand, $abfcfg);
+    abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
     flock($fh, LOCK_UN);
     fclose($fh);
     exit(0);
@@ -317,95 +434,9 @@ if ($abf_sig !== $abf_vorher) {
     @file_put_contents($abf_sigdatei, $abf_sig);
 }
 
-/* MQTT nur bei Aenderung.
- *
- * Der Countdown aendert sich zwar jede Minute, aber Loxone braucht ihn auch
- * jede Minute. Was NICHT jede Minute gesendet werden muss, sind die
- * unveraenderten Freigaben und Fehlerzustaende - die stehen sonst
- * hundertmal am Tag gleich im Broker. Verglichen wird deshalb feldweise. */
-$werte = abfahrt_werte($st, $abfcfg);
-$merker = abfahrt_tmpdir() . '/mqtt_letzte.json';
-$vorher = @json_decode((string) @file_get_contents($merker), true);
-if (!is_array($vorher)) { $vorher = []; }
-
-/* Vollversand im Takt (neu in 1.6.0; ab Werk alle 15 Minuten).
- *
- * BERICHTIGT 1.6.10: hier stand "ab Werk aus" und "ab Werk bleibt es beim
- * Senden nur bei Aenderung". Die Vorgabe in abfahrt_vorgaben() ist seit 1.6.0
- * 15 Minuten - gemessen am Geraet am 06.09.2026 (wirksamer Wert 15).
- *
- * WOZU: Startet der MINISERVER neu, ohne dass der LoxBerry neu startet, sind
- * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
- * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Von 1.6.8 bis
- * 1.6.12 gingen die Zustaende retained hinaus; seit 1.6.13 geht nichts mehr
- * zurueckbehalten hinaus (Regeln/07, Abschnitt 3, siehe abfahrt_felder()),
- * und der Vollversand ist der Weg, auf dem ein neu gestarteter Miniserver
- * seine Werte wiederbekommt. Er heilt zusaetzlich jedes Datagramm, das der
- * UDP-Eingang des Gateways verworfen hat.
- *
- * DIE ZEITMARKE IST EINE EIGENE DATEI (seit 1.6.10). Bis dahin diente die
- * Aenderungszeit von mqtt_letzte.json als Marke - und die wird bei JEDEM
- * Versand fortgeschrieben. Laeuft ein Countdown, aendert sich MINSTART jede
- * Minute, und der Vollversand wurde nie faellig.
- */
-$stempel = abfahrt_tmpdir() . '/mqtt_voll.stamp';
-$voll = false;
-$vollAlle = (int) $abfcfg['mqtt_vollsend_min'];
-if ($vollAlle > 0) {
-    $letzterVoll = is_file($stempel) ? (int) filemtime($stempel) : 0;
-    if (time() - $letzterVoll >= $vollAlle * 60) {
-        $voll = true;
-    }
-}
-
-$neu = [];
-foreach ($werte as $k => $v) {
-    if (!abfahrt_feld_mqtt($k)) { continue; }   // ALTER nur ueber HTTP
-    if ($voll || !array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) {
-        $neu[$k] = $v;
-    }
-}
-/* Altwerte der Vorfassungen abraeumen. Bis 1.6.12 gingen OK, FEHLER, AUDIO
- * und PUSH zurueckbehalten hinaus; ein spaeteres "publish" ersetzt den
- * zurueckbehaltenen Wert im Broker nicht - er stuende nach jedem Neustart von
- * Broker oder Gateway wieder da, auch wenn dieser Dienst laengst nicht mehr
- * laeuft. abfahrt_mqtt_altlast() fragt den Broker; die Themen, die er noch
- * haelt (oder alle vier, wenn er nicht zu fragen ist), gehen in DIESEM Lauf
- * mit, jeweils mit der leeren Nutzlast unmittelbar vor dem Wert - auch wenn
- * sich ihr Wert nicht geaendert hat. Einen Merker gibt es erst, wenn der
- * Broker bestaetigt, dass keines mehr dasteht; auf den Sendeerfolg baut er
- * nicht (der UDP-Eingang verwirft stumm, Regeln/07). In WSL gemessen:
- * Pruefung-Abfahrtsassistent-1.6.13, Faelle R7 bis R22. */
-$abf_raeumen = array();
-if (!empty($abfcfg['mqtt_ein'])) {
-    $abf_alt = abfahrt_mqtt_altlast($abfcfg);
-    foreach ($abf_alt['themen'] as $abf_t) {
-        if (array_key_exists($abf_t, $werte) && abfahrt_feld_mqtt($abf_t)) {
-            $neu[$abf_t] = $werte[$abf_t];
-            $abf_raeumen[$abf_t] = true;
-        }
-    }
-}
-if ($neu) {
-    /* Merker und Zeitmarke nur fortschreiben, wenn wirklich abgeschickt
-     * wurde. Bis 1.6.9 wurde der Rueckgabewert nicht angesehen: war das
-     * Gateway kurz weg, galten die Werte trotzdem als gesendet, und die
-     * unveraenderten Zustaende kamen erst nach der naechsten Frist. Dass
-     * "abgeschickt" nicht "angekommen" heisst, steht bei
-     * abfahrt_mqtt_senden(). */
-    $abf_raus = abfahrt_mqtt_senden($neu, $abfcfg, array(), $abf_raeumen);
-    if ($abf_raus !== false) {
-        $js = json_encode($werte);
-        if ($js !== false) { abfahrt_cache_schreiben($merker, $js); }
-        if ($voll) { @touch($stempel); }
-    } elseif (!empty($abfcfg['mqtt_ein'])) {
-        abfahrt_log_gedrosselt('mqtt_fehl', 'MQTT: Versand nicht moeglich - naechster Versuch im naechsten Lauf.', 900);
-    }
-} elseif ($voll) {
-    // Nichts zu senden, aber die Frist ist abgelaufen - Zeitstempel
-    // trotzdem fortschreiben, sonst laeuft der Vollversand jede Minute an.
-    @touch($stempel);
-}
+/* Die Werte an MQTT (abfahrt_dienst_mqtt(), M2), danach das Lebenszeichen (M7). */
+abfahrt_dienst_mqtt($st, $abfcfg);
+abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
 
 flock($fh, LOCK_UN);
 fclose($fh);

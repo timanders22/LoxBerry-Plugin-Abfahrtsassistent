@@ -95,7 +95,17 @@ $eigener = isset($_GET['text']) ? abfahrt_tts_sauber($_GET['text']) : '';
  * einen Termin, den es nicht gibt. Mit ?force=1 oder eigenem ?text= bleibt
  * die Ansage moeglich (Testknopf). */
 $abf_stand = abfahrt_stand();
-if (!abfahrt_schalter('force') && $eigener === '' && (int) $abf_stand['ok'] !== 1) {
+/* C4 (Entscheidung 4, Durchgang 29.09.2026): dieselbe Grenze wie OK im
+ * Endpunkt - ein Stand, der aelter ist als das Dreifache des Rechentakts, ist
+ * kein gueltiger Termin mehr. Bis 1.6.15 sprach die Ansage fuer einen Stand
+ * beliebigen Alters (gemessen: ALTER=7200). */
+if (!abfahrt_schalter('force') && $eigener === '' && abfahrt_ok_wirksam($abf_stand) !== 1) {
+    if ((int) $abf_stand['ok'] === 1) {
+        abfahrt_log('Ansage unterdrueckt: der Stand ist ' . (time() - (int) $abf_stand['zeit'])
+            . ' s alt (Grenze ' . (3 * abfahrt_rechentakt($abf_stand)) . ' s) - rechnet der Dienst noch?');
+        echo "SKIP: Stand zu alt (OK=0)\n";
+        exit;
+    }
     abfahrt_log('Ansage unterdrueckt: kein gueltiger Termin (OK=0, FEHLER=' . (int) $abf_stand['fehler'] . ')');
     echo "SKIP: kein gueltiger Termin (OK=0)\n";
     exit;

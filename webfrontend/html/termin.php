@@ -12,7 +12,10 @@
  *   FAHRT      = aktuelle Fahrzeit dorthin in Minuten (inkl. Verkehrslage)
  *   ABFAHRT_IN = Minuten bis zur empfohlenen Abfahrt
  *                (= MINSTART - FAHRT - Ankunftsreserve - Pufferzeit)
- *   OK         = 1 wenn Termin+Route berechnet, sonst 0 (dann MINSTART=9999)
+ *   OK         = 1 wenn Termin+Route berechnet, sonst 0 (dann MINSTART=9999).
+ *                Seit 1.6.16 auch 0, sobald ALTER das Dreifache des
+ *                Rechentakts uebersteigt (900 s, in der letzten Stunde vor der
+ *                Abfahrt 180 s; abfahrt_ok_wirksam(), Entscheidung 4)
  *   ALTER      = Alter der Berechnung in Sekunden - fuer die Ausfallerkennung
  *   ANKUNFT    = Ankunftszeit in Minuten seit Mitternacht, 1440 = unbekannt
  *   FEHLER     = 0 kein Fehler

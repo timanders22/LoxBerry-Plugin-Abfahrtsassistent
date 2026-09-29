@@ -10,6 +10,14 @@
 #   config/plugins/<x>.backup.json       - die Zweitschrift der Einstellungen
 #   data/plugins/<x>.upgrade_sicherung   - die Sicherung waehrend des Updates
 #
+# Seit 1.6.16 (I1, Entscheidung 1) dazu, nur wenn vorhanden:
+#   config/plugins/<x>.backup.json.alt, data/plugins/<x>.upgrade_sicherung.alt
+#                                        - bei einer Neuinstallation beiseitegelegt
+#   data/plugins/<x>.upgrade_sicherung.neu - eine halb gebaute Sicherung
+#   data/plugins/<x>.upgrade_laeuft        - die Marke eines abgebrochenen Updates
+#   config/plugins/<x>.backup.json.*.neu   - Nebendatei eines abgebrochenen Schreibens
+#                                            (bis 1.6.15 blieb sie liegen, Fall G2)
+#
 # Dazu der Zwischenordner /tmp/<x> (Zwischenstaende, Kalenderkopien).
 #
 # Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
@@ -92,4 +100,17 @@ fi
 entferne "$UN_BASE/config/plugins/$UN_FOLDER.backup.json"
 entferne "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung"
 entferne "/tmp/$UN_FOLDER"
+# I1: nur melden, was da war - eine Neuinstallation ohne Reste soll im
+# Protokoll nicht fuenf Zeilen "War nicht vorhanden" bekommen.
+entferne_falls() {
+    if [ -e "$1" ] || [ -L "$1" ]; then entferne "$1"; fi
+    return 0
+}
+entferne_falls "$UN_BASE/config/plugins/$UN_FOLDER.backup.json.alt"
+entferne_falls "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt"
+entferne_falls "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.neu"
+entferne_falls "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_laeuft"
+for UN_NEBEN in "$UN_BASE/config/plugins/$UN_FOLDER".backup.json.*.neu; do
+    entferne_falls "$UN_NEBEN"
+done
 exit 0

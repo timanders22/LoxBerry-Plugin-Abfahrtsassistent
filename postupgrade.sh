@@ -40,11 +40,28 @@ hat_merkwort() {
         exit(0);' "$1" 2>/dev/null
 }
 
+# I1 (Entscheidung 1, Durchgang 29.09.2026): die Marke von preupgrade.sh
+# (data/plugins/<ordner>.upgrade_laeuft) raeumt dieses Skript ab - per trap,
+# also auch, wenn es vorzeitig endet. Der Rueckgabewert bleibt der des
+# Skripts. Bliebe sie liegen, hielte sich eine spaetere Neuinstallation fuer
+# eine Aktualisierung.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+abf_marke_weg() {
+    abf_rc=$?
+    rm -f "$MARKE" 2>/dev/null
+    if [ -e "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - bitte von Hand loeschen, sonst haelt sich eine spaetere Neuinstallation fuer eine Aktualisierung."
+    fi
+    exit $abf_rc
+}
+trap abf_marke_weg EXIT
+
 # Dort hat preupgrade.sh gesichert - NEBEN dem Ordner, weil der
 # Installer data/plugins/<x>/ zwischen beiden Skripten loescht.
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 CFGDIR="$BASE/config/plugins/$PFOLDER"
 CF="$CFGDIR/abfahrt.json"
+BK="$BASE/config/plugins/$PFOLDER.backup.json"
 
 mkdir -p "$CFGDIR" 2>/dev/null
 
@@ -55,7 +72,32 @@ mkdir -p "$CFGDIR" 2>/dev/null
 # da, und das rm -rf raeumte auch eine Logdatei weg, deren Kopie gescheitert
 # war.
 ALLES_GUT=1
-if [ -f "$SICHER/abfahrt.json" ]; then
+ABF_UNBRAUCHBAR=0
+# I2 (Durchgang 29.09.2026): Die Sicherung wird VOR dem Kopieren geprueft.
+# Bis 1.6.15 kopierte dieses Skript auch eine Sicherung ohne lesbares Merkwort
+# ueber die Konfiguration - auch ueber eine, die der Minutentakt in der
+# Upgrade-Luecke schon aus der Zweitschrift geheilt hatte (in WSL gemessen,
+# Installer-Pruefer Fall C2b: danach 62 Byte, kein JSON), und forderte zur
+# Neueinrichtung auf. Jetzt: die heile Datei bleibt stehen, sonst kommt die
+# Zweitschrift (die laufende Rueckfallkopie, Entscheidung 1), und die
+# unbrauchbare Sicherung geht nach .alt.
+abf_aus_zweitschrift() {
+    if cp "$BK" "$CF" 2>/dev/null && cmp -s "$BK" "$CF"; then
+        echo "<OK> Konfiguration aus der Zweitschrift wiederhergestellt: $BK"
+    else
+        ALLES_GUT=0
+        echo "<WARNING> Die Zweitschrift liess sich nicht zurueckspielen: $BK"
+    fi
+}
+if [ -f "$SICHER/abfahrt.json" ] && ! hat_merkwort "$SICHER/abfahrt.json"; then
+    ABF_UNBRAUCHBAR=1
+    echo "<WARNING> Die Update-Sicherung traegt keine eingerichtete Konfiguration (kein lesbares Merkwort) - sie wird nicht zurueckgespielt."
+    if hat_merkwort "$CF"; then
+        echo "<INFO> Die vorhandene Konfiguration traegt ein Merkwort und bleibt stehen."
+    elif hat_merkwort "$BK"; then
+        abf_aus_zweitschrift
+    fi
+elif [ -f "$SICHER/abfahrt.json" ]; then
     if cp -p "$SICHER/abfahrt.json" "$CF" 2>/dev/null && cmp -s "$SICHER/abfahrt.json" "$CF"; then
         # Geloescht wird die Sicherung nur, wenn das Zurueckgespielte Inhalt
         # traegt. Bis 1.6.12 fiel sie auch nach einer abgeschnittenen oder
@@ -72,6 +114,13 @@ if [ -f "$SICHER/abfahrt.json" ]; then
         echo "<FAIL> Die gesicherte Konfiguration liess sich NICHT zurueckspielen."
         echo "<INFO> Sie bleibt liegen: $SICHER/abfahrt.json"
     fi
+elif ! hat_merkwort "$CF" && hat_merkwort "$BK"; then
+    # Keine Update-Sicherung, keine eingerichtete Konfiguration: bei einer
+    # Aktualisierung darf die Zweitschrift zurueckgespielt werden
+    # (Entscheidung 1). Fall E: die Sicherung eines frueheren Vorgangs hat
+    # preupgrade.sh weggeraeumt (I3).
+    echo "<INFO> Keine Update-Sicherung vorhanden."
+    abf_aus_zweitschrift
 else
     echo "<INFO> Keine Update-Sicherung vorhanden - die Konfiguration bleibt, wie sie ist."
 fi
@@ -99,6 +148,17 @@ fi
 # (ein chmod vor cp -p ist wirkungslos, Regeln/06).
 chmod 600 "$CF" 2>/dev/null
 [ -f "$BASE/config/plugins/$PFOLDER.backup.json" ] && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
+
+# I2: eine unbrauchbare Sicherung geht nach .alt (die Deinstallation raeumt
+# sie ab) - sie bleibt nicht als Update-Sicherung liegen.
+if [ "$ABF_UNBRAUCHBAR" = "1" ] && [ -d "$SICHER" ]; then
+    rm -rf "${SICHER:?}.alt" 2>/dev/null
+    if mv -f "$SICHER" "$SICHER.alt" 2>/dev/null; then
+        echo "<INFO> Die unbrauchbare Update-Sicherung liegt beiseite: $SICHER.alt"
+    else
+        echo "<WARNING> Die unbrauchbare Update-Sicherung liess sich nicht beiseitelegen: $SICHER"
+    fi
+fi
 
 # Der Nachbar hat seinen Zweck erfuellt. Was neben dem Ordner liegt,
 # raeumt niemand sonst weg - und er traegt die Zugangsdaten mit.

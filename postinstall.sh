@@ -4,14 +4,17 @@
 # command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
 #
 # LoxBerry ruft beim Upgrade BEIDE Haken auf: postinstall.sh und danach
-# postupgrade.sh (Regeln/06). Zurueckgespielt wird deshalb an genau EINER
-# Stelle je Fall:
-#   - Aktualisierung (die Sicherung von preupgrade.sh liegt da):
-#     postupgrade.sh spielt zurueck, dieses Skript fasst die Datei nicht an.
-#   - Neuinstallation nach einer Deinstallation ohne Aufraeumen, oder eine
-#     zerstoerte Datei: dieses Skript spielt die Zweitschrift zurueck.
-# Bis 1.6.9 taten es beide, und das Protokoll trug zwei Erfolgsmeldungen aus
-# zwei verschiedenen Quellen.
+# postupgrade.sh (Regeln/06). Seit 1.6.16 (I1, Entscheidung 1 vom 29.09.2026)
+# spielt dieses Skript NICHTS mehr zurueck:
+#   - Aktualisierung (Marke data/plugins/<ordner>.upgrade_laeuft von
+#     preupgrade.sh): postupgrade.sh spielt zurueck, aus der Update-Sicherung
+#     oder aus der Zweitschrift.
+#   - Neuinstallation (keine Marke): preinstall.sh hat Zweitschrift und
+#     Update-Sicherung einer frueheren Installation schon nach .alt gelegt.
+# Bis 1.6.15 entschied hier das Vorhandensein der Update-Sicherung, und eine
+# Neuinstallation spielte die Zweitschrift einer frueheren Installation zurueck
+# (in WSL gemessen, Installer-Pruefer Fall D). Bis 1.6.9 spielten beide
+# Skripte zurueck.
 
 ARGV3=$3 # Plugin installation folder
 ARGV5=$5 # LoxBerry base folder
@@ -56,19 +59,13 @@ hat_merkwort() {
         exit(0);' "$1" 2>/dev/null
 }
 
-if [ -f "$SICHER/abfahrt.json" ]; then
+# I1: Aktualisierung oder Neuinstallation - das sagt allein die Marke (kein
+# Altersvergleich, Entscheidung 1).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
     AKTUALISIERUNG=1
 else
     AKTUALISIERUNG=0
-fi
-
-if [ "$AKTUALISIERUNG" = "0" ] && ! hat_merkwort "$CF" && hat_merkwort "$BK"; then
-    if cp "$BK" "$CF" 2>/dev/null && cmp -s "$BK" "$CF"; then
-        chmod 600 "$CF" 2>/dev/null
-        echo "<OK> Konfiguration aus der Zweitschrift wiederhergestellt: $BK"
-    else
-        echo "<WARNING> Die Zweitschrift liess sich nicht zurueckspielen: $BK"
-    fi
 fi
 
 # Leere Konfiguration anlegen, falls noch keine da ist (KEINE persoenlichen
@@ -87,8 +84,14 @@ fi
 chmod 600 "$CF" 2>/dev/null
 [ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
 
-if [ "$AKTUALISIERUNG" = "1" ]; then
+# I4: "wird im naechsten Schritt zurueckgespielt" nur bei einer Aktualisierung
+# (Marke) und nur, wenn eine Update-Sicherung daliegt. Bis 1.6.15 stand der
+# Satz auch bei einer Neuinstallation mit liegengebliebener Sicherung, und
+# einen naechsten Schritt gab es nicht (Installer-Pruefer Fall D4).
+if [ "$AKTUALISIERUNG" = "1" ] && [ -f "$SICHER/abfahrt.json" ]; then
     echo "<OK> Dateien eingespielt. Die gesicherte Konfiguration wird im naechsten Schritt zurueckgespielt."
+elif [ "$AKTUALISIERUNG" = "1" ]; then
+    echo "<OK> Dateien eingespielt. Die Konfiguration wird im naechsten Schritt (postupgrade.sh) geprueft."
 elif hat_merkwort "$CF"; then
     echo "<OK> Installation abgeschlossen. Die Konfiguration ist vorhanden."
 else

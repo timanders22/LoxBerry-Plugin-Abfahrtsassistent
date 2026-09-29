@@ -186,7 +186,10 @@ if ($abf_post && !abf_formtoken_ok($abfcfg)) {
 if ($abf_post && isset($_POST['download'])) {
     $host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
     $host = $host !== '' ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', $host) : '';
-    $v = abfahrt_vorlage($host);
+    /* U7: download=xml_out ist die Vorlage der Steuerbefehle (Ansage mit
+     * Merkwort), sonst die Eingangsvorlage wie bisher. */
+    $v = (is_string($_POST['download']) && $_POST['download'] === 'xml_out')
+       ? abfahrt_vorlage_ausgang($host) : abfahrt_vorlage($host);
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $v[0] . '"');
     header('Content-Length: ' . strlen($v[1]));
@@ -211,9 +214,11 @@ if ($abf_post && isset($_POST['abfahrt_sichern'])) {
 }
 
 // ---------- Audio-Server suchen ----------
-if ($abf_post && isset($_POST['ms4h_suchen'])) {
-    abf_umleiten($data_dir, 'tab-settings', array('ms4h' => abfahrt_ms4h_suchen()));
-}
+/* U3 (Durchgang 29.09.2026): Der Knopf sitzt im Einstellungsformular und
+ * laeuft deshalb durch den Speichern-Zweig weiter unten - erst wird
+ * gespeichert wie bei "Neu einlesen", dann gesucht. Bis 1.6.15 stand hier ein
+ * eigener Zweig, der nur suchte und umleitete: alle ungespeicherten Eingaben
+ * gingen still verloren (gemessen, Oberflaechen-Pruefer 3). */
 
 // ---------- Selbsttest des Merkworts (loest nichts aus) ----------
 /* Drei Ausgaenge (Regeln/04): die richtige Antwort, eine andere Antwort, gar
@@ -275,7 +280,8 @@ function abf_feld(array &$ziel, array $alt, $schluessel, $wert, array &$hinweise
     $grund = '';
     $gut = abfahrt_wert_pruefen($schluessel, $wert, $grund);
     if ($gut === null) {
-        $hinweise[] = sprintf(abfahrt_t('MELDUNG.FELD_ABGEWIESEN'), abfahrt_t('FELDNAME.' . strtoupper($schluessel)), $grund);
+        $hinweise[] = sprintf(abfahrt_t('MELDUNG.FELD_ABGEWIESEN'), abfahrt_t('FELDNAME.' . strtoupper($schluessel)),
+                              abfahrt_grund_text($grund));     // U5
         $ziel[$schluessel] = $alt[$schluessel];
         return false;
     }
@@ -302,6 +308,27 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     if (!abfahrt_config_speichern($abf_neu)) {
         abf_umleiten($data_dir, 'tab-mqtt', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file)));
     }
+    /* M1 (Durchgang 29.09.2026): Wechseln Praefix oder Schalter, sendet der
+     * naechste Lauf alles (Merker und Zeitmarke des Vollversands weg; so macht
+     * es das Zurueckspielen schon). Bis 1.6.15 gingen nach einem
+     * Praefixwechsel nur die drei Lebenszeichen unter dem neuen Praefix
+     * hinaus, 0 von 8 Feldern (gemessen, MQTT-Pruefer M1). Beim Abschalten
+     * und beim Praefixwechsel wird unter dem BISHERIGEN Praefix geraeumt,
+     * falls dort etwas zurueckbehalten stehen kann. */
+    $abf_wechsel = ((string) $abf_neu['mqtt_topic'] !== (string) $abf_alt['mqtt_topic']);
+    $abf_aus = (!empty($abf_alt['mqtt_ein']) && empty($abf_neu['mqtt_ein']));
+    if ($abf_wechsel || (int) $abf_neu['mqtt_ein'] !== (int) $abf_alt['mqtt_ein']) {
+        $abf_tmp = abfahrt_tmpdir(false);
+        foreach (array('mqtt_letzte.json', 'mqtt_voll.stamp') as $abf_f) {
+            if (is_file($abf_tmp . '/' . $abf_f)) { @unlink($abf_tmp . '/' . $abf_f); }
+        }
+    }
+    if ($abf_wechsel || $abf_aus) {
+        $abf_r = abfahrt_mqtt_praefix_raeumen((string) $abf_alt['mqtt_topic'], $abf_aus ? 'aus' : 'wechsel');
+        if ($abf_r !== '') { $abf_hw[] = $abf_r; }
+    }
+    // M5: die Abo-Datei des Gateways auf das (neue) Praefix nachfuehren.
+    abfahrt_abo_datei($abf_neu['mqtt_topic'], true);
     abf_umleiten($data_dir, 'tab-mqtt', array('gespeichert' => 1, 'hinweise' => $abf_hw));
 }
 
@@ -314,6 +341,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     $abf_alt = abfahrt_config();
     $abfneu = $abf_alt;
     $abf_hw = array();
+    $abf_kal_pos = array();     // U1: Zeile im Formular -> Stelle in der neuen Liste
 
     /* Kalender. Kommt eine der beiden Listen nicht als Feld an, bleibt die
      * bestehende Kalenderliste unangetastet und es wird gemeldet. */
@@ -324,15 +352,33 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
             $abf_hw[] = abfahrt_t('MELDUNG.KAL_FORM');
         }
     } else {
+        /* U1 (Durchgang 29.09.2026): Die Adresse steht nicht mehr in der
+         * Seite. Ein leer abgeschicktes Adressfeld heisst "behalten";
+         * gefunden wird der bisherige Wert ueber das versteckte Feld cal_idx[]
+         * mit dem urspruenglichen Index, nicht ueber die Zeilennummer.
+         * Geloescht wird ein Kalender ueber seinen Haken cal_loeschen[<zeile>]. */
+        $abf_idx = isset($_POST['cal_idx']) && is_array($_POST['cal_idx']) ? $_POST['cal_idx'] : array();
+        $abf_weg = isset($_POST['cal_loeschen']) && is_array($_POST['cal_loeschen']) ? $_POST['cal_loeschen'] : array();
         $abf_liste = array();
         for ($i = 0; $i < 10; $i++) {
             $name = trim((string) (isset($abf_cal_name[$i]) && is_string($abf_cal_name[$i]) ? $abf_cal_name[$i] : ''));
             $url  = trim((string) (isset($abf_cal_url[$i])  && is_string($abf_cal_url[$i])  ? $abf_cal_url[$i]  : ''));
-            if ($url !== '' && !preg_match('#^https?://#i', $url)) {
+            $abf_ix = (isset($abf_idx[$i]) && is_string($abf_idx[$i]) && preg_match('/^\d{1,2}\z/', $abf_idx[$i]))
+                    ? (int) $abf_idx[$i] : -1;
+            $abf_alt_url = ($abf_ix >= 0 && isset($abf_alt['calendars'][$abf_ix]['url']))
+                         ? trim((string) $abf_alt['calendars'][$abf_ix]['url']) : '';
+            if (!empty($abf_weg[$i])) {
+                if ($url === '') { continue; }     // Zeile samt Name geloescht
+                $abf_hw[] = sprintf(abfahrt_t('MELDUNG.KAL_LOESCHEN_WIDERSPRUCH'), $i + 1);
+                $url = $abf_alt_url;
+            } elseif ($url === '') {
+                $url = $abf_alt_url;               // leer abgeschickt: behalten
+            } elseif (!preg_match('#^https?://#i', $url)) {
                 $abf_hw[] = sprintf(abfahrt_t('MELDUNG.KAL_URL'), $i + 1);
-                $url = trim((string) ($abf_alt['calendars'][$i]['url'] ?? ''));   // alten Wert behalten
+                $url = $abf_alt_url;               // alten Wert behalten
             }
             if ($name === '' && $url === '') { continue; }
+            $abf_kal_pos[$i] = count($abf_liste);
             $abf_liste[] = array('name' => $name, 'url' => $url);
         }
         abf_feld($abfneu, $abf_alt, 'calendars', $abf_liste, $abf_hw);
@@ -341,9 +387,23 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     $abf_post_text = function ($k) {
         return (isset($_POST[$k]) && is_string($_POST[$k])) ? trim($_POST[$k]) : '';
     };
-    foreach (array('provider', 'api_key', 'home_address', 'buffer_min', 'arrival_min',
+    foreach (array('provider', 'home_address', 'buffer_min', 'arrival_min',
                    'lookahead_hours', 'ignore_locations', 'ansage_vorlage', 'ganztags_zeit') as $abf_k) {
         abf_feld($abfneu, $abf_alt, $abf_k, $abf_post_text($abf_k), $abf_hw);
+    }
+    /* U1: Der Schluessel des Kartendienstes steht nicht mehr in der Seite.
+     * Leer abgeschickt heisst behalten, geloescht wird ueber den Haken
+     * api_key_loeschen; beides zugleich wird abgewiesen (Bauform Renault-NG
+     * 2.1.13, U6). Bis 1.6.15 stand der Schluessel als value im Formular. */
+    $abf_key = $abf_post_text('api_key');
+    if (!empty($_POST['api_key_loeschen'])) {
+        if ($abf_key !== '') {
+            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.API_KEY'));
+        } else {
+            $abfneu['api_key'] = '';
+        }
+    } elseif ($abf_key !== '') {
+        abf_feld($abfneu, $abf_alt, 'api_key', $abf_key, $abf_hw);
     }
     foreach (array('route_departat', 'quiet_push', 'ganztags_ein') as $abf_k) {
         $abfneu[$abf_k] = isset($_POST[$abf_k]) ? 1 : 0;
@@ -399,10 +459,14 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
 
     // ---------- Kalender neu einlesen ----------
     if (isset($_POST['refresh']) && is_string($_POST['refresh'])) {
-        $ri = (int) $_POST['refresh'];
+        /* U1: die Zeile des Knopfs auf die Stelle in der neuen Liste abbilden -
+         * wird im selben Absenden eine Zeile davor geloescht, verschiebt sich
+         * die Liste. */
+        $abf_rz = (int) $_POST['refresh'];
+        $ri = isset($abf_kal_pos[$abf_rz]) ? $abf_kal_pos[$abf_rz] : -1;
         $abfcfg2 = abfahrt_config();
         $rurl = trim((string) ($abfcfg2['calendars'][$ri]['url'] ?? ''));
-        $rname = trim((string) ($abfcfg2['calendars'][$ri]['name'] ?? '')) ?: ('#' . ($ri + 1));
+        $rname = trim((string) ($abfcfg2['calendars'][$ri]['name'] ?? '')) ?: ('#' . ($abf_rz + 1));
         if ($rurl !== '') {
             @unlink(abfahrt_tmpdir() . '/ics_' . md5($rurl));
             $abf_g = '';
@@ -411,8 +475,12 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
                 ? sprintf(abfahrt_t('MELDUNG.KAL_NEU'), $rname)
                 : sprintf(abfahrt_t('MELDUNG.KAL_NEU_FEHL'), $rname, $abf_g !== '' ? $abf_g : '?');
         } else {
-            $abf_erg['meldung'] = sprintf(abfahrt_t('MELDUNG.KAL_LEER'), $ri + 1);
+            $abf_erg['meldung'] = sprintf(abfahrt_t('MELDUNG.KAL_LEER'), $abf_rz + 1);
         }
+    }
+    // U3: "Audio-Server suchen" - gespeichert ist oben, jetzt suchen.
+    if (isset($_POST['ms4h_suchen'])) {
+        $abf_erg['ms4h'] = abfahrt_ms4h_suchen();
     }
     abf_umleiten($data_dir, 'tab-settings', $abf_erg);
 }
@@ -457,6 +525,9 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
             abfahrt_log('Konfiguration: Sicherung zurueckgespielt (' . (int) $abfahrt_n . ' Werte), '
                         . $abf_weg . ' Zwischenstaende verworfen.');
             $abf_hw[] = sprintf(abfahrt_t('MELDUNG.DIENST_NACHGEZOGEN'), $abf_weg);
+            // M5: das Praefix kann mit der Sicherung gewechselt haben.
+            $abf_nach = abfahrt_config();
+            abfahrt_abo_datei($abf_nach['mqtt_topic'], true);
         } else {
             $abf_hw[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
         }
@@ -487,6 +558,7 @@ $abf_kaldiag   = isset($abf_flash['kaldiag']) && is_array($abf_flash['kaldiag'])
 foreach ($abf_heilmeldungen as $abf_m) { $abf_hinweise[] = $abf_m; }
 
 $abfcfg = abfahrt_config();
+$abf_kal_echt = count($abfcfg['calendars']);     // U1: so viele Zeilen tragen einen Kalender
 while (count($abfcfg['calendars']) < 10) {
     $abfcfg['calendars'][] = ['name' => '', 'url' => ''];
 }
@@ -520,7 +592,10 @@ $abf_mz = abfahrt_mqtt_zustand();
 /* Die Farbe des Abo-Hinweises folgt der Gateway-Fassung: nur unter V1 ist
  * ein fehlender Eintrag ein Fehler. Bis 1.6.9 stand auch der V2-Satz
  * "einzutragen ist hier nichts" in einem roten Kasten. */
-$abf_abo_klasse = ((int) ($abf_mz['fassung'] ?? 0) === 1) ? 'sm-alert sm-err'
+/* M5: unter V1 ist das Abo nur dann ein Fehler, wenn die Abo-Datei des
+ * Plugins das Praefix nicht traegt. */
+list(, $abf_abo_da) = abfahrt_abo_datei($abfcfg['mqtt_topic']);
+$abf_abo_klasse = ((int) ($abf_mz['fassung'] ?? 0) === 1) ? ($abf_abo_da ? 'sm-hinweis' : 'sm-alert sm-err')
                 : (((int) ($abf_mz['fassung'] ?? 0) >= 2) ? 'sm-hinweis' : 'sm-warnung');
 
 if ($use_frame) {
@@ -696,12 +771,22 @@ if ($use_frame) {
 
 <h2><?= e(abfahrt_t('SEITE.H_KALENDER')) ?></h2>
 <p class="sm-small"><?= abfahrt_t('SEITE.KALENDER_HINWEIS') ?></p>
-<?php for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i]; ?>
+<p class="sm-small"><?= e(abfahrt_t('SEITE.GEHEIM_HINWEIS')) ?></p>
+<?php /* U1: Die Adresse steht nie mit Wert in der Seite - nur Rechner und
+         Anfang daneben. Das versteckte Feld cal_idx[] steht als LETZTES Kind,
+         damit die Breitenregeln (:first-child, :nth-child(2)) bleiben. */
+for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
+    $abf_kal_da = ($i < $abf_kal_echt && trim((string) $cal['url']) !== ''); ?>
 <div class="sm-cal">
     <input data-role="none" type="text" name="cal_name[]" value="<?= e($cal['name']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_KAL_NAME')) ?>">
-    <input data-role="none" type="text" name="cal_url[]" value="<?= e($cal['url']) ?>" placeholder="https://calendar.google.com/calendar/ical/.../basic.ics">
+    <input data-role="none" type="text" name="cal_url[]" value="" autocomplete="off" placeholder="<?= e($abf_kal_da ? abfahrt_t('SEITE.P_KAL_BEHALTEN') : 'https://calendar.google.com/calendar/ical/.../basic.ics') ?>">
     <button data-role="none" class="sm-rfbtn" type="submit" name="refresh" value="<?= $i ?>" formnovalidate title="<?= e(abfahrt_t('SEITE.T_NEU_EINLESEN')) ?>"><?= e(abfahrt_t('SEITE.K_NEU_EINLESEN')) ?></button>
+    <input data-role="none" type="hidden" name="cal_idx[]" value="<?= $i < $abf_kal_echt ? $i : '' ?>">
 </div>
+<?php if ($abf_kal_da) { ?>
+<div class="sm-small" style="margin:-2px 0 8px;"><?= e(sprintf(abfahrt_t('SEITE.KAL_HINTERLEGT'), abfahrt_adresse_kurz($cal['url']))) ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="cal_loeschen[<?= $i ?>]" value="1"> <?= e(abfahrt_t('SEITE.L_KAL_LOESCHEN')) ?></label></div>
+<?php } ?>
 <?php } ?>
 
 <h2><?= e(abfahrt_t('SEITE.H_KARTENDIENST')) ?></h2>
@@ -720,7 +805,13 @@ if ($use_frame) {
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_API_KEY')) ?></label>
-        <input data-role="none" type="password" name="api_key" value="<?= e($abfcfg['api_key']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_API_KEY')) ?>">
+<?php /* U1: nie mit Wert in der Seite; leer abgeschickt heisst behalten. */
+$abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
+        <input data-role="none" type="password" name="api_key" value="" autocomplete="new-password" placeholder="<?= e($abf_key_laenge > 0 ? sprintf(abfahrt_t('SEITE.P_API_KEY_HINTERLEGT'), $abf_key_laenge) : abfahrt_t('SEITE.P_API_KEY')) ?>">
+<?php if ($abf_key_laenge > 0) { ?>
+        <div class="sm-small"><?= e(sprintf(abfahrt_t('SEITE.KEY_HINTERLEGT'), $abf_key_laenge)) ?>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="api_key_loeschen" value="1"> <?= e(abfahrt_t('SEITE.L_KEY_LOESCHEN')) ?></label></div>
+<?php } ?>
     </div>
 </div>
 
@@ -803,9 +894,10 @@ if ($use_frame) {
 <?php } ?>
 <div class="sm-knopfreihe">
 <?php /* Der Suchknopf traegt seinen Namen selbst und sitzt im
-         Einstellungsformular: ein eigenes Formular an dieser Stelle waere
-         ein Formular im Formular, und das verwirft der Browser. */ ?>
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ms4h_suchen" value="1"><?= e(abfahrt_t('MS4H.K_SUCHEN')) ?></button>
+         Einstellungsformular (ein zweites darin verwirft der Browser). Seit
+         1.6.16 speichert er vorher wie "Neu einlesen" (U3) und traegt
+         deshalb die Aktionsfarbe. */ ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ms4h_suchen" value="1" title="<?= e(abfahrt_t('MS4H.T_SUCHEN')) ?>"><?= e(abfahrt_t('MS4H.K_SUCHEN')) ?></button>
 </div>
 <div class="sm-small"><?= abfahrt_t('MS4H.HINWEIS') ?></div>
     </div>
@@ -949,9 +1041,10 @@ $abf_regel = abfahrt_quiet_rule($abfcfg); ?>
     <td><?= e(abfahrt_t(!empty($abf_d[4]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td>
     <td><?= isset($abf_w[$abf_n]) ? e($abf_w[$abf_n]) : '&mdash;' ?></td></tr>
 <?php } ?>
-<?php foreach (array('status/ts', 'status/zaehler', 'status/ok') as $abf_lz) { ?>
+<?php /* M6: die Lebenszeichen-Themen aus abfahrt_lebenszeichen_themen(). */
+foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_lz) ?></span></td>
-    <td><?= e(abfahrt_t('MQTT.LZ_' . strtoupper(str_replace('status/', '', $abf_lz)))) ?></td>
+    <td><?= e(abfahrt_t($abf_lz_text)) ?></td>
     <td><?= e(abfahrt_t('MQTT.RETAIN_NIE')) ?></td>
     <td>&mdash;</td></tr>
 <?php } ?>
@@ -1002,10 +1095,10 @@ $abf_regel = abfahrt_quiet_rule($abfcfg); ?>
     <td><?= e(abfahrt_t($abf_d[3])) ?></td>
     <td><?= e(abfahrt_t(!empty($abf_d[4]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
-<?php foreach (array('status/ts', 'status/zaehler', 'status/ok') as $abf_lz) { ?>
+<?php foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_lz) ?></span></td>
     <td><span class="sm-mono"><?= e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_lz)) ?></span></td>
-    <td><?= e(abfahrt_t('MQTT.LZ_' . strtoupper(str_replace('status/', '', $abf_lz)))) ?></td>
+    <td><?= e(abfahrt_t($abf_lz_text)) ?></td>
     <td><?= e(abfahrt_t('MQTT.RETAIN_NIE')) ?></td></tr>
 <?php } ?>
 </table>
@@ -1045,6 +1138,7 @@ $abf_regel = abfahrt_quiet_rule($abfcfg); ?>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('LOX.H_VORLAGE')) ?></h3>
 <div class="sm-small"><?= abfahrt_t('LOX.VORLAGE_TEXT') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.VORLAGE_AUS_TEXT') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?= e(abfahrt_t('LEGENDE.TECHNIK')) ?></span>
 </div>
@@ -1054,6 +1148,12 @@ $abf_regel = abfahrt_quiet_rule($abfcfg); ?>
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= e(abfahrt_t('LOX.K_VORLAGE')) ?></button>
+</form>
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="download" value="xml_out">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= e(abfahrt_t('LOX.K_VORLAGE_AUS')) ?></button>
 </form>
 </div>
 </div>
@@ -1117,7 +1217,8 @@ foreach (abfahrt_felder() as $abf_n => $abf_d) {
 <h3 class="sm-h3"><?= e(abfahrt_t('TEST.H_SELBSTTEST')) ?></h3>
 <div class="sm-small"><?= abfahrt_t('TEST.SELBSTTEST_TEXT') ?></div>
 <?php
-$abf_pr = abfahrt_pruefungen($abfcfg);
+$abf_pr = abfahrt_pruefungen($abfcfg, array('quelle' => (string) @file_get_contents(__FILE__),
+                                            'muster' => $abf_muster));     // U6
 $abf_zahl = array(1 => 0, 0 => 0, -1 => 0);
 foreach ($abf_pr as $abf_z) { $abf_zahl[$abf_z[0] === 1 ? 1 : ($abf_z[0] === 0 ? 0 : -1)]++; }
 /* Drei Zahlen, und die Farbe folgt dem schlechtesten Punkt. Bis 1.6.9 zaehlte

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.15 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.16 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,53 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.16
+
+Die Durchsicht vom 29.09.2026 hatte vier Prüfer (Code, Oberfläche, Installer, MQTT). Jeder Punkt ist gemessen. Zu
+jedem gibt es eine Gegenprobe, die an 1.6.15 rot und an 1.6.16 grün ist. Gemessen wurde mit Attrappen für Kalender,
+Routendienst und Broker, ohne Netz.
+
+**Geheimnisse bleiben aus der Seite.** Der Schlüssel des Kartendienstes und die privaten Kalenderadressen standen im
+Klartext im Seitenquelltext. Jetzt zeigt die Seite nur „hinterlegt“ bzw. eine gekürzte Adresse:
+- Ein leeres Feld heißt „behalten“.
+- Gelöscht wird über einen Haken.
+
+**Termine.**
+- Serien mit Beginn in UTC (`…Z`) lagen nach jeder Zeitumstellung eine Stunde falsch, und gestrichene Einzeltermine
+  kamen trotzdem. Das ist behoben.
+- Ein Termin verschwand, wenn in der Datei eine Zeitzonen-Angabe hinter ihm stand. Er wird jetzt gefunden.
+- Ein Titel in einem anderen Zeichensatz ließ HTTP und Ansage beim alten Termin stehen, während MQTT den neuen
+  meldete. Jetzt zeigen alle drei denselben Termin.
+- An den Tagen der Zeitumstellung lag ANKUNFT eine Stunde daneben.
+
+**Ausfall wird erkannt.** Der Endpunkt meldet `OK=0`, sobald der Stand älter ist als der dreifache geltende Takt,
+also 900 s, in der letzten Stunde vor der Abfahrt 180 s. Die Ansage schweigt dann.
+
+**Loxone.**
+- Die Vorlage zeigte bei einer zweiten Installation auf die erste. Das ist behoben.
+- Neu: eine Vorlage für den virtuellen Ausgang der Ansage.
+
+**MQTT.**
+- AUDIO und PUSH folgen der Sperrzeit binnen einer Minute; bisher dauerte es bis zu fünf Minuten.
+- Nach einem Wechsel des Themenpräfixes geht sofort der volle Satz hinaus.
+- `mqtt_subscriptions.cfg` kommt mit, und das MQTT-Gateway liest sie.
+- Das Lebenszeichen geht ein paar Sekunden nach der Cron-Spitze hinaus, wenn weniger Plugins gleichzeitig senden.
+- Die Prüfzeile „Lebenszeichen“ zeigt nur noch einen Haken, wenn wirklich gesendet wurde.
+
+**Oberfläche.**
+- „Audio-Server suchen“ verwirft keine ungespeicherten Eingaben mehr.
+- „Ist die Konfiguration heil?“ nennt den Zustand vor der Selbstheilung.
+- Begründungen erscheinen in beiden Sprachen.
+- Neue Prüfzeilen für Formularmerkmal und Reiterleiste.
+
+**Installation.**
+- Neu ist `preinstall.sh`. Es legt bei einer Neuinstallation die Einstellungen einer früheren Installation als `.alt`
+  beiseite, noch bevor der erste Minutentakt sie einspielen kann. Bisher kamen altes Token, Kartendienst-Schlüssel und
+  Kalender zurück.
+- Ein Update spielt keine Sicherung aus einem früheren Vorgang mehr ein.
+- Ein Update überschreibt keine geheilte Konfiguration mehr mit einer kaputten Sicherung.
+- Die Deinstallation lässt keine Reste mehr liegen.
 
 ## Neu in 1.6.15
 
@@ -498,15 +545,27 @@ Der zyklische Leseaufruf von `termin.php` ohne Parameter bleibt frei — er gibt
 nur den Zwischenstand aus. Das Merkwort steht im Reiter *Einbindung in Loxone*,
 die dort angezeigten Adressen tragen es bereits.
 
+**`OK` hat eine Altersgrenze.** `OK` wird 0, sobald die letzte Berechnung
+älter ist als das Dreifache des Rechentakts: 900 s, in der letzten Stunde vor
+der Abfahrt 180 s. `ALTER` steht unverändert daneben. `termin_say.php` spricht
+mit derselben Grenze. Steht der Dienst, bleibt ein Countdown in Loxone so
+nicht mehr mit `OK=1` auf einem alten Stand stehen.
+
 **MQTT ist ab 1.5.0 der bevorzugte Weg.** Das Plugin rechnet im Hintergrund
-(`cron.01min`) und schiebt jede Änderung selbst zum Miniserver — Abo
-`abfahrt/#` im MQTT-Gateway eintragen. Gesendet wird nur, was sich geändert
-hat.
+(`cron.01min`) und schiebt jede Änderung selbst zum Miniserver. Gesendet wird
+nur, was sich geändert hat, und zwar in jedem Minutenlauf, auch ohne neue
+Rechnung: `AUDIO` und `PUSH` folgen der Sperrzeit binnen einer Minute. Das Abo
+bringt das Plugin selbst mit: `config/mqtt_subscriptions.cfg` trägt
+`abfahrt/#` und wird beim Speichern und im Minutentakt auf das eingestellte
+Präfix nachgeführt. Das MQTT-Gateway (Fassung 1) liest die Datei selbst, in
+seiner Abo-Liste erscheint sie nicht. Ab Fassung 2 erscheint die Themengruppe
+von selbst.
 
 **Virtueller HTTP-Eingang** bleibt daneben bestehen. Befehlserkennung mit
 **führendem Semikolon**: `\i;ABFAHRT_IN=\i\v`. Der Reiter *Einbindung in
 Loxone* erzeugt auf Knopfdruck eine fertige Importdatei mit allen neun
-Eingängen.
+Eingängen. Ein zweiter Knopf, *Vorlage der Steuerbefehle erzeugen*, legt den
+virtuellen Ausgang für die Ansage an; diese Datei trägt das Merkwort.
 
 `FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,
 2 kein API-Key, 3 keine Abfahrtsadresse, 4 kein Termin, 6 Kartendienst tot,
