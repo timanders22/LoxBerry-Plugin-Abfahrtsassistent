@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.16 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.17 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,14 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.17
+
+Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
+noch unter PHP 7 aufgerufen. Ab PHP 8.0 wirkt der Aufruf nicht mehr, und
+PHP 8.5 meldet ihn zur Laufzeit als veraltet. Bei eingeschalteter
+Fehleranzeige konnte diese Meldung vor einer Antwort an Loxone landen. Am
+LoxBerry mit PHP 7.4 ändert sich nichts.
 
 ## Neu in 1.6.16
 

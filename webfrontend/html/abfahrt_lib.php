@@ -638,7 +638,7 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
         $errno = curl_errno($ch);
         $fehler = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         $grund = abfahrt_http_grund($errno, $fehler, $status);
         if ($r === false || $grund !== '') { return false; }
         return $r;
