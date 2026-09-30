@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.17 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,28 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.18
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+für die Kartendienste unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Gründe und Diagnose in der Sprache des LoxBerry:** die Gründe bei
+  `FEHLER=6` (Geokodierung, Routing, mit Kennung wie `HTTP_ZEIT`), die Zeilen
+  von `?debug=1` und das Protokoll des Dienstes. Der Minutentakt liest die
+  Sprache aus den LoxBerry-Einstellungen; bis 1.6.17 war er fest deutsch. Der
+  Reiter Test zeigt den Grund in der Sprache der Oberfläche.
+* Umlaute statt Umschrift: wer im Protokoll nach „fuer“ oder „ - “ sucht, findet
+  jetzt „für“ bzw. „ – “. FEHLER-, OK- und Fahrzeitwerte sind unverändert.
+* **Nach einer Beanstandung wird nichts gespeichert** – auch die übrigen Felder
+  nicht, und mitgedrückte Knöpfe („Neu einlesen“, „Audio-Server suchen“) laufen
+  nicht. Bis 1.6.17 wurde der Rest gespeichert; ein halb richtiges MQTT-Formular
+  schaltete dabei MQTT ab. Die eingetippten Werte stehen wieder im Formular, das
+  beanstandete Feld ist rot umrandet; Schlüssel und Kalenderadressen kommen nie
+  zurück.
+* „Einstellungen sichern“ warnt gelb, wenn das Zurückspielen die Datei abweisen
+  würde; die Datei kommt trotzdem und trägt dann `_warnung` mit den Namen.
 
 ## Neu in 1.6.17
 

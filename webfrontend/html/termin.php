@@ -122,23 +122,25 @@ if ($debug) {
     foreach ($diag as $d) {
         echo "DEBUG: $d\n";
     }
+    /* b1 (Welle 2, 30.09.2026): die Zeilen aus [DIAG], der Grund aus der
+     * Kennung des Stands. Der Vorsatz "DEBUG" bleibt in jeder Sprache gleich. */
     if ((int) $st['zeit'] === 0) {
-        echo "DEBUG: Noch keine Berechnung vorhanden. Laeuft der Cron?\n";
+        echo 'DEBUG: ' . abfahrt_t('DIAG.NOCH_KEINE') . "\n";
     }
-    if ($st['grund'] !== '') {
-        echo 'DEBUG: ' . $st['grund'] . "\n";
+    $abf_grund = abfahrt_stand_grund($st);
+    if ($abf_grund !== '') {
+        echo 'DEBUG: ' . $abf_grund . "\n";
     }
     if ((int) $st['ok'] === 1) {
-        echo 'DEBUG Termin: ' . $st['titel'] . "\n";
-        echo 'DEBUG Kalender: ' . $st['kalender'] . "\n";
-        echo 'DEBUG Ort: ' . $st['ort'] . "\n";
-        echo 'DEBUG Beginn: ' . $st['beginn'] . ' (in ' . (int) $st['minstart'] . " min)\n";
-        echo 'DEBUG Fahrzeit: ' . $st['fahrt'] . ' min (' . $abfcfg['provider'] . ")\n";
-        echo 'DEBUG Ankunftsreserve: ' . (int) $abfcfg['arrival_min']
-           . ' min, Puffer: ' . (int) $abfcfg['buffer_min'] . " min\n";
-        echo 'DEBUG Abfahrt in: ' . (int) $st['abfahrt_in'] . " min\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_TERMIN'), $st['titel']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_KALENDER'), $st['kalender']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_ORT'), $st['ort']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_BEGINN'), $st['beginn'], (int) $st['minstart']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_FAHRZEIT'), $st['fahrt'], $abfcfg['provider']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_RESERVE'), (int) $abfcfg['arrival_min'], (int) $abfcfg['buffer_min']) . "\n";
+        echo 'DEBUG ' . sprintf(abfahrt_t('DIAG.D_ABFAHRT_IN'), (int) $st['abfahrt_in']) . "\n";
         if ((int) $st['fehler'] === 7) {
-            echo "DEBUG Hinweis: Kartendienst nicht erreichbar - Fahrzeit aus dem Zwischenspeicher (FEHLER=7)\n";
+            echo 'DEBUG ' . abfahrt_t('DIAG.D_HINWEIS_7') . "\n";
         }
     }
     echo "\n";
@@ -169,8 +171,9 @@ if (is_dir($abf_tmp) && is_dir($abf_logdir)) {
     $sig = preg_replace('/(MINSTART|FAHRT|ABFAHRT_IN|ALTER|ANKUNFT)=[-0-9.]+/', '', $out);
     $prev = is_file($f) ? trim((string) @file_get_contents($f)) : '';
     if ($sig !== $prev) {
+        $abf_sg = abfahrt_stand_grund($st);     // b1: Grund in der Sprache dieses Laufs
         abfahrt_log('Ergebnis: ' . $out . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : '')
-                  . ($st['grund'] !== '' ? ' [' . $st['grund'] . ']' : ''));
+                  . ($abf_sg !== '' ? ' [' . $abf_sg . ']' : ''));
         @file_put_contents($f, $sig);
     }
 }

@@ -576,25 +576,34 @@ function abfahrt_http_kopf() {
  * Der nackte Fehlertext hilft niemandem: "erreichbar, aber es antwortet nichts"
  * und "kein Weg dorthin" fuehren zu voellig verschiedenen Suchen.
  */
-function abfahrt_http_grund($errno, $fehler, $status) {
+function abfahrt_http_grund_id($errno, $fehler, $status) {
     /* U5 (Durchgang 29.09.2026): Kennung plus Sprachschluessel GRUND.*
      * (abfahrt_grund_text()). Bis 1.6.15 standen hier feste deutsche Saetze in
-     * Umschrift - auch in der englischen Oberflaeche. */
-    if ($errno === 7)  { return abfahrt_grund_text('HTTP_ABGEWIESEN'); }
-    if ($errno === 6)  { return abfahrt_grund_text('HTTP_NAME'); }
-    if ($errno === 28) { return abfahrt_grund_text('HTTP_ZEIT'); }
-    if ($errno === 35 || $errno === 60) { return abfahrt_grund_text('HTTP_TLS'); }
-    if ($errno !== 0)  { return abfahrt_grund_text('HTTP_NETZ|' . (int) $errno . '|' . str_replace('|', '/', (string) $fehler)); }
-    if ($status === 401 || $status === 403) { return abfahrt_grund_text('HTTP_ZUGANG|' . (int) $status); }
-    if ($status === 404) { return abfahrt_grund_text('HTTP_404'); }
-    if ($status === 429) { return abfahrt_grund_text('HTTP_429'); }
-    if ($status >= 500)  { return abfahrt_grund_text('HTTP_GEGENSEITE|' . (int) $status); }
-    if ($status >= 400)  { return abfahrt_grund_text('HTTP_STATUS|' . (int) $status); }
+     * Umschrift - auch in der englischen Oberflaeche.
+     * b1 (Welle 2, 30.09.2026): Rueckgabe ist die KENNUNG, nicht der Satz.
+     * Geokodierung und Routing haengen sie an ihre eigene Kennung, damit der
+     * ganze Grund in der Sprache dessen erscheint, der ihn liest (Oberflaeche
+     * oder Protokoll), nicht in der des Minutentakts, der ihn schrieb. */
+    if ($errno === 7)  { return 'HTTP_ABGEWIESEN'; }
+    if ($errno === 6)  { return 'HTTP_NAME'; }
+    if ($errno === 28) { return 'HTTP_ZEIT'; }
+    if ($errno === 35 || $errno === 60) { return 'HTTP_TLS'; }
+    if ($errno !== 0)  { return 'HTTP_NETZ|' . (int) $errno . '|' . abfahrt_grund_teil($fehler); }
+    if ($status === 401 || $status === 403) { return 'HTTP_ZUGANG|' . (int) $status; }
+    if ($status === 404) { return 'HTTP_404'; }
+    if ($status === 429) { return 'HTTP_429'; }
+    if ($status >= 500)  { return 'HTTP_GEGENSEITE|' . (int) $status; }
+    if ($status >= 400)  { return 'HTTP_STATUS|' . (int) $status; }
     /* Eine Weiterleitung, der nicht gefolgt wurde, ist KEIN Erfolg. Ohne
      * diese Zeile kam der Rumpf der Weiterleitungsseite als Nutzdaten
      * zurueck (gemessen 04.09.2026 im Zweig ohne php-curl). */
-    if ($status >= 300)  { return abfahrt_grund_text('HTTP_WEITERLEITUNG|' . (int) $status); }
+    if ($status >= 300)  { return 'HTTP_WEITERLEITUNG|' . (int) $status; }
     return '';
+}
+
+/** Ein Wert fuer eine Kennung: ohne senkrechten Strich (b1, Welle 2). */
+function abfahrt_grund_teil($x) {
+    return str_replace('|', '/', (string) $x);
 }
 
 /**
@@ -610,12 +619,14 @@ function abfahrt_http_grund($errno, $fehler, $status) {
  * Adressen - in denen der API-Schluessel steht - je nach vorhandenem php-curl
  * unterschiedlich weit wandern koennen. Beide folgen jetzt hoechstens einer.
  */
-function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
+function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0, &$grund_id = '') {
     $grund = '';
     $status = 0;
+    $grund_id = '';     // b1: derselbe Grund als Kennung (GRUND.*)
     if (!preg_match('#^https?://#i', (string) $url)) {
         // Beide Abrufwege: file://, php:// und Verwandte werden nie geoeffnet.
-        $grund = abfahrt_grund_text('HTTP_KEIN_HTTP');     // U5
+        $grund_id = 'HTTP_KEIN_HTTP';     // U5, b1
+        $grund = abfahrt_grund_text($grund_id);
         return false;
     }
     if (function_exists('curl_init')) {
@@ -639,7 +650,8 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
         $fehler = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        $grund = abfahrt_http_grund($errno, $fehler, $status);
+        $grund_id = abfahrt_http_grund_id($errno, $fehler, $status);
+        $grund = $grund_id !== '' ? abfahrt_grund_text($grund_id) : '';
         if ($r === false || $grund !== '') { return false; }
         return $r;
     }
@@ -697,9 +709,12 @@ function abfahrt_http_get($url, $timeout = 12, &$grund = '', &$status = 0) {
             }
         }
     }
-    $grund = abfahrt_http_grund(0, '', $status);
+    $grund_id = abfahrt_http_grund_id(0, '', $status);
+    if ($r === false && $grund_id === '') {
+        $grund_id = 'HTTP_OHNE_CURL';     // U5, b1
+    }
+    $grund = $grund_id !== '' ? abfahrt_grund_text($grund_id) : '';
     if ($r === false) {
-        $grund = $grund !== '' ? $grund : abfahrt_grund_text('HTTP_OHNE_CURL');     // U5
         return false;
     }
     return $grund === '' ? $r : false;
@@ -1127,7 +1142,7 @@ function abfahrt_fetch_ics($url, &$grund = '', &$veraltet = false, &$alter = 0) 
         return $neu;
     }
     if ($neu !== false && $grund === '') {
-        $grund = 'Antwort ist kein vollstaendiger iCal-Kalender';
+        $grund = abfahrt_grund_text('ICS_UNVOLLSTAENDIG');     // b1
     }
     /* Fehlgeschlagen - notfalls der alte Stand, aber NUR innerhalb der
      * Gnadenfrist, und der Aufrufer erfaehrt es ueber $veraltet. */
@@ -1476,17 +1491,17 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
         $ics = abfahrt_fetch_ics($url, $ladegrund, $kalAlt, $kalAlter);
         if ($ics === false) {
             $kallage['tot']++;
-            $diag[] = "Kalender '$name': nicht ladbar"
-                    . ($ladegrund !== '' ? ' - ' . $ladegrund : '');
+            // b1: Diagnosezeilen aus [DIAG] (Sprache des Lesers bzw. des Laufs).
+            $diag[] = $ladegrund !== '' ? sprintf(abfahrt_t('DIAG.KAL_NICHT_LADBAR_GRUND'), $name, $ladegrund)
+                                        : sprintf(abfahrt_t('DIAG.KAL_NICHT_LADBAR'), $name);
             continue;
         }
         $kallage['gelesen']++;
         if ($kalAlt) {
             $kallage['veraltet']++;
-            $diag[] = "Kalender '$name': Abruf gescheitert ($ladegrund) - es gilt der letzte Stand,"
-                    . ' ' . (int) round($kalAlter / 60) . ' Minuten alt';
+            $diag[] = sprintf(abfahrt_t('DIAG.KAL_ALTER_STAND'), $name, $ladegrund, (int) round($kalAlter / 60));
         } elseif ($ladegrund !== '') {
-            $diag[] = "Kalender '$name': $ladegrund";
+            $diag[] = sprintf(abfahrt_t('DIAG.KAL_HINWEIS'), $name, $ladegrund);
         }
         $ics = preg_replace("/\r?\n[ \t]/", '', $ics); // Zeilenfaltung aufloesen
         // C3: erst entfalten, dann auf gueltiges UTF-8 bringen (bis 1.6.15 fehlte das).
@@ -1536,7 +1551,7 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
             if ($loc !== '') {
                 list($loc, $abf_treffer) = abfahrt_ort_aufloesen($loc, $abfcfg);
                 if ($abf_treffer !== '') {
-                    $diag[] = "Ortsbuch: '" . $abf_treffer . "' -> '" . $loc . "'";
+                    $diag[] = sprintf(abfahrt_t('DIAG.ORTSBUCH'), $abf_treffer, $loc);     // b1
                 }
             }
             $pSt = abfahrt_prop($ev, 'STATUS');
@@ -1926,7 +1941,7 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
             }
         }
         $kallage['mit_ort'] += $count2;
-        $diag[] = "Kalender '$name': $count2 Termin(e) mit Ort im Zeitfenster";
+        $diag[] = sprintf(abfahrt_t('DIAG.KAL_ANZAHL'), $name, $count2);     // b1
     }
     return $best;
 }
@@ -1947,7 +1962,7 @@ define('ABFAHRT_GEO_MUSTER', '/^-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?$/');
 /** Wie lange eine einmal ermittelte Koordinate gilt: 90 Tage. */
 define('ABFAHRT_GEO_TTL', 90 * 86400);
 
-function abfahrt_geocode($address, array $abfcfg, &$err = '') {
+function abfahrt_geocode($address, array $abfcfg, &$err = '', &$err_id = '') {
     $key = $abfcfg['api_key'];
     $provider = $abfcfg['provider'];
     $cache = abfahrt_tmpdir() . '/geo_' . md5($provider . '|' . $address);
@@ -1967,22 +1982,27 @@ function abfahrt_geocode($address, array $abfcfg, &$err = '') {
     }
     $pos = null;
     $grund = '';
+    $grund_id = '';
+    $abf_hs = 0;
     if ($provider === 'tomtom') {
         $url = 'https://api.tomtom.com/search/2/geocode/' . rawurlencode($address) . '.json?key=' . rawurlencode($key) . '&limit=1&countrySet=DE,AT,CH';
-        $g = @json_decode((string) abfahrt_http_get($url, 12, $grund), true);
+        $g = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
         if (isset($g['results'][0]['position'])) {
             $pos = $g['results'][0]['position']['lat'] . ',' . $g['results'][0]['position']['lon'];
         }
     } elseif ($provider === 'here') {
         $url = 'https://geocode.search.hereapi.com/v1/geocode?q=' . rawurlencode($address) . '&apiKey=' . rawurlencode($key);
-        $g = @json_decode((string) abfahrt_http_get($url, 12, $grund), true);
+        $g = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
         if (isset($g['items'][0]['position'])) {
             $pos = $g['items'][0]['position']['lat'] . ',' . $g['items'][0]['position']['lng'];
         }
     }
     if ($pos === null || !preg_match(ABFAHRT_GEO_MUSTER, $pos)) {
-        $err = 'Adresse konnte nicht in Koordinaten umgesetzt werden (' . $provider . '): ' . $address
-             . ($grund !== '' ? ' - ' . $grund : '');
+        /* b1: Kennung mit Anbieter und Adresse; der HTTP-Grund haengt als
+         * eigene Kennung dahinter (GRUND.MIT). */
+        $err_id = 'GEO_FEHL|' . abfahrt_grund_teil($provider) . '|' . abfahrt_grund_teil($address)
+                . ($grund_id !== '' ? '|' . $grund_id : '');
+        $err = abfahrt_grund_text($err_id);
         return false;
     }
     abfahrt_cache_schreiben($cache, $pos);
@@ -2054,8 +2074,11 @@ function abfahrt_departat_param($provider, $ts) {
  * @param int|null $abfahrtTs Fuer WELCHEN Abfahrtszeitpunkt gerechnet werden
  *        soll. null = jetzt (bisheriges Verhalten).
  */
-function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minutenBisTermin = null, &$veraltet = false, $abfahrtTs = null) {
+function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minutenBisTermin = null, &$veraltet = false, $abfahrtTs = null, &$err_id = '') {
     $veraltet = false;
+    $err_id = '';     // b1: der Grund als Kennung (GRUND.*), $err ist derselbe als Satz
+    $grund_id = '';
+    $abf_hs = 0;
     /* Die Abfahrtsadresse gehoert in den Schluessel. Ohne sie galt nach einem
      * Umzug bis zu eine Stunde lang die Fahrzeit von der alten Adresse - und
      * zwar ohne jeden Hinweis. */
@@ -2091,7 +2114,7 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
              . ($abfahrtTs === null ? '&departure_time=now'
                                     : abfahrt_departat_param('google', $abfahrtTs));
         $grund = '';
-        $r = @json_decode((string) abfahrt_http_get($url, 12, $grund), true);
+        $r = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
         if (isset($r['routes'][0]['legs'][0])) {
             $leg = $r['routes'][0]['legs'][0];
             $sec = $leg['duration_in_traffic']['value'] ?? ($leg['duration']['value'] ?? null);
@@ -2100,21 +2123,26 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
             }
         }
         if ($minutes === false) {
-            $err = 'Google-Routing fehlgeschlagen'
-                 . ($grund !== '' ? ' - ' . $grund : '')
-                 . (isset($r['status']) ? ' (' . $r['status'] . ')' : '');
+            /* b1: der Status der Directions-API (REQUEST_DENIED, ZERO_RESULTS ...)
+             * geht nur mit Grossbuchstaben und Unterstrich in die Kennung. */
+            $abf_gs = (isset($r['status']) && is_scalar($r['status']))
+                    ? preg_replace('/[^A-Z_]/', '', strtoupper((string) $r['status'])) : '';
+            $err_id = ($abf_gs !== '' ? 'ROUTE_FEHL_STATUS|Google|' . $abf_gs : 'ROUTE_FEHL|Google')
+                    . ($grund_id !== '' ? '|' . $grund_id : '');
+            $err = abfahrt_grund_text($err_id);
         }
     } elseif ($provider !== 'tomtom' && $provider !== 'here') {
         /* VOR dem Geokodieren. Bis 1.6.9 stand dieser Zweig hinter der
          * Geokodierung, die bei einem unbekannten Dienst schon gescheitert
          * war - er wurde nie erreicht, und gemeldet wurde "Adresse konnte
          * nicht umgesetzt werden", waehrend die Adresse stimmte. */
-        $err = 'Unbekannter Kartendienst: ' . $provider;
+        $err_id = 'KARTENDIENST_NAME|' . abfahrt_grund_teil($provider);     // b1
+        $err = abfahrt_grund_text($err_id);
     } else {
         // Kein vorzeitiges return: auch ein misslungenes Geocoding soll unten
         // noch in die Gnadenfrist laufen duerfen, sonst flattert es genauso.
-        $home = abfahrt_geocode($abfcfg['home_address'], $abfcfg, $err);
-        $dest = ($home === false) ? false : abfahrt_geocode($destAddress, $abfcfg, $err);
+        $home = abfahrt_geocode($abfcfg['home_address'], $abfcfg, $err, $err_id);
+        $dest = ($home === false) ? false : abfahrt_geocode($destAddress, $abfcfg, $err, $err_id);
         $grund = '';
         if ($home === false || $dest === false) {
             $minutes = false;
@@ -2122,21 +2150,23 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
             $url = 'https://api.tomtom.com/routing/1/calculateRoute/' . $home . ':' . $dest
                  . '/json?key=' . rawurlencode($key) . '&traffic=true&travelMode=car'
                  . ($abfahrtTs === null ? '' : abfahrt_departat_param('tomtom', $abfahrtTs));
-            $r = @json_decode((string) abfahrt_http_get($url, 12, $grund), true);
+            $r = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
             if (isset($r['routes'][0]['summary']['travelTimeInSeconds'])) {
                 $minutes = round($r['routes'][0]['summary']['travelTimeInSeconds'] / 60, 1);
             } else {
-                $err = 'TomTom-Routing fehlgeschlagen' . ($grund !== '' ? ' - ' . $grund : '');
+                $err_id = 'ROUTE_FEHL|TomTom' . ($grund_id !== '' ? '|' . $grund_id : '');     // b1
+                $err = abfahrt_grund_text($err_id);
             }
         } elseif ($provider === 'here') {
             $url = 'https://router.hereapi.com/v8/routes?transportMode=car&origin=' . $home
                  . '&destination=' . $dest . '&return=summary&apikey=' . rawurlencode($key)
                  . ($abfahrtTs === null ? '' : abfahrt_departat_param('here', $abfahrtTs));
-            $r = @json_decode((string) abfahrt_http_get($url, 12, $grund), true);
+            $r = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
             if (isset($r['routes'][0]['sections'][0]['summary']['duration'])) {
                 $minutes = round($r['routes'][0]['sections'][0]['summary']['duration'] / 60, 1);
             } else {
-                $err = 'HERE-Routing fehlgeschlagen' . ($grund !== '' ? ' - ' . $grund : '');
+                $err_id = 'ROUTE_FEHL|HERE' . ($grund_id !== '' ? '|' . $grund_id : '');     // b1
+                $err = abfahrt_grund_text($err_id);
             }
         }
     }
@@ -2151,9 +2181,9 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
         $alt = abfahrt_cache_lesen($cache, '/^\d+(\.\d+)?$/');
         if ($alt !== false) {
             $veraltet = true;
-            abfahrt_log('Kartendienst antwortet nicht (' . $err . ') - benutze die Fahrzeit von vor '
-                      . (int) round($alter / 60) . ' min weiter.');
+            abfahrt_log(sprintf(abfahrt_t('DIAG.ROUTE_GNADE'), $err, (int) round($alter / 60)));     // b1
             $err = '';
+            $err_id = '';
             return (float) $alt;
         }
     }
@@ -2561,7 +2591,8 @@ function abfahrt_berechnen(?array $abfcfg = null) {
     $setz = function ($code, $grund, $kennung = '') use (&$st) {
         $st['ok'] = 0;
         $st['fehler'] = $code;
-        $st['grund'] = $grund;
+        // b1: der Satz kommt aus der Kennung (Sprache dieses Laufs); ohne Kennung der Text.
+        $st['grund'] = $kennung !== '' ? abfahrt_grund_text($kennung) : $grund;
         $st['grund_id'] = $kennung;
         $st['minstart'] = 9999;
         $st['fahrt'] = 0;
@@ -2581,9 +2612,9 @@ function abfahrt_berechnen(?array $abfcfg = null) {
     foreach ($abfcfg['calendars'] as $cal) {
         if (trim((string) ($cal['url'] ?? '')) !== '') { $hasCal = true; break; }
     }
-    if (!$hasCal)                                { return [$setz(1, 'Kein Kalender konfiguriert (Plugin-Oberflaeche oeffnen).', 'KEIN_KALENDER'), $diag]; }
-    if (trim($abfcfg['api_key']) === '')         { return [$setz(2, 'Kein API-Key konfiguriert (Plugin-Oberflaeche oeffnen).', 'KEIN_SCHLUESSEL'), $diag]; }
-    if (trim($abfcfg['home_address']) === '')    { return [$setz(3, 'Keine Abfahrtsadresse konfiguriert (Plugin-Oberflaeche oeffnen).', 'KEINE_ADRESSE'), $diag]; }
+    if (!$hasCal)                                { return [$setz(1, '', 'KEIN_KALENDER'), $diag]; }
+    if (trim($abfcfg['api_key']) === '')         { return [$setz(2, '', 'KEIN_SCHLUESSEL'), $diag]; }
+    if (trim($abfcfg['home_address']) === '')    { return [$setz(3, '', 'KEINE_ADRESSE'), $diag]; }
 
     $kallage = null;
     $best = abfahrt_next_event($abfcfg, $diag, $kallage);
@@ -2600,21 +2631,23 @@ function abfahrt_berechnen(?array $abfcfg = null) {
              * gelesene Stand" (OK=1). Ein Statusbaustein nach der Tabelle
              * zeigte bei einem abgelaufenen Kalendertoken also die
              * beruhigende Meldung, waehrend nichts mehr gelesen wurde. */
-            return [$setz(8, 'Kein Kalender liess sich lesen (' . (int) $kallage['tot']
-                            . ' von ' . (int) $kallage['eingerichtet'] . ').',
+            return [$setz(8, '',
                           'KAL_KEINER|' . (int) $kallage['tot'] . '|' . (int) $kallage['eingerichtet']), $diag];
         }
-        return [$setz(4, 'Kein Termin mit Ort in den naechsten ' . (int) $abfcfg['lookahead_hours'] . ' Stunden.',
+        return [$setz(4, '',
                       'KEIN_TERMIN|' . (int) $abfcfg['lookahead_hours']), $diag];
     }
     list($ts, $loc, $sum, $calname) = $best;
     $minstart = (int) round(($ts - time()) / 60);
 
     $err = '';
+    $err_id = '';
     $veraltet = false;
-    $fahrt = abfahrt_route_minutes($loc, $abfcfg, $err, $minstart, $veraltet);
+    $fahrt = abfahrt_route_minutes($loc, $abfcfg, $err, $minstart, $veraltet, null, $err_id);
     if ($fahrt === false) {
-        $st = $setz(6, $err);
+        /* b1: FEHLER=6 mit Kennung - bis 1.6.18 ohne, die Oberflaeche zeigte
+         * den Satz des Minutentakts (deutsch, auch in der englischen). */
+        $st = $setz(6, $err, $err_id);
         // Titel und Ort sind bekannt, nur die Fahrzeit fehlt - das gehoert in
         // die Anzeige, sonst steht dort nach einer Stoerung gar nichts mehr.
         $st['titel'] = $sum;
@@ -2652,15 +2685,15 @@ function abfahrt_berechnen(?array $abfcfg = null) {
         $veraltet2 = false;
         $fahrt2 = abfahrt_route_minutes($loc, $abfcfg, $err2, $minstart, $veraltet2, $abfahrtTs);
         if ($fahrt2 !== false) {
-            $diag[] = sprintf('Fahrzeit fuer die Abfahrt um %s: %s min (statt %s min fuer jetzt)',
-                              date('H:i', $abfahrtTs), $fahrt2, $fahrt);
+            $diag[] = sprintf(abfahrt_t('DIAG.FAHRZEIT_ABFAHRT'),
+                              date('H:i', $abfahrtTs), $fahrt2, $fahrt);     // b1
             $fahrt = $fahrt2;
             $veraltet = $veraltet || $veraltet2;
         } else {
             // Der zweite Durchgang ist kein Muss. Scheitert er, gilt der
             // erste weiter - eine Fahrzeit von jetzt ist besser als keine.
-            $diag[] = 'Fahrzeit fuer den Abfahrtszeitpunkt nicht zu bekommen ('
-                    . ($err2 !== '' ? $err2 : 'ohne Angabe') . ') - es gilt die Fahrzeit fuer jetzt.';
+            $diag[] = sprintf(abfahrt_t('DIAG.FAHRZEIT_ABFAHRT_FEHL'),
+                              $err2 !== '' ? $err2 : abfahrt_t('DIAG.OHNE_ANGABE'));     // b1
         }
     }
 
@@ -2669,11 +2702,11 @@ function abfahrt_berechnen(?array $abfcfg = null) {
      * (5), weil sie unmittelbar auf den Abfahrtszeitpunkt wirkt. */
     if ($veraltet) {
         $st['fehler'] = 7;
-        $st['grund'] = 'Kartendienst nicht erreichbar - letzte bekannte Fahrzeit gilt weiter.';
+        $st['grund'] = abfahrt_grund_text('ROUTE_VERALTET');     // b1
         $st['grund_id'] = 'ROUTE_VERALTET';
     } elseif (!empty($kallage['veraltet'])) {
         $st['fehler'] = 5;
-        $st['grund'] = 'Kalender nicht erreichbar - es gilt der letzte gelesene Stand.';
+        $st['grund'] = abfahrt_grund_text('KAL_VERALTET');     // b1
         $st['grund_id'] = 'KAL_VERALTET';
     } else {
         $st['fehler'] = 0;
@@ -3642,7 +3675,7 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
     } else {
         $zeile((int) $st['fehler'] === 4 ? -1 : 0, abfahrt_t('TEST.F_ERGEBNIS'),
             sprintf(abfahrt_t('TEST.A_ERGEBNIS_FEHLER'), (int) $st['fehler'],
-                    abfahrt_e((string) $st['grund_id'] !== '' ? abfahrt_grund_text($st['grund_id']) : $st['grund'])));
+                    abfahrt_e(abfahrt_stand_grund($st))));     // b1
     }
 
     /* Sondertage */
@@ -4044,6 +4077,20 @@ function abfahrt_sprache()
         $sprache = LBSystem::lblanguage();
     } elseif (getenv('LBLANG')) {
         $sprache = getenv('LBLANG');
+    } else {
+        /* b1 (Welle 2, 30.09.2026): Der Minutentakt und termin.php laden
+         * LBSystem nicht, und LBLANG steht dort nicht in der Umgebung. Bis
+         * 1.6.18 galt dann fest 'de' - Protokoll und ?debug=1 blieben auf einer
+         * englischen Anlage deutsch. Jetzt gilt, was LoxBerry selbst liest:
+         * Base.Lang in config/system/general.json (nur dieses eine Feld). */
+        $abf_gj = abfahrt_paths();
+        $abf_gj = (string) $abf_gj['general'];
+        if ($abf_gj !== '' && is_file($abf_gj)) {
+            $abf_gd = json_decode((string) @file_get_contents($abf_gj), true);
+            if (is_array($abf_gd) && isset($abf_gd['Base']['Lang']) && is_string($abf_gd['Base']['Lang'])) {
+                $sprache = $abf_gd['Base']['Lang'];
+            }
+        }
     }
     $sprache = strtolower(substr((string) $sprache, 0, 2));
     return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
@@ -4118,7 +4165,25 @@ function abfahrt_grund_text($g)
     if ($t === 'GRUND.' . $k) { return (string) $g; }
     $n = preg_match_all('/%(?:\d+\$)?[sd]/', $t);
     $werte = array_pad(array_slice($teile, 0, $n), $n, '');
-    return $n > 0 ? vsprintf($t, $werte) : $t;
+    $satz = $n > 0 ? vsprintf($t, $werte) : $t;
+    /* b1 (Welle 2): Stehen hinter den Werten weitere Teile und beginnen sie mit
+     * einer bekannten Kennung, ist das ein innerer Grund (GEO_FEHL|anbieter|
+     * adresse|HTTP_ZEIT); er wird ueber GRUND.MIT angehaengt. Ein Rest ohne
+     * bekannte Kennung bleibt wie bisher ungenutzt. */
+    $rest = array_slice($teile, $n);
+    if ($rest && preg_match('/^[A-Z][A-Z0-9_]*$/', (string) $rest[0])
+        && abfahrt_t('GRUND.' . $rest[0]) !== 'GRUND.' . $rest[0]) {
+        return sprintf(abfahrt_t('GRUND.MIT'), $satz, abfahrt_grund_text(implode('|', $rest)));
+    }
+    return $satz;
+}
+
+/** Der Grund eines abgelegten Stands in der Sprache des Lesers (b1): die
+ *  Kennung, wo es eine gibt; sonst der abgelegte Satz (Stand einer aelteren
+ *  Fassung). */
+function abfahrt_stand_grund(array $st) {
+    $id = isset($st['grund_id']) ? (string) $st['grund_id'] : '';
+    return $id !== '' ? abfahrt_grund_text($id) : (string) (isset($st['grund']) ? $st['grund'] : '');
 }
 
 
@@ -4349,7 +4414,7 @@ function abfahrt_config_speichern($cfg)
  * Die Schluessel mit dem Unterstrich sind KEINE Einstellungen;
  * abfahrt_sicherung_lesen() uebergeht sie deshalb, statt sie zu beanstanden.
  */
-function abfahrt_sicherung_bauen(array $cfg)
+function abfahrt_sicherung_bauen(array $cfg, $pruefen = true)
 {
     /* KEINE Fassungsnummer im Kopf. Es gaebe dafuer keine belastbare
      * Quelle: die plugin.cfg wird nicht in den Plugin-Baum installiert, und
@@ -4364,8 +4429,42 @@ function abfahrt_sicherung_bauen(array $cfg)
         '_hinweis' => 'Diese Datei enthaelt das Merkwort und den Schluessel des '
                     . 'Kartendienstes. Wie ein Passwort behandeln.',
     );
+    /* X-3 (Welle 2, 30.09.2026): Wuerde das eigene Zurueckspielen diese Datei
+     * abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert wird sie
+     * trotzdem vollstaendig. */
+    if ($pruefen) {
+        $abf_namen = abfahrt_rueckspiel_altwerte($cfg);
+        if ($abf_namen) {
+            $kopf['_warnung'] = sprintf(abfahrt_t('TEXT.SICH_WARN_KOPF'), implode(', ', $abf_namen));
+        }
+    }
     return json_encode($kopf + $cfg,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * X-3: Welche Einstellungen wuerden beim Zurueckspielen der EIGENEN Sicherung
+ * abgewiesen? Gebaut wird genau die Datei, die "Einstellungen sichern"
+ * liefert, und durch dieselbe Pruefung geschickt wie beim Zurueckspielen.
+ * Rueckgabe: Namen (nie Werte), leer heisst "wuerde angenommen".
+ *
+ * Der Fall, der hier anschlaegt: ein unbekannter Schluessel in abfahrt.json
+ * (aus einer neueren Fassung nach einem Zurueckgehen, oder von Hand). Die
+ * Lesefunktion laesst ihn stehen und die Sicherung traegt ihn mit - das
+ * Zurueckspielen weist die ganze Datei ab ("Unbekannte Einstellung").
+ * Ein unzulaessiger WERT kann hier nicht stehen: abfahrt_config() setzt ihn
+ * schon beim Lesen auf die Vorgabe und meldet es (Selbstheilung).
+ */
+function abfahrt_rueckspiel_altwerte(array $cfg)
+{
+    $js = abfahrt_sicherung_bauen($cfg, false);
+    if ($js === false) { return array(); }     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
+    $namen = array();
+    list($neu) = abfahrt_sicherung_lesen($js, $namen);
+    $namen = array_values(array_unique($namen));
+    sort($namen);
+    if ($neu === null && !$namen) { $namen[] = abfahrt_t('TEXT.SICH_GANZE_DATEI'); }
+    return $namen;
 }
 
 
@@ -4632,8 +4731,9 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function abfahrt_sicherung_lesen($roh)
+function abfahrt_sicherung_lesen($roh, &$namen = null)
 {
+    $namen = array();     // X-3: Namen der beanstandeten Einstellungen, nie Werte
     $mangel = array();
     $hinweise = array();
     $daten = json_decode((string) $roh, true);
@@ -4674,12 +4774,14 @@ function abfahrt_sicherung_lesen($roh)
         }
         if (!array_key_exists($k, $vorgaben)) {
             $mangel[] = sprintf(abfahrt_t('TEXT.SICH_FREMD'), (string) $k);
+            $namen[] = (string) $k;
             continue;
         }
         $grund = '';
         $wert = abfahrt_wert_pruefen($k, $w, $grund);
         if ($wert === null) {
             $mangel[] = sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($grund));
+            $namen[] = (string) $k;
             continue;
         }
         $neu[$k] = $wert;

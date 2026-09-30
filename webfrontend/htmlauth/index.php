@@ -112,6 +112,147 @@ function abf_umleiten($data_dir, $tab, array $inhalt) {
     exit;
 }
 
+/* ---------- X-2: Eingaben nach einer Beanstandung (Welle 2, 30.09.2026) ----------
+ *
+ * Regeln/04, "Nach einer Beanstandung stehen die eingetippten Werte wieder im
+ * Formular". Seit der Umleitung nach jedem POST zeigte der GET nach einer
+ * Beanstandung die GESPEICHERTEN Werte; wer drei Felder richtig und eines
+ * falsch eingab, tippte alle vier neu.
+ *
+ * Mit der Einmalmeldung reisen unter 'eingaben' die Felder des EINEN
+ * beanstandeten Formulars und die Namen der beanstandeten Felder. Nie mit
+ * reisen: der Schluessel des Kartendienstes (api_key), die privaten
+ * Kalenderadressen (cal_url[], seit U1 nie in der Seite), Merkwort und
+ * Formularmerkmal - sie stehen in keiner der beiden Listen unten. Ein Wert,
+ * der kein gueltiges UTF-8 ist oder laenger als 2100 Byte, reist nicht mit;
+ * sein Feld zeigt dann den gespeicherten Wert (und bleibt markiert). */
+function abf_eingabe_felder($formular) {
+    if ($formular === 'mqtt') {
+        return array('mqtt_ein', 'mqtt_topic', 'mqtt_vollsend_min');
+    }
+    if ($formular === 'settings') {
+        return array('cal_name', 'cal_loeschen', 'provider', 'api_key_loeschen', 'home_address',
+                     'ignore_locations', 'arrival_min', 'buffer_min', 'lookahead_hours', 'route_departat',
+                     'ob_muster', 'ob_adresse', 'ganztags_ein', 'ganztags_zeit', 'tts_mode', 'tts_ip',
+                     'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template', 'ansage_vorlage',
+                     'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
+    }
+    return array();
+}
+/* Ein einzelner Wert, der mitreisen darf: Zeichenkette, UTF-8, hoechstens 2100 Byte. */
+function abf_eingabe_tauglich($w) {
+    return is_string($w) && strlen($w) <= 2100 && preg_match('//u', $w) === 1;
+}
+/* Ein Feld beanstanden (Name, bei Tabellenzeilen mit Index); ohne Argument die Liste. */
+function abf_bean($feld = null, $idx = null) {
+    static $liste = array();
+    if ($feld !== null) {
+        $n = (string) $feld . ($idx !== null ? '[' . (int) $idx . ']' : '');
+        if (!in_array($n, $liste, true)) { $liste[] = $n; }
+    }
+    return $liste;
+}
+/* Welche Formularfelder gehoeren zu einem abgewiesenen Wert? Die Gruppen tts
+ * und quiet werden je Unterfeld mit DERSELBEN Pruefung (abfahrt_wert_pruefen)
+ * nachgesehen; Kalender und Ortsbuch markiert der Handler zeilenweise. */
+function abf_bean_aus_wert($schluessel, $wert) {
+    $g = '';
+    if ($schluessel === 'tts' && is_array($wert)) {
+        foreach ($wert as $uk => $uw) {
+            if (abfahrt_wert_pruefen('tts', array($uk => $uw), $g) === null) { abf_bean('tts_' . $uk); }
+        }
+        return;
+    }
+    if ($schluessel === 'quiet' && is_array($wert)) {
+        foreach ($wert as $tag => $zeile) {
+            foreach ((is_array($zeile) ? $zeile : array()) as $uk => $uw) {
+                if (abfahrt_wert_pruefen('quiet', array($tag => array($uk => $uw)), $g) === null) {
+                    abf_bean('quiet_' . $uk, $tag);
+                }
+            }
+        }
+        return;
+    }
+    if ($schluessel === 'calendars' || $schluessel === 'ortsbuch') { return; }
+    abf_bean($schluessel);
+}
+/* Die Eingaben eines Formulars aus $_POST sammeln - nur die Felder der Liste. */
+function abf_eingaben_sammeln($formular) {
+    $werte = array();
+    foreach (abf_eingabe_felder($formular) as $f) {
+        if (!isset($_POST[$f])) { continue; }
+        $w = $_POST[$f];
+        if (is_array($w)) {
+            $zeilen = array();
+            foreach ($w as $k => $v) {
+                if (count($zeilen) >= 12 || !preg_match('/^\d{1,2}\z/', (string) $k)) { continue; }
+                if (abf_eingabe_tauglich($v)) { $zeilen[(string) (int) $k] = $v; }
+            }
+            $werte[$f] = $zeilen;
+        } elseif (abf_eingabe_tauglich($w)) {
+            $werte[$f] = $w;
+        }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'falsch' => abf_bean());
+}
+/* Beim GET: die Eingaben aus der Einmalmeldung pruefen (Form, Felder der
+ * Liste, nichts anderes) und fuer die Seite ablegen. */
+function abf_eingaben($setzen = null) {
+    static $e = null;
+    if ($setzen !== null) {
+        $e = null;
+        if (is_array($setzen) && isset($setzen['formular'], $setzen['werte'], $setzen['falsch'])
+            && is_string($setzen['formular']) && is_array($setzen['werte']) && is_array($setzen['falsch'])) {
+            $erlaubt = abf_eingabe_felder($setzen['formular']);
+            $werte = array();
+            foreach ($setzen['werte'] as $f => $w) {
+                if (!in_array((string) $f, $erlaubt, true)) { continue; }
+                if (is_array($w)) {
+                    $werte[$f] = array();
+                    foreach ($w as $k => $v) { if (abf_eingabe_tauglich($v)) { $werte[$f][(string) $k] = $v; } }
+                } elseif (abf_eingabe_tauglich($w)) {
+                    $werte[$f] = $w;
+                }
+            }
+            $falsch = array();
+            foreach ($setzen['falsch'] as $n) {
+                if (is_string($n) && preg_match('/^[a-z_]+(\[\d{1,2}\])?\z/', $n)) { $falsch[] = $n; }
+            }
+            if ($erlaubt) { $e = array('formular' => $setzen['formular'], 'werte' => $werte, 'falsch' => $falsch); }
+        }
+    }
+    return $e;
+}
+/* Gilt fuer dieses Feld eine Eingabe? Nur, wenn es zum beanstandeten Formular gehoert. */
+function abf_eingabe_aktiv($feld) {
+    $e = abf_eingaben();
+    return $e !== null && in_array($feld, abf_eingabe_felder($e['formular']), true);
+}
+/* Wert eines Textfelds: die Eingabe, sonst der gespeicherte Wert. */
+function abf_w($feld, $gespeichert, $idx = null) {
+    if (abf_eingabe_aktiv($feld)) {
+        $e = abf_eingaben();
+        $w = isset($e['werte'][$feld]) ? $e['werte'][$feld] : null;
+        if ($idx !== null) { $w = (is_array($w) && isset($w[(string) (int) $idx])) ? $w[(string) (int) $idx] : null; }
+        if (is_string($w)) { return $w; }
+    }
+    return (string) $gespeichert;
+}
+/* Haken: nach einer Beanstandung so, wie er abgeschickt wurde. */
+function abf_h($feld, $gespeichert, $idx = null) {
+    if (!abf_eingabe_aktiv($feld)) { return (bool) $gespeichert; }
+    $e = abf_eingaben();
+    $w = isset($e['werte'][$feld]) ? $e['werte'][$feld] : null;
+    if ($idx !== null) { return is_array($w) && isset($w[(string) (int) $idx]); }
+    return $w !== null;
+}
+/* Markierung eines beanstandeten Felds (Attribute, schon maskiert). */
+function abf_m($feld, $idx = null) {
+    $e = abf_eingaben();
+    $n = (string) $feld . ($idx !== null ? '[' . (int) $idx . ']' : '');
+    return ($e !== null && in_array($n, $e['falsch'], true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
 /* ---------- Schutz gegen seitenfremd ausgeloeste Formulare ----------
  *
  * htmlauth schuetzt gegen den unangemeldeten Aufruf - nicht dagegen, dass der
@@ -282,6 +423,7 @@ function abf_feld(array &$ziel, array $alt, $schluessel, $wert, array &$hinweise
     if ($gut === null) {
         $hinweise[] = sprintf(abfahrt_t('MELDUNG.FELD_ABGEWIESEN'), abfahrt_t('FELDNAME.' . strtoupper($schluessel)),
                               abfahrt_grund_text($grund));     // U5
+        abf_bean_aus_wert($schluessel, $wert);     // X-2
         $ziel[$schluessel] = $alt[$schluessel];
         return false;
     }
@@ -302,8 +444,15 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     $abf_t = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']) ? trim($_POST['mqtt_topic']) : '';
     if ($abf_t === '') {
         $abf_hw[] = abfahrt_t('MQTT.FEHLER_TOPIC');
+        abf_bean('mqtt_topic');     // X-2
     } else {
         abf_feld($abf_neu, $abf_alt, 'mqtt_topic', $abf_t, $abf_hw);
+    }
+    /* X-2: Bei einer Beanstandung wird nichts gespeichert und nichts geraeumt;
+     * die Eingaben reisen mit der Einmalmeldung zurueck ins Formular. */
+    if ($abf_hw) {
+        array_unshift($abf_hw, abfahrt_t('MELDUNG.EINGABEN_ZURUECK'));
+        abf_umleiten($data_dir, 'tab-mqtt', array('hinweise' => $abf_hw, 'eingaben' => abf_eingaben_sammeln('mqtt')));
     }
     if (!abfahrt_config_speichern($abf_neu)) {
         abf_umleiten($data_dir, 'tab-mqtt', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file)));
@@ -370,18 +519,33 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
             if (!empty($abf_weg[$i])) {
                 if ($url === '') { continue; }     // Zeile samt Name geloescht
                 $abf_hw[] = sprintf(abfahrt_t('MELDUNG.KAL_LOESCHEN_WIDERSPRUCH'), $i + 1);
+                abf_bean('cal_url', $i);     // X-2
+                abf_bean('cal_loeschen', $i);
                 $url = $abf_alt_url;
             } elseif ($url === '') {
                 $url = $abf_alt_url;               // leer abgeschickt: behalten
             } elseif (!preg_match('#^https?://#i', $url)) {
                 $abf_hw[] = sprintf(abfahrt_t('MELDUNG.KAL_URL'), $i + 1);
+                abf_bean('cal_url', $i);     // X-2
                 $url = $abf_alt_url;               // alten Wert behalten
             }
             if ($name === '' && $url === '') { continue; }
             $abf_kal_pos[$i] = count($abf_liste);
             $abf_liste[] = array('name' => $name, 'url' => $url);
         }
-        abf_feld($abfneu, $abf_alt, 'calendars', $abf_liste, $abf_hw);
+        if (!abf_feld($abfneu, $abf_alt, 'calendars', $abf_liste, $abf_hw)) {
+            /* X-2: die Zeile finden, die die Pruefung nicht besteht - erst
+             * der Name allein, dann Name und Adresse. */
+            foreach ($abf_kal_pos as $abf_z => $abf_p) {
+                $abf_g = '';
+                $abf_zl = $abf_liste[$abf_p];
+                if (abfahrt_wert_pruefen('calendars', array(array('name' => $abf_zl['name'], 'url' => '')), $abf_g) === null) {
+                    abf_bean('cal_name', $abf_z);
+                } elseif (abfahrt_wert_pruefen('calendars', array($abf_zl), $abf_g) === null) {
+                    abf_bean('cal_url', $abf_z);
+                }
+            }
+        }
     }
 
     $abf_post_text = function ($k) {
@@ -399,6 +563,8 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     if (!empty($_POST['api_key_loeschen'])) {
         if ($abf_key !== '') {
             $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.API_KEY'));
+            abf_bean('api_key');     // X-2 (der Wert reist nie mit)
+            abf_bean('api_key_loeschen');
         } else {
             $abfneu['api_key'] = '';
         }
@@ -425,6 +591,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
      * halbe wird gemeldet statt weggelassen. */
     $abf_ob = array();
+    $abf_ob_pos = array();     // X-2: Zeile im Formular -> Stelle in der Liste
     $abf_obm = isset($_POST['ob_muster']) && is_array($_POST['ob_muster']) ? $_POST['ob_muster'] : array();
     $abf_oba = isset($_POST['ob_adresse']) && is_array($_POST['ob_adresse']) ? $_POST['ob_adresse'] : array();
     for ($i = 0; $i < 10; $i++) {
@@ -433,11 +600,22 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         if ($m === '' && $a === '') { continue; }
         if ($m === '' || $a === '') {
             $abf_hw[] = sprintf(abfahrt_t('MELDUNG.ORTSBUCH_HALB'), $i + 1);
+            if ($m === '') { abf_bean('ob_muster', $i); }     // X-2: das leere Feld
+            if ($a === '') { abf_bean('ob_adresse', $i); }
             continue;
         }
+        $abf_ob_pos[$i] = count($abf_ob);
         $abf_ob[] = array('muster' => $m, 'adresse' => $a);
     }
-    abf_feld($abfneu, $abf_alt, 'ortsbuch', $abf_ob, $abf_hw);
+    if (!abf_feld($abfneu, $abf_alt, 'ortsbuch', $abf_ob, $abf_hw)) {
+        foreach ($abf_ob_pos as $abf_z => $abf_p) {     // X-2: zeilenweise nachsehen
+            $abf_g = '';
+            if (abfahrt_wert_pruefen('ortsbuch', array($abf_ob[$abf_p]), $abf_g) === null) {
+                abf_bean('ob_muster', $abf_z);
+                abf_bean('ob_adresse', $abf_z);
+            }
+        }
+    }
 
     // Ein geleertes Zeitfeld schickt der Browser als leere Zeichenkette. Es
     // behaelt den bisherigen Wert dieses Tages - sonst wuerde ein einziges
@@ -452,6 +630,18 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     }
     abf_feld($abfneu, $abf_alt, 'quiet', $abf_q, $abf_hw);
 
+    /* X-2 (Welle 2, 30.09.2026): Bei einer Beanstandung wird NICHTS
+     * gespeichert - auch die uebrigen, richtigen Felder nicht (Regeln/04: "die
+     * Konfiguration ist unveraendert"; so entschieden fuer Heimkino,
+     * Entscheidung 15). Bis 1.6.18 wurde der Rest gespeichert und das
+     * beanstandete Feld behielt seinen alten Wert; der GET zeigte danach
+     * gespeicherte Werte, die Eingabe war weg. Jetzt stehen alle Eingaben
+     * wieder im Formular, das beanstandete Feld markiert. Ein mitgedrueckter
+     * Knopf ("Neu einlesen", "Audio-Server suchen") laeuft dann nicht. */
+    if ($abf_hw) {
+        array_unshift($abf_hw, abfahrt_t('MELDUNG.EINGABEN_ZURUECK'));
+        abf_umleiten($data_dir, 'tab-settings', array('hinweise' => $abf_hw, 'eingaben' => abf_eingaben_sammeln('settings')));
+    }
     if (!abfahrt_config_speichern($abfneu)) {
         abf_umleiten($data_dir, 'tab-settings', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file), 'hinweise' => $abf_hw));
     }
@@ -555,6 +745,7 @@ $abf_hinweise  = isset($abf_flash['hinweise']) && is_array($abf_flash['hinweise'
 $abf_ms4h      = isset($abf_flash['ms4h']) && is_array($abf_flash['ms4h']) ? $abf_flash['ms4h'] : null;
 $abf_selftest  = isset($abf_flash['selftest']) && is_array($abf_flash['selftest']) ? $abf_flash['selftest'] : null;
 $abf_kaldiag   = isset($abf_flash['kaldiag']) && is_array($abf_flash['kaldiag']) ? $abf_flash['kaldiag'] : null;
+abf_eingaben(isset($abf_flash['eingaben']) ? $abf_flash['eingaben'] : array());     // X-2
 foreach ($abf_heilmeldungen as $abf_m) { $abf_hinweise[] = $abf_m; }
 
 $abfcfg = abfahrt_config();
@@ -723,6 +914,9 @@ if ($use_frame) {
 .sm-qt td { vertical-align: middle; padding: 3px 0; }
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
 .sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
+/* X-2 (Welle 2): ein beanstandetes Feld nach der Umleitung - eigene Zutat, nicht Teil der Hausvorlage. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+.sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
 </style>
 <div class="sm-wrap">
 
@@ -778,14 +972,14 @@ if ($use_frame) {
 for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
     $abf_kal_da = ($i < $abf_kal_echt && trim((string) $cal['url']) !== ''); ?>
 <div class="sm-cal">
-    <input data-role="none" type="text" name="cal_name[]" value="<?= e($cal['name']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_KAL_NAME')) ?>">
-    <input data-role="none" type="text" name="cal_url[]" value="" autocomplete="off" placeholder="<?= e($abf_kal_da ? abfahrt_t('SEITE.P_KAL_BEHALTEN') : 'https://calendar.google.com/calendar/ical/.../basic.ics') ?>">
+    <input data-role="none" type="text" name="cal_name[]" value="<?= e(abf_w('cal_name', $cal['name'], $i)) ?>"<?= abf_m('cal_name', $i) ?> placeholder="<?= e(abfahrt_t('SEITE.P_KAL_NAME')) ?>">
+    <input data-role="none" type="text" name="cal_url[]" value="" autocomplete="off"<?= abf_m('cal_url', $i) ?> placeholder="<?= e($abf_kal_da ? abfahrt_t('SEITE.P_KAL_BEHALTEN') : 'https://calendar.google.com/calendar/ical/.../basic.ics') ?>">
     <button data-role="none" class="sm-rfbtn" type="submit" name="refresh" value="<?= $i ?>" formnovalidate title="<?= e(abfahrt_t('SEITE.T_NEU_EINLESEN')) ?>"><?= e(abfahrt_t('SEITE.K_NEU_EINLESEN')) ?></button>
     <input data-role="none" type="hidden" name="cal_idx[]" value="<?= $i < $abf_kal_echt ? $i : '' ?>">
 </div>
 <?php if ($abf_kal_da) { ?>
 <div class="sm-small" style="margin:-2px 0 8px;"><?= e(sprintf(abfahrt_t('SEITE.KAL_HINTERLEGT'), abfahrt_adresse_kurz($cal['url']))) ?>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="cal_loeschen[<?= $i ?>]" value="1"> <?= e(abfahrt_t('SEITE.L_KAL_LOESCHEN')) ?></label></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="cal_loeschen[<?= $i ?>]" value="1"<?= abf_h('cal_loeschen', false, $i) ? ' checked' : '' ?><?= abf_m('cal_loeschen', $i) ?>> <?= e(abfahrt_t('SEITE.L_KAL_LOESCHEN')) ?></label></div>
 <?php } ?>
 <?php } ?>
 
@@ -793,10 +987,11 @@ for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
 <div class="sm-row">
     <div>
         <label><?= e(abfahrt_t('SEITE.L_DIENST')) ?></label>
-        <select data-role="none" name="provider" id="provider">
-            <option value="tomtom"<?= $abfcfg['provider'] === 'tomtom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_TOMTOM')) ?></option>
-            <option value="google"<?= $abfcfg['provider'] === 'google' ? ' selected' : '' ?>>Google Maps (Directions API)</option>
-            <option value="here"<?= $abfcfg['provider'] === 'here' ? ' selected' : '' ?>>HERE (Routing v8)</option>
+<?php $abf_prov = abf_w('provider', $abfcfg['provider']); ?>
+        <select data-role="none" name="provider" id="provider"<?= abf_m('provider') ?>>
+            <option value="tomtom"<?= $abf_prov === 'tomtom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_TOMTOM')) ?></option>
+            <option value="google"<?= $abf_prov === 'google' ? ' selected' : '' ?>>Google Maps (Directions API)</option>
+            <option value="here"<?= $abf_prov === 'here' ? ' selected' : '' ?>>HERE (Routing v8)</option>
         </select>
         <div class="sm-small"><?= e(abfahrt_t('SEITE.SCHLUESSEL_BEI')) ?>
             <a href="https://developer.tomtom.com" target="_blank" rel="noopener noreferrer">developer.tomtom.com</a> |
@@ -807,43 +1002,43 @@ for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
         <label><?= e(abfahrt_t('SEITE.L_API_KEY')) ?></label>
 <?php /* U1: nie mit Wert in der Seite; leer abgeschickt heisst behalten. */
 $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
-        <input data-role="none" type="password" name="api_key" value="" autocomplete="new-password" placeholder="<?= e($abf_key_laenge > 0 ? sprintf(abfahrt_t('SEITE.P_API_KEY_HINTERLEGT'), $abf_key_laenge) : abfahrt_t('SEITE.P_API_KEY')) ?>">
+        <input data-role="none" type="password" name="api_key" value="" autocomplete="new-password"<?= abf_m('api_key') ?> placeholder="<?= e($abf_key_laenge > 0 ? sprintf(abfahrt_t('SEITE.P_API_KEY_HINTERLEGT'), $abf_key_laenge) : abfahrt_t('SEITE.P_API_KEY')) ?>">
 <?php if ($abf_key_laenge > 0) { ?>
         <div class="sm-small"><?= e(sprintf(abfahrt_t('SEITE.KEY_HINTERLEGT'), $abf_key_laenge)) ?>
-            <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="api_key_loeschen" value="1"> <?= e(abfahrt_t('SEITE.L_KEY_LOESCHEN')) ?></label></div>
+            <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="api_key_loeschen" value="1"<?= abf_h('api_key_loeschen', false) ? ' checked' : '' ?><?= abf_m('api_key_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_KEY_LOESCHEN')) ?></label></div>
 <?php } ?>
     </div>
 </div>
 
 <label><?= e(abfahrt_t('SEITE.L_ADRESSE')) ?></label>
-<input data-role="none" type="text" name="home_address" value="<?= e($abfcfg['home_address']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_ADRESSE')) ?>">
+<input data-role="none" type="text" name="home_address" value="<?= e(abf_w('home_address', $abfcfg['home_address'])) ?>"<?= abf_m('home_address') ?> placeholder="<?= e(abfahrt_t('SEITE.P_ADRESSE')) ?>">
 
 <label><?= e(abfahrt_t('SEITE.L_IGNORIERT')) ?></label>
-<input data-role="none" type="text" name="ignore_locations" value="<?= e($abfcfg['ignore_locations']) ?>" placeholder="online, teams, zoom, ...">
+<input data-role="none" type="text" name="ignore_locations" value="<?= e(abf_w('ignore_locations', $abfcfg['ignore_locations'])) ?>"<?= abf_m('ignore_locations') ?> placeholder="online, teams, zoom, ...">
 <div class="sm-small"><?= abfahrt_t('SEITE.IGNORIERT_HINWEIS') ?></div>
 
 <h2><?= e(abfahrt_t('SEITE.H_ZEITEN')) ?></h2>
 <div class="sm-row">
     <div>
         <label><?= e(abfahrt_t('SEITE.L_ANKUNFT')) ?></label>
-        <input data-role="none" type="number" name="arrival_min" value="<?= (int) $abfcfg['arrival_min'] ?>" min="0" max="120">
+        <input data-role="none" type="number" name="arrival_min" value="<?= e(abf_w('arrival_min', $abfcfg['arrival_min'])) ?>"<?= abf_m('arrival_min') ?> min="0" max="120">
         <div class="sm-small"><?= e(abfahrt_t('SEITE.ANKUNFT_HINWEIS')) ?></div>
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_PUFFER')) ?></label>
-        <input data-role="none" type="number" name="buffer_min" value="<?= (int) $abfcfg['buffer_min'] ?>" min="0" max="120">
+        <input data-role="none" type="number" name="buffer_min" value="<?= e(abf_w('buffer_min', $abfcfg['buffer_min'])) ?>"<?= abf_m('buffer_min') ?> min="0" max="120">
         <div class="sm-small"><?= e(abfahrt_t('SEITE.PUFFER_HINWEIS')) ?></div>
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_ZEITFENSTER')) ?></label>
-        <input data-role="none" type="number" name="lookahead_hours" value="<?= (int) $abfcfg['lookahead_hours'] ?>" min="1" max="48">
+        <input data-role="none" type="number" name="lookahead_hours" value="<?= e(abf_w('lookahead_hours', $abfcfg['lookahead_hours'])) ?>"<?= abf_m('lookahead_hours') ?> min="1" max="48">
         <div class="sm-small"><?= e(abfahrt_t('SEITE.ZEITFENSTER_HINWEIS')) ?></div>
     </div>
 </div>
 
 <h2><?= e(abfahrt_t('TEXT.H_FAHRZEIT')) ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="route_departat" <?= !empty($abfcfg['route_departat']) ? 'checked' : '' ?>> <?= abfahrt_t('TEXT.L_DEPARTAT') ?>
+    <input data-role="none" type="checkbox" name="route_departat" <?= abf_h('route_departat', !empty($abfcfg['route_departat'])) ? 'checked' : '' ?><?= abf_m('route_departat') ?>> <?= abfahrt_t('TEXT.L_DEPARTAT') ?>
 </label>
 <div class="sm-small"><?= abfahrt_t('TEXT.DEPARTAT_HINWEIS') ?></div>
 
@@ -855,19 +1050,19 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <?php for ($abf_o = 0; $abf_o < 10; $abf_o++) {
     $abf_e = isset($abfcfg['ortsbuch'][$abf_o]) && is_array($abfcfg['ortsbuch'][$abf_o])
            ? $abfcfg['ortsbuch'][$abf_o] : ['muster' => '', 'adresse' => '']; ?>
-<tr><td><input data-role="none" type="text" name="ob_muster[]" value="<?= e($abf_e['muster'] ?? '') ?>"></td>
-    <td><input data-role="none" type="text" name="ob_adresse[]" value="<?= e($abf_e['adresse'] ?? '') ?>"></td></tr>
+<tr><td><input data-role="none" type="text" name="ob_muster[]" value="<?= e(abf_w('ob_muster', $abf_e['muster'] ?? '', $abf_o)) ?>"<?= abf_m('ob_muster', $abf_o) ?>></td>
+    <td><input data-role="none" type="text" name="ob_adresse[]" value="<?= e(abf_w('ob_adresse', $abf_e['adresse'] ?? '', $abf_o)) ?>"<?= abf_m('ob_adresse', $abf_o) ?>></td></tr>
 <?php } ?>
 </table>
 </div>
 
 <h2><?= e(abfahrt_t('TEXT.H_GANZTAGS')) ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;">
-    <input data-role="none" type="checkbox" name="ganztags_ein" <?= !empty($abfcfg['ganztags_ein']) ? 'checked' : '' ?>> <?= e(abfahrt_t('TEXT.L_GANZTAGS')) ?>
+    <input data-role="none" type="checkbox" name="ganztags_ein" <?= abf_h('ganztags_ein', !empty($abfcfg['ganztags_ein'])) ? 'checked' : '' ?><?= abf_m('ganztags_ein') ?>> <?= e(abfahrt_t('TEXT.L_GANZTAGS')) ?>
 </label>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <?= e(abfahrt_t('TEXT.L_GANZTAGS_ZEIT')) ?>
-    <input data-role="none" type="time" name="ganztags_zeit" value="<?= e($abfcfg['ganztags_zeit']) ?>">
+    <input data-role="none" type="time" name="ganztags_zeit" value="<?= e(abf_w('ganztags_zeit', $abfcfg['ganztags_zeit'])) ?>"<?= abf_m('ganztags_zeit') ?>>
 </label>
 <div class="sm-small"><?= abfahrt_t('TEXT.GANZTAGS_HINWEIS') ?></div>
 
@@ -875,16 +1070,17 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <div class="sm-row">
     <div>
         <label><?= e(abfahrt_t('SEITE.L_AUDIO')) ?></label>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="abfTtsMode()">
-            <option value="musicserver"<?= $abfcfg['tts']['mode'] === 'musicserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_MUSICSERVER')) ?></option>
-            <option value="ms4h"<?= $abfcfg['tts']['mode'] === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
-            <option value="audioserver"<?= $abfcfg['tts']['mode'] === 'audioserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_AUDIOSERVER')) ?></option>
-            <option value="custom"<?= $abfcfg['tts']['mode'] === 'custom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_EIGENE')) ?></option>
+<?php $abf_tmod = abf_w('tts_mode', $abfcfg['tts']['mode']); ?>
+        <select data-role="none" name="tts_mode" id="tts_mode" onchange="abfTtsMode()"<?= abf_m('tts_mode') ?>>
+            <option value="musicserver"<?= $abf_tmod === 'musicserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_MUSICSERVER')) ?></option>
+            <option value="ms4h"<?= $abf_tmod === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
+            <option value="audioserver"<?= $abf_tmod === 'audioserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_AUDIOSERVER')) ?></option>
+            <option value="custom"<?= $abf_tmod === 'custom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_EIGENE')) ?></option>
         </select>
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_TTS_IP')) ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= e($abfcfg['tts']['ip']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_TTS_IP')) ?>">
+        <input data-role="none" type="text" name="tts_ip" value="<?= e(abf_w('tts_ip', $abfcfg['tts']['ip'])) ?>"<?= abf_m('tts_ip') ?> placeholder="<?= e(abfahrt_t('SEITE.P_TTS_IP')) ?>">
 <?php if ($abf_ms4h !== null) { ?>
   <?php if (!empty($abf_ms4h['gefunden'])) { ?>
     <div class="sm-alert sm-info"><?= sprintf(abfahrt_t('MS4H.GEFUNDEN'), (int) $abf_ms4h['port'], e($abf_ms4h['quelle'])) ?></div>
@@ -903,27 +1099,27 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_PORT')) ?></label>
-        <input data-role="none" type="number" name="tts_port" value="<?= (int) $abfcfg['tts']['port'] ?>" min="1" max="65535">
+        <input data-role="none" type="number" name="tts_port" value="<?= e(abf_w('tts_port', $abfcfg['tts']['port'])) ?>"<?= abf_m('tts_port') ?> min="1" max="65535">
     </div>
 </div>
 <div class="sm-row">
     <div>
         <label><?= e(abfahrt_t('SEITE.L_ZONEN')) ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= e($abfcfg['tts']['zones']) ?>" placeholder="<?= e(abfahrt_t('SEITE.P_TTS_ZONEN')) ?>">
+        <input data-role="none" type="text" name="tts_zones" value="<?= e(abf_w('tts_zones', $abfcfg['tts']['zones'])) ?>"<?= abf_m('tts_zones') ?> placeholder="<?= e(abfahrt_t('SEITE.P_TTS_ZONEN')) ?>">
         <div class="sm-small"><?= abfahrt_t('SEITE.ZONEN_HINWEIS') ?></div>
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_LAUTSTAERKE')) ?></label>
-        <input data-role="none" type="number" name="tts_volume" value="<?= (int) $abfcfg['tts']['volume'] ?>" min="1" max="100">
+        <input data-role="none" type="number" name="tts_volume" value="<?= e(abf_w('tts_volume', $abfcfg['tts']['volume'])) ?>"<?= abf_m('tts_volume') ?> min="1" max="100">
     </div>
     <div>
         <label><?= e(abfahrt_t('SEITE.L_SPRACHE')) ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= e($abfcfg['tts']['lang']) ?>" maxlength="2">
+        <input data-role="none" type="text" name="tts_lang" value="<?= e(abf_w('tts_lang', $abfcfg['tts']['lang'])) ?>"<?= abf_m('tts_lang') ?> maxlength="2">
     </div>
 </div>
 <div id="tts_template_row">
     <label><?= e(abfahrt_t('SEITE.L_VORLAGE_URL')) ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= e($abfcfg['tts']['template']) ?></textarea>
+    <textarea data-role="none" name="tts_template" id="tts_template"<?= abf_m('tts_template') ?> rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= e(abf_w('tts_template', $abfcfg['tts']['template'])) ?></textarea>
     <div class="sm-small"><?= abfahrt_t('SEITE.VORLAGE_URL_HINWEIS') ?></div>
 </div>
 <div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
@@ -931,16 +1127,16 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 </div>
 
 <label><?= e(abfahrt_t('TEXT.L_ANSAGE_VORLAGE')) ?></label>
-<input data-role="none" type="text" name="ansage_vorlage" value="<?= e($abfcfg['ansage_vorlage']) ?>">
+<input data-role="none" type="text" name="ansage_vorlage" value="<?= e(abf_w('ansage_vorlage', $abfcfg['ansage_vorlage'])) ?>"<?= abf_m('ansage_vorlage') ?>>
 <div class="sm-small"><?= abfahrt_t('TEXT.ANSAGE_HINWEIS') ?></div>
 
 <h2><?= e(abfahrt_t('SEITE.H_BENACHRICHTIGUNGEN')) ?></h2>
 <div style="margin-bottom:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($abfcfg['notify']['audio']) ? 'checked' : '' ?>> <?= e(abfahrt_t('SEITE.L_AUDIO_AKTIV')) ?>
+        <input data-role="none" type="checkbox" name="notify_audio" <?= abf_h('notify_audio', !empty($abfcfg['notify']['audio'])) ? 'checked' : '' ?><?= abf_m('notify_audio') ?>> <?= e(abfahrt_t('SEITE.L_AUDIO_AKTIV')) ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($abfcfg['notify']['push']) ? 'checked' : '' ?>> <?= e(abfahrt_t('SEITE.L_PUSH_AKTIV')) ?>
+        <input data-role="none" type="checkbox" name="notify_push" <?= abf_h('notify_push', !empty($abfcfg['notify']['push'])) ? 'checked' : '' ?><?= abf_m('notify_push') ?>> <?= e(abfahrt_t('SEITE.L_PUSH_AKTIV')) ?>
     </label>
     <div class="sm-small"><?= abfahrt_t('SEITE.BENACHRICHTIGUNG_HINWEIS') ?></div>
 </div>
@@ -949,7 +1145,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <div class="sm-small" style="margin-bottom:6px;"><?= abfahrt_t('SEITE.SPERRZEITEN_HINWEIS') ?></div>
 <div style="margin-bottom:8px;">
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="quiet_push" <?= !empty($abfcfg['quiet_push']) ? 'checked' : '' ?>> <?= e(abfahrt_t('TEXT.L_QUIET_PUSH')) ?>
+        <input data-role="none" type="checkbox" name="quiet_push" <?= abf_h('quiet_push', !empty($abfcfg['quiet_push'])) ? 'checked' : '' ?><?= abf_m('quiet_push') ?>> <?= e(abfahrt_t('TEXT.L_QUIET_PUSH')) ?>
     </label>
 </div>
 <div class="sm-breit">
@@ -957,12 +1153,12 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <?php $days = abfahrt_quiet_labels();
 foreach ($days as $d => $dayname) { ?>
 <tr<?= $d === 8 ? ' style="height:34px;vertical-align:bottom;"' : '' ?>>
-    <td style="width:28px;"><input data-role="none" type="checkbox" name="quiet_on[<?= $d ?>]" <?= !empty($abfcfg['quiet'][$d]['on']) ? 'checked' : '' ?>></td>
+    <td style="width:28px;"><input data-role="none" type="checkbox" name="quiet_on[<?= $d ?>]" <?= abf_h('quiet_on', !empty($abfcfg['quiet'][$d]['on']), $d) ? 'checked' : '' ?><?= abf_m('quiet_on', $d) ?>></td>
     <td style="width:105px;"><?= $d >= 8 ? '<b>' . e($dayname) . '</b>' : e($dayname) ?></td>
     <td style="width:100px;"><?= e(abfahrt_t('SEITE.SPERRZEIT_VON')) ?></td>
-    <td style="width:100px;"><input data-role="none" type="time" name="quiet_from[<?= $d ?>]" value="<?= e($abfcfg['quiet'][$d]['from']) ?>"></td>
+    <td style="width:100px;"><input data-role="none" type="time" name="quiet_from[<?= $d ?>]" value="<?= e(abf_w('quiet_from', $abfcfg['quiet'][$d]['from'], $d)) ?>"<?= abf_m('quiet_from', $d) ?>></td>
     <td style="width:34px;text-align:center;"><?= e(abfahrt_t('SEITE.SPERRZEIT_BIS')) ?></td>
-    <td style="width:100px;"><input data-role="none" type="time" name="quiet_to[<?= $d ?>]" value="<?= e($abfcfg['quiet'][$d]['to']) ?>"></td>
+    <td style="width:100px;"><input data-role="none" type="time" name="quiet_to[<?= $d ?>]" value="<?= e(abf_w('quiet_to', $abfcfg['quiet'][$d]['to'], $d)) ?>"<?= abf_m('quiet_to', $d) ?>></td>
     <td><?= e(abfahrt_t('SEITE.SPERRZEIT_UHR')) ?></td>
 </tr>
 <?php } ?>
@@ -998,6 +1194,13 @@ $abf_regel = abfahrt_quiet_rule($abfcfg); ?>
 <h2><?= e(abfahrt_t('TEXT.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= abfahrt_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= abfahrt_t('TEXT.SICH_WARNUNG') ?></div>
+<?php /* X-3 (Welle 2): Wuerde das Zurueckspielen die eigene Sicherung abweisen,
+         steht es hier - gelb, nur Namen. Frisch gelesen: $abfcfg ist oben auf
+         zehn Kalenderzeilen aufgefuellt. */
+$abf_sich_warn = abfahrt_rueckspiel_altwerte(abfahrt_config());
+if ($abf_sich_warn) { ?>
+<div class="sm-warnung"><?= e(sprintf(abfahrt_t('TEXT.SICH_WARN_KNOPF'), implode(', ', $abf_sich_warn))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1055,11 +1258,11 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
-<div class="sm-row"><label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= !empty($abfcfg['mqtt_ein']) ? ' checked' : '' ?>> <?= e(abfahrt_t('MQTT.L_EIN')) ?></label></div>
+<div class="sm-row"><label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= abf_h('mqtt_ein', !empty($abfcfg['mqtt_ein'])) ? ' checked' : '' ?><?= abf_m('mqtt_ein') ?>> <?= e(abfahrt_t('MQTT.L_EIN')) ?></label></div>
 <div class="sm-row"><label><?= e(abfahrt_t('MQTT.L_TOPIC')) ?></label>
-<input data-role="none" type="text" name="mqtt_topic" value="<?= e($abfcfg['mqtt_topic']) ?>" size="24"></div>
+<input data-role="none" type="text" name="mqtt_topic" value="<?= e(abf_w('mqtt_topic', $abfcfg['mqtt_topic'])) ?>"<?= abf_m('mqtt_topic') ?> size="24"></div>
 <div class="sm-row"><label><?= e(abfahrt_t('TEXT.L_MQTT_VOLLSEND')) ?></label>
-<input data-role="none" type="number" name="mqtt_vollsend_min" value="<?= (int) $abfcfg['mqtt_vollsend_min'] ?>" min="0" max="1440"></div>
+<input data-role="none" type="number" name="mqtt_vollsend_min" value="<?= e(abf_w('mqtt_vollsend_min', $abfcfg['mqtt_vollsend_min'])) ?>"<?= abf_m('mqtt_vollsend_min') ?> min="0" max="1440"></div>
 <div class="sm-small"><?= abfahrt_t('TEXT.MQTT_VOLLSEND_HINWEIS') ?></div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= e(abfahrt_t('LEGENDE.AKTION')) ?></span></div>
 <div class="sm-knopfreihe">
