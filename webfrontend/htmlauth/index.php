@@ -122,8 +122,10 @@ function abf_umleiten($data_dir, $tab, array $inhalt) {
  * Mit der Einmalmeldung reisen unter 'eingaben' die Felder des EINEN
  * beanstandeten Formulars und die Namen der beanstandeten Felder. Nie mit
  * reisen: der Schluessel des Kartendienstes (api_key), die privaten
- * Kalenderadressen (cal_url[], seit U1 nie in der Seite), Merkwort und
- * Formularmerkmal - sie stehen in keiner der beiden Listen unten. Ein Wert,
+ * Kalenderadressen (cal_url[], seit U1 nie in der Seite), Merkwort,
+ * Formularmerkmal und das Sprechtoken fuer Alexa-NG (tts_alexa_token,
+ * Ansage-2) - sie stehen in keiner der beiden Listen unten; das Sprechtoken
+ * kann markiert werden, sein Wert reist nie mit. Ein Wert,
  * der kein gueltiges UTF-8 ist oder laenger als 2100 Byte, reist nicht mit;
  * sein Feld zeigt dann den gespeicherten Wert (und bleibt markiert). */
 function abf_eingabe_felder($formular) {
@@ -134,7 +136,8 @@ function abf_eingabe_felder($formular) {
         return array('cal_name', 'cal_loeschen', 'provider', 'api_key_loeschen', 'home_address',
                      'ignore_locations', 'arrival_min', 'buffer_min', 'lookahead_hours', 'route_departat',
                      'ob_muster', 'ob_adresse', 'ganztags_ein', 'ganztags_zeit', 'tts_mode', 'tts_ip',
-                     'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template', 'ansage_vorlage',
+                     'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template',
+                     'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen', 'ansage_vorlage',
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
     return array();
@@ -339,7 +342,8 @@ if ($abf_post && isset($_POST['download'])) {
 }
 
 /* ---------------- Einstellungen sichern (Download) ----------------
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Der lesbare
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken, aber ohne das
+ * Sprechtoken fuer Alexa-NG (Ansage-2, abfahrt_sicherung_bauen()). Der lesbare
  * Kopf traegt _plugin, _stand und _hinweis (keine Fassungsnummer, Begruendung
  * bei abfahrt_sicherung_bauen()). */
 if ($abf_post && isset($_POST['abfahrt_sichern'])) {
@@ -578,6 +582,58 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push'  => isset($_POST['notify_push']) ? 1 : 0,
     );
+    /* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Geraet und Lautstaerke
+     * werden beanstandet statt zurechtgebogen (Nr. 19; nur Leerraum am Rand
+     * faellt still weg). Das Sprechtoken ist ein Kennwort: es steht nie in der
+     * Seite und reist nach einer Beanstandung nicht zurueck. Leer abgeschickt
+     * heisst behalten, der Haken loescht es, beides zugleich ist ein
+     * Widerspruch (wie beim Schluessel des Kartendienstes). Ein Feld statt
+     * eines Textes (name[]) ist eine Beanstandung. */
+    $abf_al_roh = function ($k) {
+        if (!isset($_POST[$k])) { return ''; }
+        return is_string($_POST[$k]) ? trim($_POST[$k]) : null;
+    };
+    $abf_ag = $abf_al_roh('tts_alexa_geraet');
+    if ($abf_ag === null || !abfahrt_alexa_geraet_ok($abf_ag)) {
+        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_GERAET');
+        abf_bean('tts_alexa_geraet');
+        $abf_ag = (string) $abf_alt['tts']['alexa_geraet'];
+    }
+    $abf_al = $abf_al_roh('tts_alexa_laut');
+    if ($abf_al === '') {
+        $abf_al = -1;       // leer: die Lautstaerke des Geraets bleibt
+    } elseif ($abf_al !== null && preg_match('/^\d{1,3}\z/', $abf_al) === 1 && (int) $abf_al <= 100) {
+        $abf_al = (int) $abf_al;
+    } else {
+        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_LAUT');
+        abf_bean('tts_alexa_laut');
+        $abf_al = (int) $abf_alt['tts']['alexa_laut'];
+    }
+    $abf_at = (string) $abf_alt['tts']['alexa_token'];
+    $abf_atn = $abf_al_roh('tts_alexa_token');
+    if ($abf_atn === null) {
+        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_TOKEN');
+        abf_bean('tts_alexa_token');
+    } elseif (!empty($_POST['tts_alexa_token_loeschen'])) {
+        if ($abf_atn !== '') {
+            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.ALEXA_TOKEN'));
+            abf_bean('tts_alexa_token');
+            abf_bean('tts_alexa_token_loeschen');
+        } else {
+            $abf_at = '';
+        }
+    } elseif ($abf_atn !== '') {
+        if (abfahrt_alexa_token_ok($abf_atn)) {
+            $abf_at = $abf_atn;
+        } else {
+            $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_TOKEN');
+            abf_bean('tts_alexa_token');
+        }
+    }
+    if ($abf_post_text('tts_mode') === 'alexang' && $abf_at === '' && !in_array('tts_alexa_token', abf_bean(), true)) {
+        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_OHNE_TOKEN');
+        abf_bean('tts_alexa_token');
+    }
     abf_feld($abfneu, $abf_alt, 'tts', array(
         'mode'     => $abf_post_text('tts_mode'),
         'ip'       => $abf_post_text('tts_ip'),
@@ -586,6 +642,9 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         'volume'   => $abf_post_text('tts_volume'),
         'lang'     => $abf_post_text('tts_lang'),
         'template' => $abf_post_text('tts_template'),
+        'alexa_geraet' => $abf_ag,
+        'alexa_laut'   => $abf_al,
+        'alexa_token'  => $abf_at,
     ), $abf_hw);
 
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
@@ -1076,6 +1135,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
             <option value="ms4h"<?= $abf_tmod === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
             <option value="audioserver"<?= $abf_tmod === 'audioserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_AUDIOSERVER')) ?></option>
             <option value="custom"<?= $abf_tmod === 'custom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_EIGENE')) ?></option>
+            <option value="alexang"<?= $abf_tmod === 'alexang' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_ALEXA')) ?></option>
         </select>
     </div>
     <div>
@@ -1124,6 +1184,30 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 </div>
 <div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
     <?= abfahrt_t('SEITE.AUDIOSERVER_HINWEIS') ?>
+</div>
+<?php /* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Das Sprechtoken steht nie
+         in der Seite - das Feld ist immer leer, der Platzhalter sagt, ob
+         eines gespeichert ist und wie lang es ist. */ ?>
+<div id="tts_alexa_rows">
+<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.ALEXA_HINWEIS') ?></div>
+<div class="sm-row">
+    <div>
+        <label for="tts_alexa_geraet"><?= e(abfahrt_t('SEITE.L_ALEXA_GERAET')) ?></label>
+        <input data-role="none" type="text" id="tts_alexa_geraet" name="tts_alexa_geraet" value="<?= e(abf_w('tts_alexa_geraet', $abfcfg['tts']['alexa_geraet'])) ?>"<?= abf_m('tts_alexa_geraet') ?> maxlength="200" placeholder="kueche">
+        <div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_GERAET_HINWEIS') ?></div>
+    </div>
+    <div>
+        <label for="tts_alexa_laut"><?= e(abfahrt_t('SEITE.L_ALEXA_LAUT')) ?></label>
+        <input data-role="none" type="number" id="tts_alexa_laut" name="tts_alexa_laut" value="<?= e(abf_w('tts_alexa_laut', (int) $abfcfg['tts']['alexa_laut'] >= 0 ? (int) $abfcfg['tts']['alexa_laut'] : '')) ?>"<?= abf_m('tts_alexa_laut') ?> min="0" max="100">
+        <div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_LAUT_HINWEIS') ?></div>
+    </div>
+</div>
+<label for="tts_alexa_token"><?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN')) ?></label>
+<input data-role="none" type="password" id="tts_alexa_token" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?= e((string) $abfcfg['tts']['alexa_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_ALEXA_TOKEN_DA'), strlen((string) $abfcfg['tts']['alexa_token'])) : abfahrt_t('SEITE.P_ALEXA_TOKEN_LEER')) ?>"<?= abf_m('tts_alexa_token') ?>>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1" <?= abf_h('tts_alexa_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_alexa_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN_LOESCHEN')) ?>
+</label>
+<div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_TOKEN_HINWEIS') ?></div>
 </div>
 
 <label><?= e(abfahrt_t('TEXT.L_ANSAGE_VORLAGE')) ?></label>
@@ -1421,7 +1505,8 @@ foreach (abfahrt_felder() as $abf_n => $abf_d) {
 <div class="sm-small"><?= abfahrt_t('TEST.SELBSTTEST_TEXT') ?></div>
 <?php
 $abf_pr = abfahrt_pruefungen($abfcfg, array('quelle' => (string) @file_get_contents(__FILE__),
-                                            'muster' => $abf_muster));     // U6
+                                            'muster' => $abf_muster,     // U6
+                                            'test_offen' => ($active_tab === 'tab-test')));     // Ansage-2
 $abf_zahl = array(1 => 0, 0 => 0, -1 => 0);
 foreach ($abf_pr as $abf_z) { $abf_zahl[$abf_z[0] === 1 ? 1 : ($abf_z[0] === 0 ? 0 : -1)]++; }
 /* Drei Zahlen, und die Farbe folgt dem schlechtesten Punkt. Bis 1.6.9 zaehlte
@@ -1556,6 +1641,8 @@ function abfTtsMode() {
     var m = document.getElementById('tts_mode').value;
     document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
     document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
+    var al = document.getElementById('tts_alexa_rows');
+    if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
     var port = document.getElementsByName('tts_port')[0];
     /* Nur ein LEERES Feld wird vorbelegt - eine bewusst eingetragene 80 bleibt. */
     if (m === 'musicserver' && !port.value) { port.value = 7091; }

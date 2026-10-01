@@ -7,6 +7,8 @@
  *
  *   - Loxone Music Server (klassisch): direkte TTS-URL (Port 7091)
  *   - MusicServer4Home / Audioserver4Home: URL-Vorlage (anpassbar)
+ *   - Alexa-NG (Plugin fuer Amazon Echo, ab Werk nicht gewaehlt): POST an
+ *     dessen Endpunkt, das Sprechtoken steht im Koerper, nie in der Adresse
  *   - Original Loxone Audioserver: KEINE HTTP-TTS-Schnittstelle vorhanden -
  *     dieser Endpunkt liefert dann nur den Text (TEXT=...); die Sprachausgabe
  *     erfolgt in Loxone Config ueber einen Textgenerator-Baustein am
@@ -119,6 +121,22 @@ if ($tts['mode'] === 'audioserver') {
     echo "TEXT=" . $text . "\n";
     echo "HINWEIS: Original Loxone Audioserver hat keine HTTP-TTS-Schnittstelle.\n";
     echo "Die Ansage in Loxone Config ueber Textgenerator -> TTS-Eingang des Audioplayers ausloesen.\n";
+    exit;
+}
+
+/* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Faellt Alexa-NG aus, entfaellt
+ * die Ansage - kein stiller Wechsel auf einen anderen Lautsprecher. Protokoll
+ * und Antwort nennen HTTP-Code und GRUND, nie das Sprechtoken. */
+if ($tts['mode'] === 'alexang') {
+    $abf_ag = abfahrt_alexa_sprechen($text, $abfcfg);
+    if ($abf_ag === '') {
+        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_OK'), $text) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+        echo "OK: $text\n";
+    } else {
+        $abf_agt = abfahrt_grund_text($abf_ag);
+        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_FEHL'), $abf_agt));
+        echo sprintf(abfahrt_t('TEXT.ALEXA_ANTWORT_FEHL'), $abf_agt) . "\n";
+    }
     exit;
 }
 

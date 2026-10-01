@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.18 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,26 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.19
+
+Ansage-2 aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`).
+Gemessen an Attrappen unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Neue Ausgabeart „Alexa-NG“** für Ansagen über Amazon-Echo-Geräte, ab Werk
+  nicht gewählt. Voraussetzung ist das Plugin
+  [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG). Eingetragen
+  werden Gerät (leer = Standardgerät), Lautstärke (leer = bleibt) und das
+  Sprechtoken. Bisher ging das nur über eine eigene URL-Vorlage mit dem Token in
+  der Adresse; das bleibt möglich.
+* Das Sprechtoken wird wie ein Kennwort behandelt: nie angezeigt, nie in Adresse
+  oder Protokoll, nicht in „Einstellungen sichern“. Eine Sicherung mit Token wird
+  beim Zurückspielen abgewiesen.
+* Bei einem Ausfall (keine Antwort nach 10 s, Alexa-NG nicht installiert, 403, 503,
+  `OK=0`) entfällt die Ansage; Protokoll, Antwort und Reiter Test nennen HTTP-Code
+  und Grund. Der Reiter Test hat eine eigene Zeile für Alexa-NG.
+* Ungültige Eingaben (Token zu kurz, Lautstärke außerhalb 0–100, Alexa-NG ohne
+  Token) werden beanstandet; es wird dann nichts gespeichert.
 
 ## Neu in 1.6.18
 
@@ -551,6 +571,24 @@ dieselbe Abweisung wie zuvor.
     Plugin liefert den Ansagetext, die Ausgabe erfolgt in Loxone Config über
     Textgenerator → TTS-Eingang des Audioplayer-Bausteins
   - **Eigene URL-Vorlage** mit Platzhaltern `{ip} {port} {zones} {vol} {lang} {text}`
+  - **Alexa-NG** (ab Werk nicht gewählt): Ansage auf Amazon-Echo-Geräten über
+    das Plugin [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG),
+    das auf demselben LoxBerry läuft. Eingetragen werden Gerät (leer =
+    Standardgerät von Alexa-NG), Lautstärke (leer = bleibt) und das
+    Sprechtoken. Der Aufruf geht per POST an
+    `http://127.0.0.1:<Port des Webservers>/plugins/alexang/index.php`
+    (`aktion=sprechen`). Bisher ging das nur über eine eigene URL-Vorlage mit
+    dem Token in der Adresse; das bleibt möglich, empfohlen ist die
+    Ausgabeart Alexa-NG.
+    - Das Sprechtoken wird wie ein Kennwort behandelt: nie angezeigt, nicht in
+      „Einstellungen sichern“, nie in einer Adresse oder im Protokoll. Leer
+      lassen behält es, ein Haken löscht es. Eine Sicherungsdatei mit Token
+      wird abgewiesen; beim Zurückspielen bleibt das geltende.
+    - Antwortet Alexa-NG nicht (Zeitüberschreitung nach 10 s, nicht
+      installiert) oder weist es ab (403, 503, 200 mit `OK=0`), entfällt die
+      Ansage, ohne Wechsel auf einen anderen Lautsprecher. Protokoll, Antwort
+      von `termin_say.php` und eine eigene Zeile im Reiter Test nennen
+      HTTP-Code und `GRUND`.
 
 Es sind **keine persönlichen Daten** im Plugin enthalten — Kalender-URLs,
 API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
