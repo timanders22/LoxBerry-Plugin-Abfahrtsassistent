@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.19 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,18 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.20
+
+Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an Attrappen unter PHP 7.4 und 8.5 sowie gegen den echten Sprech-Endpunkt von Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe); die Ausgabe über Alexa NG misst vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Neue Ausgabeart „Google-Lautsprecher (Chromecast 4 Lox NG)“** für Ansagen über Google- und Chromecast-Lautsprecher, ab Werk nicht gewählt. Voraussetzung ist das Plugin Chromecast 4 Lox NG ab Fassung 1.3.15 auf demselben LoxBerry; dort im Reiter Einstellungen, Abschnitt „Sprachausgabe für andere Plugins“, die Sprachausgabe einschalten und ein Sprechtoken festlegen.
+* Eingetragen werden Lautsprecher (leer = Standardgerät von Chromecast 4 Lox NG; Name, MQTT-Thema, Kommaliste, `gruppe:Name` oder `alle`), Lautstärke (leer = Ansagelautstärke dort) und ein **eigenes Sprechtoken** – getrennt vom Token für Alexa-NG.
+* Aufruf per POST an `http://127.0.0.1:<Port des Webservers>/plugins/chromecast-4lox-ng/index.php`, dieselbe Schnittstelle wie bei Alexa-NG. Als gesendet gilt nur `HTTP 200` mit `SPRECHEN;OK=1` (der Dienst dort hat die Ansage eingereiht; derselbe Text binnen 30 s wird nicht wiederholt).
+* Das Sprechtoken wird wie ein Kennwort behandelt: nie angezeigt, nicht in „Einstellungen sichern“, nie in einer Adresse oder im Protokoll; leer lassen behält es, ein Haken löscht es; eine Sicherungsdatei mit Token wird abgewiesen. Vom Ansagetext nennen Protokoll und Antwort nur die Zeichenzahl.
+* Fällt das Plugin aus (keine Antwort nach 10 s, 404 ohne `GRUND` = nicht installiert oder älter als 1.3.15, 403, 409, 429, 503), entfällt die Ansage – ohne Wechsel auf einen anderen Lautsprecher und ohne Wiederholung. Protokoll, Antwort von `termin_say.php` und eine eigene Zeile im Reiter Test nennen HTTP-Code und `GRUND` samt Erklärung.
+* Neuer Knopf **„Testansage über Google-Lautsprecher“** im Reiter Test: spricht einen festen Satz und zeigt die Antwortzeile; ein Neuladen der Seite löst nichts erneut aus.
+* Intern: Aufruf, Bewertung, letzte Ansage und Prüfzeile teilen sich Alexa-NG und Google (Adresse als Parameter); die Ausgabe über Alexa-NG ist unverändert.
 
 ## Neu in 1.6.19
 
@@ -589,6 +601,29 @@ dieselbe Abweisung wie zuvor.
       Ansage, ohne Wechsel auf einen anderen Lautsprecher. Protokoll, Antwort
       von `termin_say.php` und eine eigene Zeile im Reiter Test nennen
       HTTP-Code und `GRUND`.
+  - **Google-Lautsprecher (Chromecast 4 Lox NG)** (ab Werk nicht gewählt):
+    Ansage auf Google- und Chromecast-Lautsprechern über das Plugin
+    Chromecast 4 Lox NG ab Fassung 1.3.15, das auf demselben LoxBerry läuft.
+    Dort im Reiter Einstellungen, Abschnitt „Sprachausgabe für andere
+    Plugins“, die Sprachausgabe einschalten und ein Sprechtoken festlegen.
+    Hier eingetragen werden Lautsprecher (leer = Standardgerät dort),
+    Lautstärke (leer = Ansagelautstärke dort) und dieses Sprechtoken – ein
+    anderes als das von Alexa-NG. Der Aufruf geht per POST an
+    `http://127.0.0.1:<Port des Webservers>/plugins/chromecast-4lox-ng/index.php`
+    (`aktion=sprechen`, dieselbe Schnittstelle wie bei Alexa-NG).
+    - Als gesendet gilt nur `HTTP 200` mit `SPRECHEN;OK=1`: Der Dienst dort
+      hat die Ansage bei jedem verbundenen Lautsprecher eingereiht.
+    - Das Sprechtoken wird wie das von Alexa-NG behandelt: nie angezeigt,
+      nicht in „Einstellungen sichern“, nie in einer Adresse oder im
+      Protokoll; vom Ansagetext nennen Protokoll und Antwort nur die
+      Zeichenzahl.
+    - Fällt das Plugin aus (keine Antwort nach 10 s, 404 ohne `GRUND` =
+      nicht installiert oder älter als 1.3.15, 403, 409, 429, 503),
+      entfällt die Ansage, ohne Wechsel auf einen anderen Lautsprecher und
+      ohne Wiederholung. Protokoll, Antwort von `termin_say.php` und eine
+      eigene Zeile im Reiter Test nennen HTTP-Code und `GRUND`; der Knopf
+      „Testansage über Google-Lautsprecher“ im Reiter Test zeigt die
+      Antwortzeile.
 
 Es sind **keine persönlichen Daten** im Plugin enthalten — Kalender-URLs,
 API-Key und Adressen werden ausschließlich in der lokalen Konfiguration

@@ -404,6 +404,12 @@ function abfahrt_config() {
         'alexa_geraet' => '',
         'alexa_token' => '',
         'alexa_laut' => -1,
+        // Ansage-3 (01.10.2026): Google-Lautsprecher (Chromecast 4 Lox NG), ab
+        // Werk nicht gewaehlt. Eigenes Sprechtoken, wie das von Alexa-NG ein
+        // Geheimnis: nie in der Seite, nicht in der Sicherung.
+        'google_geraet' => '',
+        'google_token' => '',
+        'google_laut' => -1,
     ];
     return $abfcfg;
 }
@@ -2278,15 +2284,27 @@ function abfahrt_alexa_geraet_ok($g)
             && trim($g) === $g));
 }
 
+/* ---------------- Gemeinsam fuer Alexa-NG und Chromecast 4 Lox NG (Ansage-3, 01.10.2026) ----------------
+ *
+ * Beide Plugins bieten dieselbe Sprechschnittstelle (aktion=sprechen, token,
+ * geraet, text, laut; selftest=1; Antwort "<PRAEFIX>;OK=...;GRUND=...").
+ * Verschieden sind nur Adresse und Geraetenamen. Darum gibt es den Aufruf,
+ * die Bewertung, die Ansage, die letzte Ansage und die Zeile im Reiter Test
+ * EINMAL, mit der Adresse und der Art als Parameter:
+ *   $art 'alexa'  - Felder tts.alexa_*,  Kennungen ALEXA_*,  alexa_letzte.json
+ *   $art 'google' - Felder tts.google_*, Kennungen GOOGLE_*, google_letzte.json
+ * Bis Ansage-3 hiessen die Teile abfahrt_alexa_rufen/_bewerten/_letzte; ihr
+ * Verhalten fuer Alexa-NG ist unveraendert (vorher/nachher gemessen). */
+
 /**
- * POST an Alexa-NG. Rueckgabe: array('code' => HTTP-Code (0 = keine Antwort),
- * 'zeile' => erste Antwortzeile ohne Token und Steuerzeichen, 'grund_id' =>
- * Kennung des Transportfehlers, 'tmo' => Wartezeit). Ohne Weiterleitung; ein
- * Proxy der Umgebung gilt fuer 127.0.0.1 nicht.
+ * POST an den Sprech-Endpunkt $url. Rueckgabe: array('code' => HTTP-Code
+ * (0 = keine Antwort), 'zeile' => erste Antwortzeile ohne Token und
+ * Steuerzeichen, 'grund_id' => Kennung des Transportfehlers, 'tmo' =>
+ * Wartezeit). Ohne Weiterleitung; ein Proxy der Umgebung gilt fuer 127.0.0.1
+ * nicht.
  */
-function abfahrt_alexa_rufen(array $felder, $tmo = 10)
+function abfahrt_ng_rufen($url, array $felder, $tmo = 10)
 {
-    $url = abfahrt_alexa_adresse();
     $koerper = http_build_query($felder, '', '&');
     $kopf = abfahrt_http_kopf();
     $kopf[] = 'Content-Type: application/x-www-form-urlencoded';
@@ -2364,65 +2382,89 @@ function abfahrt_alexa_rufen(array $felder, $tmo = 10)
 }
 
 /**
- * Antwort von Alexa-NG bewerten. Rueckgabe: '' bei "<praefix>;OK=1" mit HTTP
- * 200, sonst eine Kennung fuer abfahrt_grund_text() mit HTTP-Code und GRUND
- * (nie mit dem Token): keine Antwort (Zeitueberschreitung, Verbindung
- * abgewiesen), 404 ohne GRUND (Alexa-NG nicht installiert), eine Abweisung
- * mit GRUND (403, 503, 200 mit OK=0 ...) oder eine unerwartete Antwort.
+ * Antwort eines Sprech-Endpunkts bewerten. Rueckgabe: '' bei "<praefix>;OK=1"
+ * mit HTTP 200, sonst eine Kennung fuer abfahrt_grund_text() mit HTTP-Code und
+ * GRUND (nie mit dem Token): keine Antwort (Zeitueberschreitung, Verbindung
+ * abgewiesen), 404 ohne GRUND (Plugin nicht installiert oder zu alt), eine
+ * Abweisung mit GRUND (403, 503, 200 mit OK=0 ...) oder eine unerwartete
+ * Antwort. $art ist der Kennungsanfang (ALEXA oder GOOGLE), $adresse die
+ * gerufene Adresse. Gibt es zu einem GRUND einen erklaerenden Satz
+ * GRUND.<ART>_G_<GRUND> (Ansage-3, nur fuer GOOGLE angelegt), wird er als
+ * innerer Grund angehaengt.
  */
-function abfahrt_alexa_bewerten(array $a, $praefix)
+function abfahrt_ng_bewerten(array $a, $praefix, $art, $adresse)
 {
     if ($a['code'] === 200 && strpos($a['zeile'], $praefix . ';OK=1') === 0) {
         return '';
     }
     if ($a['code'] <= 0) {
-        return 'ALEXA_KEINE_ANTWORT|' . abfahrt_alexa_adresse() . '|' . (int) $a['tmo']
+        return $art . '_KEINE_ANTWORT|' . $adresse . '|' . (int) $a['tmo']
              . ($a['grund_id'] !== '' ? '|' . $a['grund_id'] : '');
     }
     if (preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $a['zeile'], $m)) {
-        return 'ALEXA_ANTWORT|' . (int) $a['code'] . '|' . $m[1];
+        $erkl = $art . '_G_' . strtoupper($m[1]);
+        return $art . '_ANTWORT|' . (int) $a['code'] . '|' . $m[1]
+             . (abfahrt_t('GRUND.' . $erkl) !== 'GRUND.' . $erkl ? '|' . $erkl : '');
     }
     if ($a['code'] === 404) {
-        return 'ALEXA_FEHLT|' . abfahrt_alexa_adresse() . '|404';
+        return $art . '_FEHLT|' . $adresse . '|404';
     }
     $s = substr((string) preg_replace('/[^A-Za-z0-9;=_.:\-]/', '', $a['zeile']), 0, 60);
-    return 'ALEXA_UNERWARTET|' . (int) $a['code'] . '|' . ($s !== '' ? $s : '-');
+    return $art . '_UNERWARTET|' . (int) $a['code'] . '|' . ($s !== '' ? $s : '-');
+}
+
+/** Kurzform einer Antwort fuer Protokoll und Anzeige: "HTTP 200, SPRECHEN;OK=1;...".
+ *  Die Zeile traegt kein Token (abfahrt_ng_rufen() ersetzt es) und keinen Text. */
+function abfahrt_ng_kurz($a)
+{
+    if (!is_array($a) || (int) $a['code'] <= 0) { return '-'; }
+    return 'HTTP ' . (int) $a['code'] . ', ' . ((string) $a['zeile'] !== '' ? $a['zeile'] : '-');
 }
 
 /**
- * Eine Ansage ueber Alexa-NG. Rueckgabe: '' = gesprochen, sonst die Kennung
- * des Grundes. Geraet und Lautstaerke aus den Einstellungen. Das Ergebnis
- * (Zeit, ok, Kennung - nie Token oder Text) liegt danach in
- * alexa_letzte.json im Zwischenordner, fuer den Reiter Test; angelegt wird
- * dafuer nichts.
+ * Eine Ansage ueber einen Sprech-Endpunkt. Rueckgabe: '' = gesendet (OK=1),
+ * sonst die Kennung des Grundes. Geraet und Lautstaerke aus den Einstellungen
+ * tts.<art>_geraet/_laut. Das Ergebnis (Zeit, ok, Kennung - nie Token oder
+ * Text) liegt danach in <art>_letzte.json im Zwischenordner, fuer den Reiter
+ * Test; angelegt wird dafuer nichts. $antwort bekommt das Ergebnis von
+ * abfahrt_ng_rufen() (null, wenn ohne Token nicht gerufen wurde).
  */
-function abfahrt_alexa_sprechen($text, array $abfcfg)
+function abfahrt_ng_sprechen($text, array $abfcfg, $art, $url, &$antwort = null)
 {
+    $antwort = null;
+    $art_k = strtoupper($art);
     $t = $abfcfg['tts'];
-    $tok = isset($t['alexa_token']) ? $t['alexa_token'] : '';
+    $tok = isset($t[$art . '_token']) ? $t[$art . '_token'] : '';
     if (!abfahrt_alexa_token_ok($tok)) {
-        $gid = 'ALEXA_KEIN_TOKEN';
+        $gid = $art_k . '_KEIN_TOKEN';
     } else {
         $f = array('aktion' => 'sprechen', 'token' => $tok);
-        $g = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? $t['alexa_geraet'] : '';
+        $g = (isset($t[$art . '_geraet']) && is_string($t[$art . '_geraet'])) ? $t[$art . '_geraet'] : '';
         if ($g !== '') { $f['geraet'] = $g; }
-        $laut = isset($t['alexa_laut']) ? (int) $t['alexa_laut'] : -1;
+        $laut = isset($t[$art . '_laut']) ? (int) $t[$art . '_laut'] : -1;
         if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
         $f['text'] = (string) $text;
-        $gid = abfahrt_alexa_bewerten(abfahrt_alexa_rufen($f, 10), 'SPRECHEN');
+        $antwort = abfahrt_ng_rufen($url, $f, 10);
+        $gid = abfahrt_ng_bewerten($antwort, 'SPRECHEN', $art_k, $url);
     }
     $tmp = abfahrt_tmpdir(false);
     if (is_dir($tmp)) {
-        abfahrt_cache_schreiben($tmp . '/alexa_letzte.json',
+        abfahrt_cache_schreiben($tmp . '/' . $art . '_letzte.json',
             (string) json_encode(array('zeit' => time(), 'ok' => $gid === '' ? 1 : 0, 'grund_id' => $gid)));
     }
     return $gid;
 }
 
-/** Das Ergebnis der letzten Ansage ueber Alexa-NG, oder null. */
-function abfahrt_alexa_letzte()
+/** Eine Ansage ueber Alexa-NG (Aufrufer: termin_say.php). */
+function abfahrt_alexa_sprechen($text, array $abfcfg)
 {
-    $f = abfahrt_tmpdir(false) . '/alexa_letzte.json';
+    return abfahrt_ng_sprechen($text, $abfcfg, 'alexa', abfahrt_alexa_adresse());
+}
+
+/** Das Ergebnis der letzten Ansage dieser Art, oder null. */
+function abfahrt_ng_letzte($art)
+{
+    $f = abfahrt_tmpdir(false) . '/' . $art . '_letzte.json';
     if (!is_file($f)) { return null; }
     $d = json_decode((string) @file_get_contents($f), true);
     if (!is_array($d) || !isset($d['zeit'], $d['ok'])) { return null; }
@@ -2431,42 +2473,96 @@ function abfahrt_alexa_letzte()
 }
 
 /**
- * Zeile im Reiter Test, wenn Alexa-NG die Ausgabeart ist: array(Stand, Antwort
- * als HTML). Gefragt wird selftest=1 (prueft nur das Token, spricht nicht)
- * und nur, wenn der Reiter Test offen ist - sonst kostete jeder Seitenaufbau
- * bis zu 10 s, wenn Alexa-NG haengt. Die letzte Ansage wird dazugenannt; ist
+ * Zeile im Reiter Test fuer einen Sprech-Endpunkt: array(Stand, Antwort als
+ * HTML). Gefragt wird selftest=1 (prueft nur das Token, spricht nicht) und
+ * nur, wenn der Reiter Test offen ist - sonst kostete jeder Seitenaufbau bis
+ * zu 10 s, wenn das Plugin haengt. Die letzte Ansage wird dazugenannt; ist
  * sie gescheitert, obwohl das Token passt, steht ein "i" (die Ursache kann
- * vorbei sein, "Ansage jetzt ausloesen" prueft es).
+ * vorbei sein, "Ansage jetzt ausloesen" prueft es). $zeile bekommt bei
+ * bestandenem Selbsttest dessen Antwortzeile (fuer Zusatzfelder).
  */
-function abfahrt_pruef_alexang(array $abfcfg, $offen)
+function abfahrt_ng_pruef(array $abfcfg, $offen, $art, $url, &$zeile = '')
 {
-    $tok = isset($abfcfg['tts']['alexa_token']) ? $abfcfg['tts']['alexa_token'] : '';
+    $zeile = '';
+    $art_k = strtoupper($art);
+    $tok = isset($abfcfg['tts'][$art . '_token']) ? $abfcfg['tts'][$art . '_token'] : '';
     if (!abfahrt_alexa_token_ok($tok)) {
-        return array(0, abfahrt_e(abfahrt_grund_text('ALEXA_KEIN_TOKEN')));
+        return array(0, abfahrt_e(abfahrt_grund_text($art_k . '_KEIN_TOKEN')));
     }
     if (!$offen) {
-        return array(-1, abfahrt_t('TEST.A_ALEXA_ZU'));
+        return array(-1, abfahrt_t('TEST.A_' . $art_k . '_ZU'));
     }
-    $gid = abfahrt_alexa_bewerten(abfahrt_alexa_rufen(array('selftest' => '1', 'token' => $tok), 10), 'SELFTEST');
+    $a = abfahrt_ng_rufen($url, array('selftest' => '1', 'token' => $tok), 10);
+    $gid = abfahrt_ng_bewerten($a, 'SELFTEST', $art_k, $url);
     $stand = 1;
     $letzte = '';
-    $l = abfahrt_alexa_letzte();
+    $l = abfahrt_ng_letzte($art);
     if ($l !== null) {
         $s = max(0, time() - $l['zeit']);
         $alter = $s < 90 ? $s . ' s' : ($s < 5400 ? (int) round($s / 60) . ' min'
                : ($s < 172800 ? (int) round($s / 3600) . ' h' : (int) round($s / 86400) . ' d'));
         if ($l['ok'] === 1) {
-            $letzte = ' ' . sprintf(abfahrt_t('TEST.A_ALEXA_LETZTE_OK'), $alter);
+            $letzte = ' ' . sprintf(abfahrt_t('TEST.A_' . $art_k . '_LETZTE_OK'), $alter);
         } else {
-            $letzte = ' ' . sprintf(abfahrt_t('TEST.A_ALEXA_LETZTE_FEHL'), $alter,
+            $letzte = ' ' . sprintf(abfahrt_t('TEST.A_' . $art_k . '_LETZTE_FEHL'), $alter,
                                     abfahrt_e(abfahrt_grund_text($l['grund_id'])));
             $stand = -1;
         }
     }
     if ($gid !== '') {
-        return array(0, sprintf(abfahrt_t('TEST.A_ALEXA_FEHL'), abfahrt_e(abfahrt_grund_text($gid))) . $letzte);
+        return array(0, sprintf(abfahrt_t('TEST.A_' . $art_k . '_FEHL'), abfahrt_e(abfahrt_grund_text($gid))) . $letzte);
     }
-    return array($stand, sprintf(abfahrt_t('TEST.A_ALEXA_OK'), abfahrt_e(abfahrt_alexa_adresse())) . $letzte);
+    $zeile = $a['zeile'];
+    return array($stand, sprintf(abfahrt_t('TEST.A_' . $art_k . '_OK'), abfahrt_e($url)) . $letzte);
+}
+
+/** Zeile im Reiter Test, wenn Alexa-NG die Ausgabeart ist. */
+function abfahrt_pruef_alexang(array $abfcfg, $offen)
+{
+    return abfahrt_ng_pruef($abfcfg, $offen, 'alexa', abfahrt_alexa_adresse());
+}
+
+/* ---------------- Ausgabeart Google-Lautsprecher (Ansage-3, 01.10.2026; ab Werk nicht gewaehlt) ----------------
+ *
+ * Das Plugin Chromecast 4 Lox NG (Ordner chromecast-4lox-ng) laesst Google-
+ * und Chromecast-Lautsprecher sprechen. Seit seiner Fassung 1.3.15 nimmt es
+ * Ansagen anderer Plugins dieses LoxBerrys an - mit derselben Schnittstelle
+ * wie Alexa-NG, aber nur von 127.0.0.1 (sonst 403 NUR_LOKAL). Eigenes
+ * Sprechtoken (tts.google_token), getrennt vom Alexa-NG-Token. OK=1 heisst:
+ * der Dienst hat die Ansage bei jedem verbundenen Ziel-Lautsprecher
+ * eingereiht - darum "gesendet", nicht "gesprochen". Faellt das Plugin aus,
+ * entfaellt die Ansage (kein stiller Wechsel auf einen anderen Lautsprecher,
+ * keine eigene Wiederholung); Protokoll, Antwort und Reiter Test nennen
+ * HTTP-Code und GRUND. */
+function abfahrt_google_adresse()
+{
+    return 'http://127.0.0.1:' . abfahrt_webport() . '/plugins/chromecast-4lox-ng/index.php';
+}
+
+/** Eine Ansage ueber Chromecast 4 Lox NG (termin_say.php, Knopf Testansage). */
+function abfahrt_google_sprechen($text, array $abfcfg, &$antwort = null)
+{
+    return abfahrt_ng_sprechen($text, $abfcfg, 'google', abfahrt_google_adresse(), $antwort);
+}
+
+/** Zeile im Reiter Test fuer Chromecast 4 Lox NG. Der Selbsttest dort meldet
+ *  zusaetzlich SPRECHEN=0/1 und DIENST=0/1; eine 0 wird als Hinweis ("i")
+ *  gezeigt - das Token passt, gesprochen wird so aber nichts. */
+function abfahrt_pruef_google(array $abfcfg, $offen)
+{
+    $zeile = '';
+    list($stand, $html) = abfahrt_ng_pruef($abfcfg, $offen, 'google', abfahrt_google_adresse(), $zeile);
+    if ($zeile !== '') {
+        if (preg_match('/(?:^|;)SPRECHEN=0(?:;|$)/', $zeile)) {
+            $html .= ' ' . abfahrt_t('TEST.A_GOOGLE_SPRECHEN_AUS');
+            $stand = -1;
+        }
+        if (preg_match('/(?:^|;)DIENST=0(?:;|$)/', $zeile)) {
+            $html .= ' ' . abfahrt_t('TEST.A_GOOGLE_DIENST_AUS');
+            $stand = -1;
+        }
+    }
+    return array($stand, $html);
 }
 
 /** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null,
@@ -3927,6 +4023,17 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
                                                      : abfahrt_t('TEST.A_ALEXA_LAUT_BLEIBT')));
         list($abf_as, $abf_at) = abfahrt_pruef_alexang($abfcfg, !empty($oberflaeche['test_offen']));
         $zeile($abf_as, abfahrt_t('TEST.F_ALEXA'), $abf_at);
+    } elseif ($modus === 'cc4lox') {
+        /* Ansage-3: Google-Lautsprecher ueber Chromecast 4 Lox NG, ebenfalls
+         * ohne IP eines Audio-Servers; die eigene Zeile fragt das Plugin
+         * selbst (nur bei offenem Reiter Test). */
+        $abf_gg = (string) $abfcfg['tts']['google_geraet'];
+        $zeile(1, abfahrt_t('TEST.F_AUDIO'), sprintf(abfahrt_t('TEST.A_AUDIO_GOOGLE'),
+            $abf_gg !== '' ? abfahrt_e($abf_gg) : abfahrt_t('TEST.A_GOOGLE_STANDARDGERAET'),
+            (int) $abfcfg['tts']['google_laut'] >= 0 ? (int) $abfcfg['tts']['google_laut'] . ' %'
+                                                      : abfahrt_t('TEST.A_GOOGLE_LAUT_PLUGIN')));
+        list($abf_gs, $abf_gt) = abfahrt_pruef_google($abfcfg, !empty($oberflaeche['test_offen']));
+        $zeile($abf_gs, abfahrt_t('TEST.F_GOOGLE'), $abf_gt);
     } elseif (trim((string) $abfcfg['tts']['ip']) === '') {
         $zeile(0, abfahrt_t('TEST.F_AUDIO'), abfahrt_t('TEST.A_AUDIO_KEINE_IP'));
     } else {
@@ -4664,14 +4771,16 @@ function abfahrt_sicherung_bauen(array $cfg, $pruefen = true)
         '_plugin'  => 'abfahrtsassistent',
         '_stand'   => date('Y-m-d H:i:s'),
         '_hinweis' => 'Diese Datei enthaelt das Merkwort und den Schluessel des '
-                    . 'Kartendienstes. Wie ein Passwort behandeln. Das '
-                    . 'Alexa-NG-Sprechtoken ist absichtlich NICHT enthalten.',
+                    . 'Kartendienstes. Wie ein Passwort behandeln. Die '
+                    . 'Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG sind '
+                    . 'absichtlich NICHT enthalten.',
     );
     /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
      * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
      * geltende (abfahrt_sicherung_lesen()). */
     if (isset($cfg['tts']) && is_array($cfg['tts'])) {
         unset($cfg['tts']['alexa_token']);
+        unset($cfg['tts']['google_token']);     // Ansage-3
     }
     /* X-3 (Welle 2, 30.09.2026): Wuerde das eigene Zurueckspielen diese Datei
      * abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert wird sie
@@ -4900,7 +5009,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
             foreach ($wert as $uk => $uw) {
                 switch ((string) $uk) {
                     case 'mode':
-                        if (is_array($uw) || !in_array((string) $uw, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
+                        if (is_array($uw) || !in_array((string) $uw, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true)) {
                             $grund = 'TTS_MODUS'; return null;
                         }
                         $aus['mode'] = (string) $uw;
@@ -4968,6 +5077,24 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                             $grund = 'TTS_ALEXA_TOKEN'; return null;
                         }
                         $aus['alexa_token'] = $uw;
+                        break;
+                    /* Ansage-3 (01.10.2026): Google-Lautsprecher, dieselben
+                     * Formen wie bei Alexa-NG. Kein Wert erscheint in einem Grund. */
+                    case 'google_geraet':
+                        if (!abfahrt_alexa_geraet_ok($uw)) { $grund = 'TTS_GOOGLE_GERAET'; return null; }
+                        $aus['google_geraet'] = $uw;
+                        break;
+                    case 'google_laut':
+                        $z = $zahl($uw, -1, 100);
+                        if ($z === null) { $grund = 'UNTER|tts.google_laut|' . $grund; return null; }
+                        $aus['google_laut'] = $z;
+                        break;
+                    case 'google_token':
+                        // Leer heisst "keins gespeichert".
+                        if (!is_string($uw) || ($uw !== '' && !abfahrt_alexa_token_ok($uw))) {
+                            $grund = 'TTS_GOOGLE_TOKEN'; return null;
+                        }
+                        $aus['google_token'] = $uw;
                         break;
                     default:
                         $grund = 'TTS_EINTRAG|' . $teil($uk); return null;
@@ -5042,10 +5169,20 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
         /* Ansage-2: Sicherungen tragen nie ein Sprechtoken fuer Alexa-NG.
          * Bringt eine Datei eines mit, wird sie abgewiesen - sie stammt nicht
          * aus "Einstellungen sichern", und das geltende Token bleibt. */
-        if ($k === 'tts' && is_array($w) && array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') {
-            $mangel[] = abfahrt_t('TEXT.SICH_ALEXA_TOKEN');
-            $namen[] = 'tts.alexa_token';
-            continue;
+        if ($k === 'tts' && is_array($w)) {
+            $abf_mit_token = false;
+            if (array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') {
+                $mangel[] = abfahrt_t('TEXT.SICH_ALEXA_TOKEN');
+                $namen[] = 'tts.alexa_token';
+                $abf_mit_token = true;
+            }
+            /* Ansage-3: ebenso das Sprechtoken fuer Chromecast 4 Lox NG. */
+            if (array_key_exists('google_token', $w) && $w['google_token'] !== '') {
+                $mangel[] = abfahrt_t('TEXT.SICH_GOOGLE_TOKEN');
+                $namen[] = 'tts.google_token';
+                $abf_mit_token = true;
+            }
+            if ($abf_mit_token) { continue; }
         }
         $grund = '';
         $wert = abfahrt_wert_pruefen($k, $w, $grund);
@@ -5067,6 +5204,8 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
     if (isset($gesehen['tts']) && is_array($neu['tts'])) {
         $neu['tts']['alexa_token'] = (isset($jetzt['tts']['alexa_token']) && is_string($jetzt['tts']['alexa_token']))
             ? $jetzt['tts']['alexa_token'] : '';
+        $neu['tts']['google_token'] = (isset($jetzt['tts']['google_token']) && is_string($jetzt['tts']['google_token']))
+            ? $jetzt['tts']['google_token'] : '';     // Ansage-3
     }
 
     /* Ein leeres Merkwort in einer Sicherungsdatei heisst "kein Merkwort

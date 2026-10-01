@@ -9,6 +9,8 @@
  *   - MusicServer4Home / Audioserver4Home: URL-Vorlage (anpassbar)
  *   - Alexa-NG (Plugin fuer Amazon Echo, ab Werk nicht gewaehlt): POST an
  *     dessen Endpunkt, das Sprechtoken steht im Koerper, nie in der Adresse
+ *   - Google-Lautsprecher ueber Chromecast 4 Lox NG (ab Werk nicht gewaehlt):
+ *     dieselbe Schnittstelle wie Alexa-NG, eigenes Sprechtoken
  *   - Original Loxone Audioserver: KEINE HTTP-TTS-Schnittstelle vorhanden -
  *     dieser Endpunkt liefert dann nur den Text (TEXT=...); die Sprachausgabe
  *     erfolgt in Loxone Config ueber einen Textgenerator-Baustein am
@@ -136,6 +138,27 @@ if ($tts['mode'] === 'alexang') {
         $abf_agt = abfahrt_grund_text($abf_ag);
         abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_FEHL'), $abf_agt));
         echo sprintf(abfahrt_t('TEXT.ALEXA_ANTWORT_FEHL'), $abf_agt) . "\n";
+    }
+    exit;
+}
+
+/* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG).
+ * Faellt das Plugin aus, entfaellt die Ansage - kein stiller Wechsel auf einen
+ * anderen Lautsprecher, keine eigene Wiederholung. Protokoll und Antwort nennen
+ * HTTP-Code und Antwortzeile bzw. GRUND und vom Text nur die Zeichenzahl - nie
+ * das Sprechtoken, nie den Text. */
+if ($tts['mode'] === 'cc4lox') {
+    $abf_ga = null;
+    $abf_gg = abfahrt_google_sprechen($text, $abfcfg, $abf_ga);
+    $abf_gn = (int) preg_match_all('/./us', (string) $text);
+    if ($abf_gg === '') {
+        $abf_gk = abfahrt_ng_kurz($abf_ga);
+        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_OK'), $abf_gn, $abf_gk) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+        echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_OK'), $abf_gn, $abf_gk) . "\n";
+    } else {
+        $abf_ggt = abfahrt_grund_text($abf_gg);
+        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_FEHL'), $abf_gn, $abf_ggt));
+        echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_FEHL'), $abf_ggt) . "\n";
     }
     exit;
 }

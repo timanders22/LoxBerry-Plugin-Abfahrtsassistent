@@ -123,9 +123,10 @@ function abf_umleiten($data_dir, $tab, array $inhalt) {
  * beanstandeten Formulars und die Namen der beanstandeten Felder. Nie mit
  * reisen: der Schluessel des Kartendienstes (api_key), die privaten
  * Kalenderadressen (cal_url[], seit U1 nie in der Seite), Merkwort,
- * Formularmerkmal und das Sprechtoken fuer Alexa-NG (tts_alexa_token,
- * Ansage-2) - sie stehen in keiner der beiden Listen unten; das Sprechtoken
- * kann markiert werden, sein Wert reist nie mit. Ein Wert,
+ * Formularmerkmal und die Sprechtoken fuer Alexa-NG (tts_alexa_token,
+ * Ansage-2) und Chromecast 4 Lox NG (tts_google_token, Ansage-3) - sie stehen
+ * in keiner der beiden Listen unten; ein Sprechtoken kann markiert werden,
+ * sein Wert reist nie mit. Ein Wert,
  * der kein gueltiges UTF-8 ist oder laenger als 2100 Byte, reist nicht mit;
  * sein Feld zeigt dann den gespeicherten Wert (und bleibt markiert). */
 function abf_eingabe_felder($formular) {
@@ -137,7 +138,8 @@ function abf_eingabe_felder($formular) {
                      'ignore_locations', 'arrival_min', 'buffer_min', 'lookahead_hours', 'route_departat',
                      'ob_muster', 'ob_adresse', 'ganztags_ein', 'ganztags_zeit', 'tts_mode', 'tts_ip',
                      'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template',
-                     'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen', 'ansage_vorlage',
+                     'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen',
+                     'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen', 'ansage_vorlage',
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
     return array();
@@ -342,8 +344,9 @@ if ($abf_post && isset($_POST['download'])) {
 }
 
 /* ---------------- Einstellungen sichern (Download) ----------------
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken, aber ohne das
- * Sprechtoken fuer Alexa-NG (Ansage-2, abfahrt_sicherung_bauen()). Der lesbare
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken, aber ohne die
+ * Sprechtoken fuer Alexa-NG (Ansage-2) und Chromecast 4 Lox NG (Ansage-3,
+ * abfahrt_sicherung_bauen()). Der lesbare
  * Kopf traegt _plugin, _stand und _hinweis (keine Fassungsnummer, Begruendung
  * bei abfahrt_sicherung_bauen()). */
 if ($abf_post && isset($_POST['abfahrt_sichern'])) {
@@ -385,6 +388,28 @@ if ($abf_post && isset($_POST['selftest'])) {
                          $abf_grund !== '' ? $abf_grund : '?'));
     }
     abf_umleiten($data_dir, 'tab-test', array('selftest' => $abf_st));
+}
+
+// ---------- Testansage ueber Google-Lautsprecher (Ansage-3, 01.10.2026) ----------
+/* Spricht einen festen Satz ueber Chromecast 4 Lox NG - Geraet, Lautstaerke
+ * und Sprechtoken aus den gespeicherten Einstellungen - und zeigt die
+ * Antwortzeile (HTTP-Code, GRUND; nie Token oder Text). Endet wie jeder
+ * Handler mit der Umleitung: ein F5 danach loest nichts aus. Sperrzeiten und
+ * Haken gelten hier nicht (wie "Ansage jetzt ausloesen" mit force=1). */
+if ($abf_post && isset($_POST['google_testansage'])) {
+    $abf_ga = null;
+    $abf_gtx = abfahrt_t('TEST.GOOGLE_TESTTEXT');
+    $abf_gg = abfahrt_google_sprechen($abf_gtx, $abfcfg, $abf_ga);
+    $abf_gn = (int) preg_match_all('/./us', $abf_gtx);
+    if ($abf_gg === '') {
+        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_OK'), $abf_gn, abfahrt_ng_kurz($abf_ga)) . ' [Testansage]');
+        $abf_gte = array('stufe' => 1, 'text' => sprintf(abfahrt_t('TEST.GOOGLE_TEST_OK'), abfahrt_ng_kurz($abf_ga)));
+    } else {
+        $abf_ggt = abfahrt_grund_text($abf_gg);
+        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_FEHL'), $abf_gn, $abf_ggt) . ' [Testansage]');
+        $abf_gte = array('stufe' => 0, 'text' => sprintf(abfahrt_t('TEST.GOOGLE_TEST_FEHL'), $abf_ggt));
+    }
+    abf_umleiten($data_dir, 'tab-test', array('google_test' => $abf_gte));
 }
 
 // ---------- Koordinaten verwerfen ----------
@@ -634,6 +659,52 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_OHNE_TOKEN');
         abf_bean('tts_alexa_token');
     }
+    /* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox
+     * NG) - dieselben Regeln wie bei Alexa-NG oben: Geraet und Lautstaerke
+     * werden beanstandet statt zurechtgebogen, das eigene Sprechtoken steht
+     * nie in der Seite und reist nach einer Beanstandung nicht zurueck; leer
+     * heisst behalten, der Haken loescht, beides zugleich ist ein Widerspruch. */
+    $abf_gg = $abf_al_roh('tts_google_geraet');
+    if ($abf_gg === null || !abfahrt_alexa_geraet_ok($abf_gg)) {
+        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_GERAET');
+        abf_bean('tts_google_geraet');
+        $abf_gg = (string) $abf_alt['tts']['google_geraet'];
+    }
+    $abf_gl = $abf_al_roh('tts_google_laut');
+    if ($abf_gl === '') {
+        $abf_gl = -1;       // leer: die Ansagelautstaerke des Chromecast-Plugins
+    } elseif ($abf_gl !== null && preg_match('/^\d{1,3}\z/', $abf_gl) === 1 && (int) $abf_gl <= 100) {
+        $abf_gl = (int) $abf_gl;
+    } else {
+        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_LAUT');
+        abf_bean('tts_google_laut');
+        $abf_gl = (int) $abf_alt['tts']['google_laut'];
+    }
+    $abf_gt = (string) $abf_alt['tts']['google_token'];
+    $abf_gtn = $abf_al_roh('tts_google_token');
+    if ($abf_gtn === null) {
+        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_TOKEN');
+        abf_bean('tts_google_token');
+    } elseif (!empty($_POST['tts_google_token_loeschen'])) {
+        if ($abf_gtn !== '') {
+            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.GOOGLE_TOKEN'));
+            abf_bean('tts_google_token');
+            abf_bean('tts_google_token_loeschen');
+        } else {
+            $abf_gt = '';
+        }
+    } elseif ($abf_gtn !== '') {
+        if (abfahrt_alexa_token_ok($abf_gtn)) {
+            $abf_gt = $abf_gtn;
+        } else {
+            $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_TOKEN');
+            abf_bean('tts_google_token');
+        }
+    }
+    if ($abf_post_text('tts_mode') === 'cc4lox' && $abf_gt === '' && !in_array('tts_google_token', abf_bean(), true)) {
+        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_OHNE_TOKEN');
+        abf_bean('tts_google_token');
+    }
     abf_feld($abfneu, $abf_alt, 'tts', array(
         'mode'     => $abf_post_text('tts_mode'),
         'ip'       => $abf_post_text('tts_ip'),
@@ -645,6 +716,9 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         'alexa_geraet' => $abf_ag,
         'alexa_laut'   => $abf_al,
         'alexa_token'  => $abf_at,
+        'google_geraet' => $abf_gg,     // Ansage-3
+        'google_laut'   => $abf_gl,
+        'google_token'  => $abf_gt,
     ), $abf_hw);
 
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
@@ -804,6 +878,7 @@ $abf_hinweise  = isset($abf_flash['hinweise']) && is_array($abf_flash['hinweise'
 $abf_ms4h      = isset($abf_flash['ms4h']) && is_array($abf_flash['ms4h']) ? $abf_flash['ms4h'] : null;
 $abf_selftest  = isset($abf_flash['selftest']) && is_array($abf_flash['selftest']) ? $abf_flash['selftest'] : null;
 $abf_kaldiag   = isset($abf_flash['kaldiag']) && is_array($abf_flash['kaldiag']) ? $abf_flash['kaldiag'] : null;
+$abf_gtest     = isset($abf_flash['google_test']) && is_array($abf_flash['google_test']) ? $abf_flash['google_test'] : null;     // Ansage-3
 abf_eingaben(isset($abf_flash['eingaben']) ? $abf_flash['eingaben'] : array());     // X-2
 foreach ($abf_heilmeldungen as $abf_m) { $abf_hinweise[] = $abf_m; }
 
@@ -1136,6 +1211,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
             <option value="audioserver"<?= $abf_tmod === 'audioserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_AUDIOSERVER')) ?></option>
             <option value="custom"<?= $abf_tmod === 'custom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_EIGENE')) ?></option>
             <option value="alexang"<?= $abf_tmod === 'alexang' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_ALEXA')) ?></option>
+            <option value="cc4lox"<?= $abf_tmod === 'cc4lox' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_GOOGLE')) ?></option>
         </select>
     </div>
     <div>
@@ -1208,6 +1284,30 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
     <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1" <?= abf_h('tts_alexa_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_alexa_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN_LOESCHEN')) ?>
 </label>
 <div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_TOKEN_HINWEIS') ?></div>
+</div>
+<?php /* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox
+         NG). Das Sprechtoken steht nie in der Seite - das Feld ist immer
+         leer, der Platzhalter sagt, ob eines gespeichert ist und wie lang. */ ?>
+<div id="tts_google_rows">
+<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.GOOGLE_HINWEIS') ?></div>
+<div class="sm-row">
+    <div>
+        <label for="tts_google_geraet"><?= e(abfahrt_t('SEITE.L_GOOGLE_GERAET')) ?></label>
+        <input data-role="none" type="text" id="tts_google_geraet" name="tts_google_geraet" value="<?= e(abf_w('tts_google_geraet', $abfcfg['tts']['google_geraet'])) ?>"<?= abf_m('tts_google_geraet') ?> maxlength="200" placeholder="Wohnzimmer">
+        <div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_GERAET_HINWEIS') ?></div>
+    </div>
+    <div>
+        <label for="tts_google_laut"><?= e(abfahrt_t('SEITE.L_GOOGLE_LAUT')) ?></label>
+        <input data-role="none" type="number" id="tts_google_laut" name="tts_google_laut" value="<?= e(abf_w('tts_google_laut', (int) $abfcfg['tts']['google_laut'] >= 0 ? (int) $abfcfg['tts']['google_laut'] : '')) ?>"<?= abf_m('tts_google_laut') ?> min="0" max="100">
+        <div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_LAUT_HINWEIS') ?></div>
+    </div>
+</div>
+<label for="tts_google_token"><?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN')) ?></label>
+<input data-role="none" type="password" id="tts_google_token" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?= e((string) $abfcfg['tts']['google_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_GOOGLE_TOKEN_DA'), strlen((string) $abfcfg['tts']['google_token'])) : abfahrt_t('SEITE.P_GOOGLE_TOKEN_LEER')) ?>"<?= abf_m('tts_google_token') ?>>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="tts_google_token_loeschen" value="1" <?= abf_h('tts_google_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_google_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN_LOESCHEN')) ?>
+</label>
+<div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_TOKEN_HINWEIS') ?></div>
 </div>
 
 <label><?= e(abfahrt_t('TEXT.L_ANSAGE_VORLAGE')) ?></label>
@@ -1600,8 +1700,19 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 </div>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('SEITE.H_LOEST_AUS')) ?></h3>
+<?php if ($abf_gtest !== null) {     // Ansage-3: Antwort der Testansage (einmal, nach der Umleitung)
+    $abf_gk = ((int) $abf_gtest['stufe'] === 1) ? 'sm-alert sm-ok' : 'sm-alert sm-err'; ?>
+<div class="<?= $abf_gk ?>"><?= e($abf_gtest['text']) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
 <a class="sm-btn sm-b-aktion" href="/plugins/<?= e($plugindir) ?>/termin_say.php?force=1&amp;token=<?= e($abf_token) ?>" target="_blank" rel="noopener noreferrer"><?= e(abfahrt_t('SEITE.K_ANSAGE')) ?></a>
+<?php if ($abfcfg['tts']['mode'] === 'cc4lox') {     /* Ansage-3 */ ?>
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="google_testansage" value="1"><?= e(abfahrt_t('TEST.K_GOOGLE_TEST')) ?></button>
+</form>
+<?php } ?>
 <form action="index.php" method="post" style="margin:0;"
       onsubmit="return confirm('<?= e(strip_tags(abfahrt_t('TEST.TOKEN_NEU_WARNUNG'))) ?>');">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -1611,6 +1722,9 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 </div>
 <div class="sm-alert sm-warn"><?= abfahrt_t('TEST.TOKEN_NEU_WARNUNG') ?></div>
 <div class="sm-small"><?= abfahrt_t('SEITE.TEST_KNOEPFE_HINWEIS') ?></div>
+<?php if ($abfcfg['tts']['mode'] === 'cc4lox') { ?>
+<div class="sm-small"><?= abfahrt_t('TEST.GOOGLE_TEST_HINWEIS') ?></div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
@@ -1643,6 +1757,8 @@ function abfTtsMode() {
     document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
     var al = document.getElementById('tts_alexa_rows');
     if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
+    var gl = document.getElementById('tts_google_rows');
+    if (gl) { gl.style.display = (m === 'cc4lox' || gl.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
     var port = document.getElementsByName('tts_port')[0];
     /* Nur ein LEERES Feld wird vorbelegt - eine bewusst eingetragene 80 bleibt. */
     if (m === 'musicserver' && !port.value) { port.value = 7091; }
