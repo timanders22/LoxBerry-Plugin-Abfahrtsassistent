@@ -132,8 +132,8 @@ if ($tts['mode'] === 'audioserver') {
 if ($tts['mode'] === 'alexang') {
     $abf_ag = abfahrt_alexa_sprechen($text, $abfcfg);
     if ($abf_ag === '') {
-        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_OK'), $text) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
-        echo "OK: $text\n";
+        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_OK'), ansage_zeichen($text)) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+        echo 'OK: TEXTLAENGE=' . ansage_zeichen($text) . "\n";    // Nr. 40: die Laenge, nicht der Text
     } else {
         $abf_agt = abfahrt_grund_text($abf_ag);
         abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_FEHL'), $abf_agt));
@@ -183,10 +183,22 @@ if ($url === '') {
  * Zeitueberschreitung. */
 $grund = '';
 $status = 0;
-$r = abfahrt_http_get($url, 8, $grund, $status);
+/* Nr. 36 b: abgerufen ueber den Transport der gemeinsamen Sprachausgabe (ohne Weiterleitung,
+ * ohne Proxy, 8 s wie bisher, Erfolg nur bei HTTP 2xx); der Grund ist die Kennung dieser Linie. */
+$abf_k = abfahrt_ansage_k();
+$abf_a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 8, $abf_k), $abf_k);
+$status = $abf_a['code'];
+if ($status > 0) {
+    $abf_gid = abfahrt_http_grund_id(0, '', $status);
+} else {
+    $abf_gid = in_array($abf_a['errno'], array(6, 7, 28), true) ? abfahrt_http_grund_id($abf_a['errno'], '', 0) : 'HTTP_OHNE_CURL';
+}
+$grund = $abf_gid !== '' ? abfahrt_grund_text($abf_gid) : '';
+$r = ($status >= 200 && $status < 300) ? $abf_a['rumpf'] : false;
 if ($r !== false) {
-    abfahrt_log('Ansage gesprochen: ' . $text . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
-    echo "OK: $text\n";
+    /* Nr. 40: vom Ansagetext nur seine Laenge, in Protokoll und Antwort. */
+    abfahrt_log('Ansage gesprochen (' . ansage_zeichen($text) . ' Zeichen)' . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+    echo 'OK: TEXTLAENGE=' . ansage_zeichen($text) . "\n";
 } else {
     abfahrt_log('FEHLER beim Aufruf des Audio-Servers: ' . ($grund !== '' ? $grund : 'unbekannt'));
     echo 'FEHLER beim Aufruf des Audio-Servers'

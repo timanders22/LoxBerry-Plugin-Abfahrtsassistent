@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.20 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,24 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.21
+
+Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
+Gemessen am Windows-Prüfstand gegen Attrappen (Alexa-NG, Chromecast 4 Lox NG, Music Server),
+PHP 7.4 und 8.5; nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Der Ansagetext steht nicht mehr im Protokoll und nicht mehr in der Antwort von `termin_say.php`**, sondern nur seine
+  Länge: Protokoll „Ansage gesprochen (19 Zeichen)“ bzw. „Ansage gesprochen (Alexa-NG, 19 Zeichen)“, Antwort
+  `OK: TEXTLAENGE=19` statt `OK: <Text>`. Fehlerzeilen bleiben, wie sie waren. Ausnahme: Ausgabeart Original-Audioserver –
+  dort ist der Text die Antwort für Loxone Config und steht weiter als `TEXT=…` da.
+* Die Sprachausgabe läuft jetzt über die gemeinsame Sprachausgabe der Plugins dieses Hauses (Datei `sprachausgabe.php`,
+  dieselbe in allen Plugins mit Ansage). Einstellungen, Felder, Testansage, Reiter Test, Sicherungen und Verhalten bleiben
+  gleich.
+* Der Abruf beim Music Server und bei einer eigenen Adressvorlage folgt keiner Weiterleitung mehr und gilt nur bei
+  HTTP 2xx als gesendet.
+
+**In Loxone:** Wer aus der Antwort den Ansagetext gelesen hat, bekommt jetzt `TEXTLAENGE=` (außer beim Original-Audioserver).
 
 ## Neu in 1.6.20
 
@@ -635,7 +653,7 @@ API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
 |---|---|
 | `/plugins/abfahrtsassistent/termin.php` | Flat-Text: `TERMIN;OK=1;MINSTART=..;FAHRT=..;ABFAHRT_IN=..;FEHLER=..;ALTER=..;AUDIO=..;PUSH=..;ANKUNFT=..` |
 | `/plugins/abfahrtsassistent/termin.php?debug=1&token=…` | Diagnose — **rechnet neu**, alle anderen Aufrufe lesen nur ab |
-| `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen (bzw. `TEXT=...` im Audioserver-Modus) |
+| `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen; Antwort `OK: TEXTLAENGE=…` (die Länge, nicht der Text) bzw. die Fehlerzeile, im Audioserver-Modus `TEXT=...` |
 | `…/termin.php?selftest=1&token=…` bzw. `…/termin_say.php?selftest=1&token=…` | Merkwort prüfen, **ohne** dass etwas ausgelöst wird — Antwort `SELFTEST;OK=1;TOKEN=OK` |
 
 **Die beiden auslösenden Aufrufe verlangen ein Merkwort.** Sie liegen im

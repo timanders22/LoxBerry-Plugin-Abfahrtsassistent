@@ -17,6 +17,11 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * den Statuscode und zeigt dem Anfragenden Dateipfade. */
 ini_set('display_errors', '0');
 date_default_timezone_set('Europe/Berlin');
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b,
+ * Stufe 1). Liegt neben dieser Datei. Bindet diese Bibliothek spaeter ferien_lib.php des
+ * Plugins Ferien und Feiertage ein und traegt jenes eine eigene Abschrift, gilt die hier
+ * zuerst geladene; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -771,23 +776,17 @@ function abfahrt_quiet_labels() {
  * der general.json von LoxBerry; 80 bleibt der Rueckfall.
  */
 function abfahrt_webport() {
+    /* Nr. 36 b: aus der gemeinsamen Sprachausgabe (Webserver.Port oder WEBSERVER.Port, sonst 80). */
     static $port = null;
     if ($port !== null) { return $port; }
-    $port = 80;
     $abf_p = abfahrt_paths();
-    if ($abf_p['general'] !== '') {
-        $f = $abf_p['general'];
-        if (is_file($f)) {
-            $g = json_decode((string) @file_get_contents($f), true);
-            foreach (array('Webserver', 'WEBSERVER') as $ab) {
-                if (isset($g[$ab]['Port']) && (int) $g[$ab]['Port'] > 0) {
-                    $port = (int) $g[$ab]['Port'];
-                    break;
-                }
-            }
-        }
-    }
+    $port = ansage_webport($abf_p['general']);
     return $port;
+}
+
+/** Kontext fuer die gemeinsame Sprachausgabe: Webport und Kopfzeilen dieses Plugins. */
+function abfahrt_ansage_k() {
+    return array('port' => abfahrt_webport(), 'kopf' => array('User-Agent: LoxBerry Abfahrts-Assistent'), 'ordner' => '');
 }
 
 /** Adresse eines oertlichen Plugin-Skripts, mit dem richtigen Port. */
@@ -2271,7 +2270,7 @@ function abfahrt_alexa_adresse()
 /** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (Alexa-NG erzeugt 24 Hexzeichen). */
 function abfahrt_alexa_token_ok($t)
 {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /** Geraet: leer (= Standardgeraet von Alexa-NG) oder 1 bis 200 Zeichen UTF-8,
@@ -2279,9 +2278,7 @@ function abfahrt_alexa_token_ok($t)
  *  gruppe:<name> oder alle - das prueft Alexa-NG selbst). */
 function abfahrt_alexa_geraet_ok($g)
 {
-    return is_string($g) && ($g === ''
-        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
-            && trim($g) === $g));
+    return ansage_geraet_ok($g);    // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /* ---------------- Gemeinsam fuer Alexa-NG und Chromecast 4 Lox NG (Ansage-3, 01.10.2026) ----------------
@@ -2305,80 +2302,12 @@ function abfahrt_alexa_geraet_ok($g)
  */
 function abfahrt_ng_rufen($url, array $felder, $tmo = 10)
 {
-    $koerper = http_build_query($felder, '', '&');
-    $kopf = abfahrt_http_kopf();
-    $kopf[] = 'Content-Type: application/x-www-form-urlencoded';
-    $code = 0;
-    $rumpf = '';
-    $gid = '';
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, array(
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $koerper,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_NOPROXY => '127.0.0.1',
-            CURLOPT_TIMEOUT => $tmo,
-            CURLOPT_CONNECTTIMEOUT => min(3, $tmo),
-            CURLOPT_HTTPHEADER => $kopf,
-        ));
-        $r = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $fehler = curl_error($ch);
-        if ($r !== false) {
-            $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-            $rumpf = (string) $r;
-        }
-        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        if ($r === false) {
-            $gid = abfahrt_http_grund_id($errno !== 0 ? $errno : -1, $fehler, 0);
-        }
-    } else {
-        $ctx = stream_context_create(array('http' => array(
-            'method' => 'POST',
-            'header' => implode("\r\n", $kopf),
-            'content' => $koerper,
-            'timeout' => $tmo,
-            'follow_location' => 0,
-            'ignore_errors' => true,
-        )));
-        $t0 = microtime(true);
-        $fh = @fopen($url, 'rb', false, $ctx);
-        if ($fh !== false) {
-            $r = stream_get_contents($fh);
-            $meta = stream_get_meta_data($fh);
-            fclose($fh);
-            if (!empty($meta['timed_out'])) {
-                $gid = 'HTTP_ZEIT';
-            } else {
-                $rumpf = (string) $r;
-                if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
-                    foreach ($meta['wrapper_data'] as $z) {
-                        if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
-                    }
-                }
-                if ($code === 0) { $gid = 'HTTP_OHNE_CURL'; }
-            }
-        } else {
-            $l = error_get_last();
-            $msg = is_array($l) ? (string) $l['message'] : '';
-            if (stripos($msg, 'timed out') !== false || microtime(true) - $t0 >= $tmo - 0.5) {
-                $gid = 'HTTP_ZEIT';
-            } elseif (stripos($msg, 'refused') !== false) {
-                $gid = 'HTTP_ABGEWIESEN';
-            } else {
-                $gid = 'HTTP_OHNE_CURL';
-            }
-        }
-    }
-    $zeilen = preg_split('/\r?\n/', trim($rumpf));
-    $erste = trim((string) $zeilen[0]);
-    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
-        $erste = str_replace($felder['token'], '***', $erste);
-    }
-    $erste = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste), 0, 200);
-    return array('code' => $code, 'zeile' => $erste, 'grund_id' => $gid, 'tmo' => (int) $tmo);
+    /* Nr. 36 b: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst Datenstrom; ohne
+     * Weiterleitung, ohne Proxy). Rueckgabe wie bisher; die Kennung eines Transportfehlers
+     * bleibt die dieser Linie (HTTP_OHNE_CURL statt HTTP_OHNE_ANTWORT). */
+    $a = ansage_ng_rufen($url, $felder, $tmo, abfahrt_ansage_k());
+    $gid = $a['grund_id'] === 'HTTP_OHNE_ANTWORT' ? 'HTTP_OHNE_CURL' : $a['grund_id'];
+    return array('code' => $a['code'], 'zeile' => $a['zeile'], 'grund_id' => $gid, 'tmo' => (int) $tmo);
 }
 
 /**
@@ -2570,57 +2499,12 @@ function abfahrt_pruef_google(array $abfcfg, $offen)
  *  die IP wird nur verlangt, wenn der Modus bzw. die Vorlage sie benutzt,
  *  sonst liess sich eine eigene Vorlage ohne {ip} gar nicht verwenden. */
 function abfahrt_tts_url($text, array $tts) {
-    $mode = $tts['mode'];
-    if ($mode === 'audioserver') {
-        return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
+    /* Nr. 36 b: gebaut von der gemeinsamen Sprachausgabe (ansage_tts_url(), dieselbe Rechnung wie
+     * bisher hier); eine unbekannte Art bekommt wie bisher die Vorlage. */
+    if (!isset($tts['mode']) || !in_array($tts['mode'], array('musicserver', 'ms4h', 'custom', 'audioserver'), true)) {
+        $tts['mode'] = 'custom';
     }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren.
-     *
-     * Bis hierher wurde nur im Modus musicserver je Zone getrimmt. In den
-     * Modi ms4h und "eigene Vorlage" ging die Eingabe roh in {zones} - aus
-     * "2, 4, 6" wurde eine Adresse mit Leerzeichen, also eine kaputte
-     * Adresse. Der Hilfetext sagt zu, dass beide Schreibweisen gehen;
-     * hier wird das eingeloest. */
-    $zl = array();
-    foreach (explode(',', (string) $tts['zones']) as $z) {
-        $z = trim($z);
-        if ($z !== '') { $zl[] = $z; }
-    }
-    $tts['zones'] = implode(',', $zl);
-    if ($mode === 'musicserver' && trim((string) $tts['ip']) === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
-    }
-    if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~25,4~25,6~25".
-        // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
-        $vol = max(1, min(100, (int) $tts['volume']));
-        $zones = [];
-        foreach (explode(',', (string) $tts['zones']) as $z) {
-            $z = trim($z);
-            if ($z === '') {
-                continue;
-            }
-            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
-        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
-    }
-    // ms4h (MusicServer4Home / Audioserver4Home) und custom: Vorlage mit Platzhaltern
-    $tpl = trim((string) $tts['template']);
-    if ($tpl === '') {
-        // Standard-Vorlage MusicServer4Home
-        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
-    }
-    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet (AWM 1.2.0).
-    if (trim((string) $tts['ip']) === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(
-        ['{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'],
-        [$tts['ip'], (int) $tts['port'], $tts['zones'], (int) $tts['volume'], $tts['lang'], rawurlencode($text)],
-        $tpl
-    );
+    return ansage_tts_url($text, $tts);
 }
 
 /* ==================================================================
@@ -4779,8 +4663,7 @@ function abfahrt_sicherung_bauen(array $cfg, $pruefen = true)
      * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
      * geltende (abfahrt_sicherung_lesen()). */
     if (isset($cfg['tts']) && is_array($cfg['tts'])) {
-        unset($cfg['tts']['alexa_token']);
-        unset($cfg['tts']['google_token']);     // Ansage-3
+        $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
     }
     /* X-3 (Welle 2, 30.09.2026): Wuerde das eigene Zurueckspielen diese Datei
      * abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert wird sie
