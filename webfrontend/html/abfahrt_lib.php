@@ -16,7 +16,7 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * geladen; eine Warnung, die dort vor der Antwortzeile hinausgeht, verhindert
  * den Statuscode und zeigt dem Anfragenden Dateipfade. */
 ini_set('display_errors', '0');
-date_default_timezone_set('Europe/Berlin');
+// Die Zeitzone setzt abfahrt_zeitzone_setzen() weiter unten (nach abfahrt_lbhome()).
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b,
  * Stufe 1). Liegt neben dieser Datei. Bindet diese Bibliothek spaeter ferien_lib.php des
  * Plugins Ferien und Feiertage ein und traegt jenes eine eigene Abschrift, gilt die hier
@@ -75,6 +75,40 @@ function abfahrt_lbhome()
     }
     return lb_wurzel_ermitteln();
 }
+
+/* Die Zeitzone der Anlage statt fest Europe/Berlin (bis 1.6.21; Pruefung
+ * 02.10.2026, Nr. 28b). Reihenfolge: general.json von LoxBerry
+ * (Timeserver.Timezone), /etc/timezone, /etc/localtime, date.timezone aus
+ * der php.ini. Jeder Name wird beim Setzen geprueft; gilt keiner, bleibt es
+ * bei Europe/Berlin. */
+function abfahrt_zeitzone_setzen()
+{
+    $kandidaten = array();
+    $home = abfahrt_lbhome();
+    if ($home !== '' && is_file($home . '/config/system/general.json')) {
+        $g = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+        if (is_array($g) && isset($g['Timeserver']['Timezone']) && is_string($g['Timeserver']['Timezone'])) {
+            $kandidaten[] = $g['Timeserver']['Timezone'];
+        }
+    }
+    if (is_file('/etc/timezone')) {
+        $kandidaten[] = (string) @file_get_contents('/etc/timezone');
+    }
+    $ziel = @readlink('/etc/localtime');
+    if (is_string($ziel) && preg_match('#zoneinfo/(.+)$#', $ziel, $m)) {
+        $kandidaten[] = $m[1];
+    }
+    $kandidaten[] = (string) ini_get('date.timezone');
+    $kandidaten[] = 'Europe/Berlin';
+    foreach ($kandidaten as $k) {
+        $k = trim($k);
+        if ($k !== '' && preg_match('#^[A-Za-z][A-Za-z0-9_+\-/]*$#', $k) && @date_default_timezone_set($k)) {
+            return $k;
+        }
+    }
+    return date_default_timezone_get();
+}
+abfahrt_zeitzone_setzen();
 
 /**
  * Die Pfade - der Anlage, oder im Archivmodus die Ersatzpfade.
@@ -298,6 +332,7 @@ function abfahrt_vorgaben()
  *   'fehlt'   - keine Datei
  *   'leer'    - Datei ohne Inhalt oder nur "{}"
  *   'kaputt'  - Inhalt, aber kein gueltiges JSON-Objekt
+ *   'unlesbar'- Datei da, aber fuer diesen Prozess nicht lesbar (Rechte)
  *   'ok'      - gueltiges Objekt
  *
  * ANLASS (gemessen 06.09.2026 an 1.6.9): hier stand json_decode(...) ?: [].
@@ -313,8 +348,14 @@ function abfahrt_config_roh($datei = null) {
         $datei = $p['config'];
     }
     if (!is_file($datei)) { return array(null, 'fehlt'); }
+    /* Bis 1.6.21 hiess "nicht lesbar" hier 'kaputt': eine gueltige, aber nach
+     * einem Handstart als root unlesbare Datei (root:root 0600) wurde von
+     * abfahrt_config_heilen() beiseitegelegt, und ohne lesbare Zweitschrift
+     * erzeugte die Oberflaeche ein neues Merkwort (Pruefung 02.10.2026, Nr. 5).
+     * Unlesbar ist kein Inhaltsbefund - angefasst wird dann nichts. */
+    if (!is_readable($datei)) { return array(null, 'unlesbar'); }
     $roh = @file_get_contents($datei);
-    if ($roh === false) { return array(null, 'kaputt'); }
+    if ($roh === false) { return array(null, 'unlesbar'); }
     $roh = trim($roh);
     if ($roh === '' || $roh === '{}' || $roh === '[]') { return array(array(), 'leer'); }
     $d = json_decode($roh, true);
@@ -336,10 +377,28 @@ function abfahrt_config_lage($neu = null) {
     return $lage;
 }
 
+/**
+ * Das MQTT-Praefix in seiner einzigen gueltigen Form: nur erlaubte Zeichen,
+ * kein '/' am Rand, kein '//'. Bis 1.6.21 nahm die Pruefung "/abfahrt/" an,
+ * gesendet wurde an "/abfahrt//OK", abonniert aber "abfahrt/#" - unter V1
+ * kam nichts an, und der Reiter Test meldete das Abo als geliefert
+ * (Pruefung 02.10.2026, Nr. 15). Bestehende Einstellungen heilen beim Lesen.
+ */
+function abfahrt_mqtt_praefix_norm($t) {
+    $t = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $t);
+    $t = preg_replace('#/{2,}#', '/', $t);
+    return trim($t, '/');
+}
+
 function abfahrt_config() {
     list($abfcfg, $zustand) = abfahrt_config_roh();
     if (!is_array($abfcfg)) { $abfcfg = array(); }
     $vorgaben = abfahrt_vorgaben();
+    // Nr. 15: nur die Schraegstriche vorab glaetten; unzulaessige Zeichen
+    // weist die Pruefung unten weiterhin ab und meldet sie.
+    if (isset($abfcfg['mqtt_topic']) && is_string($abfcfg['mqtt_topic'])) {
+        $abfcfg['mqtt_topic'] = trim(preg_replace('#/{2,}#', '/', $abfcfg['mqtt_topic']), '/');
+    }
     /* Jeder vorhandene Wert wird gegen dieselben Grenzen geprueft wie beim
      * Zurueckspielen einer Sicherung. Bis 1.6.9 sass die Pruefung nur dort:
      * eine von Hand bearbeitete abfahrt.json mit arrival_min=-999 oder
@@ -366,7 +425,7 @@ function abfahrt_config() {
     // Vorgaben fuer das, was fehlt oder abgewiesen wurde
     $abfcfg += $vorgaben;
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
-    $abfcfg['mqtt_topic'] = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $abfcfg['mqtt_topic']);
+    $abfcfg['mqtt_topic'] = abfahrt_mqtt_praefix_norm($abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
     /* Vor jedem "+=" pruefen, ob wirklich ein Feld dasteht. Eine von Hand
      * verbogene abfahrt.json mit "notify": "x" riss sonst unter PHP 8 jeden
@@ -510,13 +569,54 @@ function abfahrt_token_abweisen($praefix, array $abfcfg) {
  * nichts anlegen (Hausstandard). Gemessen am 04.09.2026 legte ein einziger
  * anonymer GET auf termin.php ohne jeden Parameter /tmp/abfahrtsassistent/
  * samt last_result.txt und log/plugins/<ordner>/ samt abfahrt.log an.
+ *
+ * NUR FUER DEN EIGENTUEMER seit 1.6.22 (Pruefung 02.10.2026, Nr. 23). Bis
+ * 1.6.21 entstand der Ordner mit 0775 und jede Datei darin mit 0644: die
+ * Kopien privater Kalender, stand.json und titel.json mit Titel und Ort
+ * waren fuer jedes Konto auf dem LoxBerry lesbar, und ein vorab angelegter
+ * fremder Ordner oder Verweis wurde klaglos benutzt. Jetzt: anlegen mit
+ * 0700, einen eigenen Ordner mit offeneren Rechten auf 0700 ziehen. Nicht
+ * benutzt wird ein Verweis, ein Ordner, der weder diesem Prozess noch root
+ * noch dem Eigentuemer des Konfigurationsordners gehoert (Handstart als
+ * root: der Ordner gehoert loxberry), und einer, in den dieser Prozess nicht
+ * schreiben kann (nach einem Handstart als root); dann gilt
+ * data/plugins/<ordner>/tmp, gemeldet einmal je Stunde. Kein umask() hier:
+ * die Bibliothek laeuft auch im Webserver, und dort gilt umask fuer den
+ * ganzen Prozess (der Dienst setzt seine eigene).
  */
 function abfahrt_tmpdir($anlegen = true) {
+    static $ersatz = null;
     $p = abfahrt_paths();
-    if ($anlegen && !is_dir($p['tmp'])) {
-        @mkdir($p['tmp'], 0775, true);
+    $d = $ersatz !== null ? $ersatz : $p['tmp'];
+    if ($ersatz === null
+        && (is_link($d) || (is_dir($d) && (!abfahrt_tmpdir_vertraut($d) || !is_writable($d))))) {
+        $ersatz = $p['lbhome'] !== '' ? $p['data'] . '/tmp' : $p['tmp'] . '-ersatz';
+        $grund = is_link($d) ? 'ist ein Verweis'
+               : (abfahrt_tmpdir_vertraut($d) ? 'ist fuer dieses Konto nicht beschreibbar'
+                                              : 'gehoert einem fremden Konto');
+        $d = $ersatz;
+        if ($anlegen && !is_dir($d)) { @mkdir($d, 0700, true); }
+        abfahrt_log_gedrosselt('tmp_fremd', 'Zwischenordner ' . $p['tmp'] . ' ' . $grund
+            . ' - er wird nicht benutzt; ersatzweise ' . $d . '.', 3600);
     }
-    return $p['tmp'];
+    if ($anlegen && !is_dir($d)) {
+        @mkdir($d, 0700, true);
+    }
+    if ($anlegen && is_dir($d) && !is_link($d) && function_exists('posix_geteuid')
+        && @fileowner($d) === posix_geteuid() && (@fileperms($d) & 0077)) {
+        @chmod($d, 0700);
+    }
+    return $d;
+}
+
+/** Gehoert der Zwischenordner jemandem, dem dieser Prozess trauen darf? */
+function abfahrt_tmpdir_vertraut($d) {
+    if (!function_exists('posix_geteuid')) { return true; }
+    $wer = @fileowner($d);
+    if ($wer === false) { return false; }
+    $p = abfahrt_paths();
+    $cfgwer = @fileowner(dirname($p['config']));
+    return $wer === posix_geteuid() || $wer === 0 || ($cfgwer !== false && $wer === $cfgwer);
 }
 
 /**
@@ -536,6 +636,10 @@ function abfahrt_tmpdir($anlegen = true) {
 function abfahrt_cache_schreiben($datei, $inhalt) {
     $inhalt = (string) $inhalt;
     $neben = $datei . '.' . getmypid() . '.tmp';
+    /* Nr. 23: Rechte 0600 VOR dem Inhalt (wie abfahrt_datei_geheim_schreiben());
+     * wer eine Datei fuer andere lesbar braucht, setzt das danach selbst. */
+    if (@file_put_contents($neben, '') === false) { return false; }
+    @chmod($neben, 0600);
     $n = @file_put_contents($neben, $inhalt);
     if ($n !== strlen($inhalt)) {
         @unlink($neben);
@@ -916,9 +1020,16 @@ function abfahrt_quiet_rule(array $abfcfg, $tagversatz = 0) {
      * stand also "Es gilt Urlaub." Die Uebersetzungen liegen seit jeher
      * bereit (TAG.T8 bis TAG.T10). */
     $namen = abfahrt_quiet_labels();
-    if (!empty($tag['urlaub']) && $an(10)) { return [10, $namen[10]]; }
-    if (!empty($tag['feiertag']) && $an(8)) { return [8, $namen[8]]; }
-    if (!empty($tag['ferien']) && $an(9)) { return [9, $namen[9]]; }
+    /* Die Sondertage gelten nur fuer heute (das Ferien-Plugin kennt nur den
+     * heutigen Zustand). Bis 1.6.21 kam die Sondertagszeile auch fuer
+     * "gestern" zurueck, die Wochentagszeile von gestern wurde dann nie
+     * geprueft (Pruefung 02.10.2026, Nr. 8). Die heutige Sondertagszeile fuer
+     * den Morgenteil prueft abfahrt_in_quiet() zusaetzlich. */
+    if ((int) $tagversatz === 0) {
+        if (!empty($tag['urlaub']) && $an(10)) { return [10, $namen[10]]; }
+        if (!empty($tag['feiertag']) && $an(8)) { return [8, $namen[8]]; }
+        if (!empty($tag['ferien']) && $an(9)) { return [9, $namen[9]]; }
+    }
     // 1 = Montag ... 7 = Sonntag; $tagversatz = -1 fragt nach gestern.
     /* C5 (Durchgang 29.09.2026): "gestern" nach dem Kalender, nicht nach
      * 86400 s. Bis 1.6.15 ergab es am 30.03. um 00:30 den Samstag statt des
@@ -948,8 +1059,14 @@ function abfahrt_quiet_rule(array $abfcfg, $tagversatz = 0) {
 function abfahrt_in_quiet(array $abfcfg, &$info = '') {
     $now = (int) date('H') * 60 + (int) date('i');
     $p = function ($s) { $x = explode(':', (string) $s); return ((int) $x[0]) * 60 + (int) ($x[1] ?? 0); };
-    foreach ([0, -1] as $versatz) {
-        list($k, $bez) = abfahrt_quiet_rule($abfcfg, $versatz);
+    /* Geprueft werden: die heutige Zeile, die Wochentagszeile von gestern
+     * und - als Naeherung fuer mehrtaegige Zeitraeume - der Morgenteil der
+     * heutigen Sondertagszeile (Pruefung 02.10.2026, Nr. 8). */
+    $heute = abfahrt_quiet_rule($abfcfg, 0);
+    $pruefen = [[0, $heute], [-1, abfahrt_quiet_rule($abfcfg, -1)]];
+    if ($heute[0] >= 8) { $pruefen[] = [-1, $heute]; }
+    foreach ($pruefen as $eintrag) {
+        list($versatz, list($k, $bez)) = $eintrag;
         if ($k === 0 || !isset($abfcfg['quiet'][$k])) {
             continue;
         }
@@ -959,6 +1076,9 @@ function abfahrt_in_quiet(array $abfcfg, &$info = '') {
         if ($from === $to) {
             // Gleiche Anfangs- und Endzeit heisst ganztaegig. Bisher hiess es
             // "nie" - eine 24-Stunden-Sperre liess sich gar nicht einstellen.
+            // Nur fuer heute: bis 1.6.21 sperrte ein ganzer Sonntag auch den
+            // ganzen Montag (Pruefung 02.10.2026, Nr. 1).
+            if ($versatz !== 0) { continue; }
             $in = true;
         } elseif ($from < $to) {
             // Fenster innerhalb eines Tages - nur die heutige Zeile zaehlt.
@@ -1136,23 +1256,57 @@ function abfahrt_log_gedrosselt($schluessel, $msg, $sekunden) {
  * abgelaufenes Kalendertoken faellt noch am selben Tag auf. */
 define('ABFAHRT_ICS_GNADE', 21600);
 
+/* Rueckzug nach einem gescheiterten Abruf und Zeitbudget je Lauf (Pruefung
+ * 02.10.2026, Nr. 25). Bis 1.6.21 holte jeder faellige Lauf jeden toten
+ * Kalender neu, mit bis zu 12 s je Kalender; zehn davon machten den Lauf
+ * laenger als eine Minute, und die naechsten Laeufe endeten still an der
+ * Sperre. Jetzt: nach einem Fehlschlag 5 Minuten Pause je Adresse (Merker
+ * ics_<md5>.fehl mit dem Grund), solange eine Kopie da ist; und nach 30 s
+ * Abrufzeit im selben Lauf wird nichts Neues mehr geholt. In beiden Faellen
+ * gilt die Kopie innerhalb der Gnadenfrist. */
+define('ABFAHRT_ICS_PAUSE', 300);
+define('ABFAHRT_ICS_BUDGET', 30);
+
 function abfahrt_fetch_ics($url, &$grund = '', &$veraltet = false, &$alter = 0) {
+    static $verbraucht = 0.0;
+    static $budget_gemeldet = false;
     $grund = '';
     $veraltet = false;
     $alter = 0;
     $cache = abfahrt_tmpdir() . '/ics_' . md5($url);
+    $merker = $cache . '.fehl';
     if (is_file($cache) && time() - filemtime($cache) < 600) {
         $roh = @file_get_contents($cache);
         if ($roh !== false && $roh !== '') { return (string) $roh; }
     }
-    $neu = abfahrt_http_get($url, 12, $grund);
-    if ($neu !== false && strpos($neu, 'BEGIN:VCALENDAR') !== false
-                       && strpos($neu, 'END:VCALENDAR') !== false) {
-        abfahrt_cache_schreiben($cache, $neu);
-        return $neu;
-    }
-    if ($neu !== false && $grund === '') {
-        $grund = abfahrt_grund_text('ICS_UNVOLLSTAENDIG');     // b1
+    clearstatcache(true, $merker);
+    $neu = false;
+    if (is_file($cache) && is_file($merker) && time() - (int) @filemtime($merker) < ABFAHRT_ICS_PAUSE) {
+        // Pause nach einem Fehlschlag - der Grund von damals gilt weiter.
+        $grund = trim((string) @file_get_contents($merker));
+        if ($grund === '') { $grund = '?'; }
+    } elseif ($verbraucht >= ABFAHRT_ICS_BUDGET) {
+        $grund = sprintf(abfahrt_t('MELDUNG.ICS_ZEITBUDGET'), ABFAHRT_ICS_BUDGET);
+        if (!$budget_gemeldet) {
+            $budget_gemeldet = true;
+            abfahrt_log($grund);
+        }
+    } else {
+        $t0 = microtime(true);
+        $neu = abfahrt_http_get($url, 12, $grund);
+        $verbraucht += microtime(true) - $t0;
+        if ($neu !== false && strpos($neu, 'BEGIN:VCALENDAR') !== false
+                           && strpos($neu, 'END:VCALENDAR') !== false) {
+            abfahrt_cache_schreiben($cache, $neu);
+            @unlink($merker);
+            return $neu;
+        }
+        if ($neu !== false && $grund === '') {
+            $grund = abfahrt_grund_text('ICS_UNVOLLSTAENDIG');     // b1
+        }
+        if (is_dir(dirname($merker))) {
+            abfahrt_cache_schreiben($merker, $grund !== '' ? $grund : '?');
+        }
     }
     /* Fehlgeschlagen - notfalls der alte Stand, aber NUR innerhalb der
      * Gnadenfrist, und der Aufrufer erfaehrt es ueber $veraltet. */
@@ -1203,8 +1357,8 @@ function abfahrt_fetch_ics($url, &$grund = '', &$veraltet = false, &$alter = 0) 
  *
  * Die Tabelle ist ein Auszug aus der CLDR-Liste windowsZones (nur die
  * Zonen, die hier vorkommen koennen). Was nicht darin steht, faellt
- * weiterhin auf Europe/Berlin - aber es wird GESAGT, siehe
- * abfahrt_tz_meldung(). Geraten wird nichts.
+ * auf die Zeitzone der Anlage (bis 1.6.21 fest Europe/Berlin) - aber es
+ * wird GESAGT, siehe abfahrt_tz_meldung(). Geraten wird nichts.
  */
 function abfahrt_tz_karte() {
     return array(
@@ -1262,7 +1416,7 @@ function abfahrt_tz_meldung($eintrag = null) {
 function abfahrt_tz($tzid) {
     $t = trim((string) $tzid);
     if ($t === '') {
-        return new DateTimeZone('Europe/Berlin');
+        return new DateTimeZone(date_default_timezone_get());
     }
     try {
         return new DateTimeZone($t);
@@ -1279,8 +1433,8 @@ function abfahrt_tz($tzid) {
             // weiter unten
         }
     }
-    abfahrt_tz_meldung(sprintf(abfahrt_t('MELDUNG.TZ_UNBEKANNT'), $t));
-    return new DateTimeZone('Europe/Berlin');
+    abfahrt_tz_meldung(sprintf(abfahrt_t('MELDUNG.TZ_UNBEKANNT'), $t, date_default_timezone_get()));
+    return new DateTimeZone(date_default_timezone_get());
 }
 
 function abfahrt_prop($ev, $name)
@@ -1365,10 +1519,12 @@ function abfahrt_cp1252_utf8($s)
 /** Text einer iCal-Eigenschaft entmaskieren (RFC 5545, Abschnitt 3.3.11). */
 function abfahrt_unesc($s)
 {
-    $s = (string) $s;
-    $s = str_replace(array('\\n', '\\N'), array(' ', ' '), $s);
-    $s = str_replace(array('\\,', '\\;'), array(',', ';'), $s);
-    return trim(str_replace('\\\\', '\\', $s));
+    /* In einem Durchgang. Bis 1.6.21 kam \n vor \\ dran, aus C:\\new wurde
+     * "C:\ ew" (Pruefung 02.10.2026, Nr. 16). */
+    $s = preg_replace_callback('/\\\\([\\\\;,nN])/', function ($m) {
+        return ($m[1] === 'n' || $m[1] === 'N') ? ' ' : $m[1];
+    }, (string) $s);
+    return trim((string) $s);
 }
 
 /**
@@ -1468,10 +1624,78 @@ function abfahrt_serie_aufnehmen(array &$singles, array $mst, $ts, $now, $maxTs,
 }
 
 /**
+ * Alle Zeitpunkte einer Datumsliste (EXDATE, RDATE) eines VEVENT: [ts => 1].
+ *
+ * EXDATE traegt bei manchen Kalendern VALUE=DATE-TIME. Mit der frueheren
+ * festen Reihenfolge wurde die Zeile nicht erkannt, und die geloeschte
+ * Instanz erschien weiter. Bei RDATE;VALUE=PERIOD zaehlt der Anfang.
+ */
+function abfahrt_datumsliste($ev, $name, $tzid, $gz)
+{
+    $aus = [];
+    if (preg_match_all('/^' . $name . '((?:;(?:"[^"]*"|[^:;"\r\n])*)*):([^\r\n]*)/mi',
+                       $ev, $me, PREG_SET_ORDER)) {
+        foreach ($me as $e) {
+            $etz = $tzid;
+            if (preg_match('/;TZID=("?)([^;"]+)\1/i', $e[1], $mt)) { $etz = $mt[2]; }
+            foreach (explode(',', trim($e[2])) as $v) {
+                $v = explode('/', $v, 2);
+                $x = abfahrt_dt2ts($v[0], $etz, $gz);
+                if ($x !== null) {
+                    $aus[$x] = 1;
+                }
+            }
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Welcher Regelteil einer RRULE wird hier NICHT ausgerollt? '' = alle bekannt.
+ *
+ * Bis 1.6.21 wurden diese Teile still uebergangen, die Serie lief dann an
+ * falschen Tagen oder zu falschen Uhrzeiten (Pruefung 02.10.2026, Nr. 10).
+ * Lieber kein Termin als ein falscher. BYHOUR, BYMINUTE und BYSECOND gelten
+ * nur, wenn sie genau die Uhrzeit des DTSTART wiederholen (das schicken
+ * manche Kalender so mit) - dann aendern sie nichts.
+ */
+function abfahrt_rrule_fehlt(array $r, DateTime $start)
+{
+    $freq = $r['FREQ'] ?? '';
+    if (!in_array($freq, ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], true)) {
+        return 'FREQ=' . ($freq !== '' ? $freq : '?');
+    }
+    foreach (['BYWEEKNO', 'BYYEARDAY', 'RSCALE'] as $k) {
+        if (isset($r[$k])) { return $k; }
+    }
+    foreach (['BYHOUR' => 'G', 'BYMINUTE' => 'i', 'BYSECOND' => 's'] as $k => $f) {
+        if (isset($r[$k]) && !(preg_match('/^\d{1,2}$/', $r[$k])
+                               && (int) $r[$k] === (int) $start->format($f))) {
+            return $k;
+        }
+    }
+    if (isset($r['BYSETPOS']) && ($freq === 'DAILY' || $freq === 'WEEKLY')) {
+        return 'BYSETPOS';
+    }
+    return '';
+}
+
+/** Passt der Tag $t eines Monats mit $imMonat Tagen auf BYMONTHDAY (auch negativ)? */
+function abfahrt_monatstag_passt($t, $imMonat, array $bymonatstag)
+{
+    foreach ($bymonatstag as $v) {
+        if ($t === ($v > 0 ? $v : $imMonat + 1 + $v)) { return true; }
+    }
+    return false;
+}
+
+/**
  * Alle Kalender parsen: naechster zukuenftiger Termin MIT Ortsangabe im
  * Zeitfenster. Serientermine werden vollstaendig expandiert:
- * RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY mit INTERVAL, BYDAY (woechentlich),
- * UNTIL, COUNT; EXDATE; verschobene/geloeschte Einzel-Instanzen einer Serie
+ * RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY mit INTERVAL, BYDAY, BYMONTHDAY,
+ * BYMONTH, BYSETPOS (monatlich/jaehrlich), WKST, UNTIL, COUNT; RDATE; EXDATE;
+ * andere Regelteile -> Serie entfaellt mit Diagnosezeile; verschobene/
+ * geloeschte Einzel-Instanzen einer Serie
  * (RECURRENCE-ID / STATUS:CANCELLED). Zeitzonen-/DST-sicher via DateTime.
  * Rueckgabe: [ts, location, summary, calendar_name] oder null.
  */
@@ -1521,7 +1745,11 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
         $masters = [];
         $overridden = []; // "uid|origTs" => 1
         $verschoben = []; // uid => [['ab'=>ts, 'delta'=>s, 'weg'=>0|1], ...]  (RANGE=THISANDFUTURE)
-        foreach (explode('BEGIN:VEVENT', $ics) as $i => $ev) {
+        /* Gross/klein egal und nur als ganze Zeile (RFC 5545). Bis 1.6.21
+         * explode('BEGIN:VEVENT'): "Begin:VEvent" ging verloren (Pruefung
+         * 02.10.2026, Nr. 17). Teil 0 ist weiter der Kopf vor dem ersten Termin. */
+        $abf_teile = preg_split('/^BEGIN:VEVENT[ \t]*\r?$/mi', $ics);
+        foreach (is_array($abf_teile) ? $abf_teile : array() as $i => $ev) {
             if ($i === 0) {
                 continue;
             }
@@ -1595,35 +1823,24 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
             }
 
             $pRr = abfahrt_prop($ev, 'RRULE');
-            if ($pRr !== null) {
-                $ex = [];
-                // EXDATE traegt bei manchen Kalendern VALUE=DATE-TIME. Mit der
-                // frueheren festen Reihenfolge wurde die Zeile nicht erkannt,
-                // und die geloeschte Instanz erschien weiter.
-                if (preg_match_all('/^EXDATE((?:;(?:"[^"]*"|[^:;"\r\n])*)*):([^\r\n]*)/mi',
-                                   $ev, $me, PREG_SET_ORDER)) {
-                    foreach ($me as $e) {
-                        $etz = $tzid;
-                        if (preg_match('/;TZID=("?)([^;"]+)\1/i', $e[1], $mt)) { $etz = $mt[2]; }
-                        foreach (explode(',', trim($e[2])) as $v) {
-                            $x = abfahrt_dt2ts($v, $etz, $gz);
-                            if ($x !== null) {
-                                $ex[$x] = 1;
-                            }
-                        }
-                    }
-                }
+            /* RDATE (zusaetzliche Einzeltermine) wurde bis 1.6.21 ueberlesen
+             * (Pruefung 02.10.2026, Nr. 10). Gelesen wie EXDATE. */
+            $rd = abfahrt_datumsliste($ev, 'RDATE', $tzid, $gz);
+            if ($pRr !== null || $rd) {
+                $ex = abfahrt_datumsliste($ev, 'EXDATE', $tzid, $gz);
                 /* C1 (Durchgang 29.09.2026): Eine Serie mit UTC-Beginn
                  * (DTSTART:...Z, ohne TZID) wird in UTC ausgerollt. Bis 1.6.15
                  * fiel sie auf Europe/Berlin zurueck: nach einem Wechsel der
                  * Sommerzeit lag jedes Vorkommen eine Stunde falsch, und ein
                  * EXDATE in UTC traf nicht mehr (gemessen: 30.09. 07:00Z statt
                  * 08:00Z, der gestrichene Termin kam trotzdem). Ohne Z und ohne
-                 * TZID (schwebende Zeit) bleibt es bei Europe/Berlin. */
+                 * TZID (schwebende Zeit) gilt die Zeitzone der Anlage (bis
+                 * 1.6.21 fest Europe/Berlin, Pruefung 02.10.2026, Nr. 28b). */
                 $abf_serien_tz = ($tzid !== '') ? $tzid
-                    : (strtoupper(substr(trim((string) $pDt[0]), -1)) === 'Z' ? 'UTC' : 'Europe/Berlin');
+                    : (strtoupper(substr(trim((string) $pDt[0]), -1)) === 'Z' ? 'UTC' : date_default_timezone_get());
                 $masters[] = ['uid' => $uid, 'ts' => $ts, 'tzid' => $abf_serien_tz,
-                              'loc' => $loc, 'sum' => $sum, 'rrule' => $pRr[0], 'ex' => $ex];
+                              'loc' => $loc, 'sum' => $sum, 'rrule' => $pRr === null ? '' : $pRr[0],
+                              'ex' => $ex, 'rd' => $rd];
             } else {
                 $singles[] = [$ts, $loc, $sum];
             }
@@ -1647,8 +1864,35 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                 }
             }
             $freq = $r['FREQ'] ?? '';
-            if ($freq === '') {
+            $tz = abfahrt_tz($mst['tzid']);
+            $start = (new DateTime('@' . $mst['ts']))->setTimezone($tz);
+            $abf_fehlt = ($mst['rrule'] === '') ? '' : abfahrt_rrule_fehlt($r, $start);
+            if ($abf_fehlt !== '') {
+                $diag[] = sprintf(abfahrt_t('DIAG.SERIE_NICHT_UNTERSTUETZT'), $name, $mst['sum'], $abf_fehlt);
                 continue;
+            }
+            /* RANGE=THISANDFUTURE verschiebt Vorkommen nach vorn oder hinten.
+             * Bis 1.6.21 endeten die Schleifen an der URSPRUENGLICHEN Zeit >
+             * $maxTs: ein vom Montag 12.10. auf Freitag 09.10. vorgezogener
+             * Termin fehlte (Pruefung 02.10.2026, Nr. 28a). Also um die
+             * groesste Verschiebung nach vorn weiter ausrollen und um die
+             * groesste nach hinten frueher mit dem Vorspulen aufhoeren. */
+            $minDelta = 0;
+            $maxDelta = 0;
+            foreach ($verschoben[$mst['uid']] ?? [] as $v) {
+                if (empty($v['weg'])) {
+                    $minDelta = min($minDelta, (int) $v['delta']);
+                    $maxDelta = max($maxDelta, (int) $v['delta']);
+                }
+            }
+            $grenze = $maxTs - $minDelta;
+            $spulZiel = $now - $maxDelta;
+            $schon = [];     // aufgenommene Serienzeiten - ein RDATE darauf zaehlt nicht doppelt
+            if ($mst['rrule'] === '') {
+                // Nur RDATE, keine RRULE: DTSTART ist das erste Vorkommen.
+                $schon[$mst['ts']] = 1;
+                abfahrt_serie_aufnehmen($singles, $mst, $mst['ts'], $now, $maxTs,
+                                        $overridden, $verschoben);
             }
             $iv = max(1, (int) ($r['INTERVAL'] ?? 1));
             $until = null;
@@ -1663,8 +1907,16 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                 }
             }
             $count = isset($r['COUNT']) ? (int) $r['COUNT'] : null;
-            $tz = abfahrt_tz($mst['tzid']);
-            $start = (new DateTime('@' . $mst['ts']))->setTimezone($tz);
+            $bymonatstag = [];
+            foreach (explode(',', $r['BYMONTHDAY'] ?? '') as $d) {
+                $d = (int) trim($d);
+                if ($d !== 0) { $bymonatstag[] = $d; }
+            }
+            $bymonat = [];
+            foreach (explode(',', $r['BYMONTH'] ?? '') as $d) {
+                $d = (int) trim($d);
+                if ($d >= 1 && $d <= 12) { $bymonat[] = $d; }
+            }
 
             /* BYDAY gilt fuer BEIDE Takte, nicht nur fuer den woechentlichen.
              *
@@ -1683,14 +1935,27 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                     }
                 }
                 if (!$byday && $freq == 'WEEKLY') {
-                    $byday[(int) $start->format('N')] = 1;
+                    // Mit BYMONTHDAY ist jeder Wochentag Kandidat (RFC 5545, wie dateutil).
+                    if ($bymonatstag) {
+                        $byday = [1 => 1, 2 => 1, 3 => 1, 4 => 1, 5 => 1, 6 => 1, 7 => 1];
+                    } else {
+                        $byday[(int) $start->format('N')] = 1;
+                    }
                 }
             }
 
             $emitted = 0;
             if ($freq == 'DAILY' || $freq == 'WEEKLY') {
-                $wkRef = clone $start;
-                $wkRef->modify('monday this week')->setTime(12, 0, 0);
+                /* Die Woche beginnt am WKST-Tag (Vorgabe Montag). Bis 1.6.21
+                 * immer Montag - mit INTERVAL>1 und WKST=SU lag eine Serie
+                 * dann in der falschen Woche (Pruefung 02.10.2026, Nr. 10). */
+                $wkst = $WD[$r['WKST'] ?? 'MO'] ?? 1;
+                $wochenanfang = function (DateTime $d) use ($wkst) {
+                    $w = clone $d;
+                    $w->modify('-' . ((((int) $d->format('N')) - $wkst + 7) % 7) . ' day')->setTime(12, 0, 0);
+                    return $w;
+                };
+                $wkRef = $wochenanfang($start);
                 $cur = clone $start;
 
                 /* Vorspulen statt Tag fuer Tag hinlaufen.
@@ -1721,20 +1986,22 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                  *                 volle Serienwoche alle BYDAY-Tage
                  * Bei DAILY mit BYDAY-Filter wird nicht vorgespult, solange
                  * COUNT gesetzt ist - dort waere die Zaehlung nur mit Muehe
-                 * fehlerfrei, und geraten wird hier nichts.
+                 * fehlerfrei, und geraten wird hier nichts. Dasselbe gilt fuer
+                 * die Filter BYMONTH und BYMONTHDAY bei beiden Takten.
                  */
                 $emitted = 0;
-                $darfSpulen = ($count === null) || ($freq == 'WEEKLY') || !$byday;
-                if ($darfSpulen && $cur->getTimestamp() < $now) {
+                $darfSpulen = ($count === null)
+                           || (($freq == 'WEEKLY' || !$byday) && !$bymonat && !$bymonatstag);
+                if ($darfSpulen && $cur->getTimestamp() < $spulZiel) {
                     if ($freq == 'DAILY') {
-                        $tage = (int) $start->diff(new DateTime('@' . $now))->format('%a');
+                        $tage = (int) $start->diff(new DateTime('@' . $spulZiel))->format('%a');
                         $sprung = intdiv($tage, $iv) * $iv;
                         if ($sprung > 0) {
                             $cur->modify('+' . $sprung . ' day');
                             $emitted = intdiv($sprung, $iv);
                         }
                     } else {
-                        $wochen = (int) floor(($now - $mst['ts']) / (7 * 86400));
+                        $wochen = (int) floor(($spulZiel - $mst['ts']) / (7 * 86400));
                         $sprung = intdiv($wochen, $iv) * $iv;
                         if ($sprung > 0) {
                             $cur->modify('+' . ($sprung * 7) . ' day');
@@ -1785,10 +2052,17 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         $okDay = ($days % $iv) == 0
                               && (!$byday || isset($byday[(int) $cur->format('N')]));
                     } else {
-                        $wk = clone $cur;
-                        $wk->modify('monday this week')->setTime(12, 0, 0);
-                        $weeks = (int) round(((int) $wkRef->diff($wk)->format('%a')) / 7);
+                        $weeks = (int) round(((int) $wkRef->diff($wochenanfang($cur))->format('%a')) / 7);
                         $okDay = isset($byday[(int) $cur->format('N')]) && ($weeks % $iv) == 0;
+                    }
+                    // BYMONTH und BYMONTHDAY sind hier Filter; bis 1.6.21
+                    // uebergangen (Pruefung 02.10.2026, Nr. 10).
+                    if ($okDay && $bymonat && !in_array((int) $cur->format('n'), $bymonat, true)) {
+                        $okDay = false;
+                    }
+                    if ($okDay && $bymonatstag
+                        && !abfahrt_monatstag_passt((int) $cur->format('j'), (int) $cur->format('t'), $bymonatstag)) {
+                        $okDay = false;
                     }
                     if ($okDay && $ts >= $mst['ts']) {
                         $emitted++;
@@ -1798,10 +2072,11 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         if ($until !== null && $ts > $until) {
                             break;
                         }
+                        $schon[$ts] = 1;
                         abfahrt_serie_aufnehmen($singles, $mst, $ts, $now, $maxTs,
                                                 $overridden, $verschoben);
                     }
-                    if ($ts > $maxTs || ($until !== null && $ts > $until)) {
+                    if ($ts > $grenze || ($until !== null && $ts > $until)) {
                         break;
                     }
                     $cur->modify('+1 day');
@@ -1835,16 +2110,6 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         $bytag[] = [$WD[$mb[2]], (int) ($mb[1] !== '' ? $mb[1] : 0)];
                     }
                 }
-                $bymonatstag = [];
-                foreach (explode(',', $r['BYMONTHDAY'] ?? '') as $d) {
-                    $d = (int) trim($d);
-                    if ($d !== 0) { $bymonatstag[] = $d; }
-                }
-                $bymonat = [];
-                foreach (explode(',', $r['BYMONTH'] ?? '') as $d) {
-                    $d = (int) trim($d);
-                    if ($d >= 1 && $d <= 12) { $bymonat[] = $d; }
-                }
                 $bysetpos = [];
                 foreach (explode(',', $r['BYSETPOS'] ?? '') as $d) {
                     $d = (int) trim($d);
@@ -1855,6 +2120,7 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                 $anker = new DateTime(
                     ($freq == 'MONTHLY' ? $start->format('Y-m') . '-01' : $start->format('Y') . '-01-01')
                     . ' 12:00:00', $tz);
+                $starttag = (int) $start->format('j');
 
                 $fertig = false;
                 for ($k = 0; $k < 1200 && !$fertig; $k++) {
@@ -1862,52 +2128,62 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                     if ($k > 0) {
                         $per->modify('+' . ($k * $iv) . ' ' . $schritt);
                     }
-                    if ($per->getTimestamp() > $maxTs) {
+                    if ($per->getTimestamp() > $grenze) {
                         break;   // die ganze Periode liegt hinter dem Fenster
                     }
                     $jahr = (int) $per->format('Y');
-                    /* Bei MONTHLY ist BYMONTH ein FILTER (RFC 5545, 3.3.10):
+                    /* Bereiche, in denen BYDAY-Ordnungszahlen (2MO, -1FR) zaehlen.
+                     * Bei MONTHLY ist BYMONTH ein FILTER (RFC 5545, 3.3.10):
                      * "jeden ersten Montag, aber nur im Maerz und September".
-                     * Bis 1.6.9 fiel er weg, die Serie lief in jedem Monat. */
+                     * Bis 1.6.9 fiel er weg, die Serie lief in jedem Monat.
+                     * YEARLY ohne BYMONTH, aber mit BYDAY oder BYMONTHDAY, meint
+                     * das ganze Jahr (Pruefung 02.10.2026, Nr. 10). */
                     if ($freq == 'MONTHLY') {
-                        $mons = ($bymonat && !in_array((int) $per->format('n'), $bymonat, true))
-                              ? []
-                              : [(int) $per->format('n')];
+                        $monat = (int) $per->format('n');
+                        $bereiche = ($bymonat && !in_array($monat, $bymonat, true)) ? [] : [[$monat]];
+                    } elseif ($bymonat) {
+                        $bereiche = [];
+                        foreach ($bymonat as $mon) { $bereiche[] = [$mon]; }
+                    } elseif ($bytag || $bymonatstag) {
+                        $bereiche = [range(1, 12)];
                     } else {
-                        $mons = $bymonat ?: [(int) $start->format('n')];
+                        $bereiche = [[(int) $start->format('n')]];
                     }
 
                     $kandidaten = [];
-                    foreach ($mons as $mon) {
-                        $imMonat = (int) date('t', mktime(12, 0, 0, $mon, 1, $jahr));
-                        $tage = [];
-                        if ($bytag) {
-                            foreach ($bytag as $bt) {
-                                list($wd, $ord) = $bt;
-                                $treffer = [];
-                                for ($t = 1; $t <= $imMonat; $t++) {
-                                    $d = new DateTime(sprintf('%04d-%02d-%02d 12:00:00', $jahr, $mon, $t), $tz);
-                                    if ((int) $d->format('N') === $wd) { $treffer[] = $t; }
-                                }
-                                if ($ord > 0) {
-                                    if (isset($treffer[$ord - 1])) { $tage[] = $treffer[$ord - 1]; }
-                                } elseif ($ord < 0) {
-                                    $i = count($treffer) + $ord;
-                                    if ($i >= 0 && isset($treffer[$i])) { $tage[] = $treffer[$i]; }
-                                } else {
-                                    $tage = array_merge($tage, $treffer);
-                                }
+                    foreach ($bereiche as $mons) {
+                        $tage = [];          // [Monat, Tag, Wochentag, Tage im Monat]
+                        $jeWt = [];          // Wochentag => Stellen in $tage
+                        foreach ($mons as $mon) {
+                            $imMonat = (int) date('t', mktime(12, 0, 0, $mon, 1, $jahr));
+                            $wd = (int) date('N', mktime(12, 0, 0, $mon, 1, $jahr));
+                            for ($t = 1; $t <= $imMonat; $t++) {
+                                $jeWt[$wd][] = count($tage);
+                                $tage[] = [$mon, $t, $wd, $imMonat];
+                                $wd = $wd % 7 + 1;
                             }
-                        } elseif ($bymonatstag) {
-                            foreach ($bymonatstag as $t) {
-                                $tt = $t > 0 ? $t : $imMonat + 1 + $t;
-                                if ($tt >= 1 && $tt <= $imMonat) { $tage[] = $tt; }
-                            }
-                        } else {
-                            $t = (int) $start->format('j');
-                            if ($t <= $imMonat) { $tage[] = $t; }   // sonst faellt der Monat aus
                         }
-                        foreach (array_unique($tage) as $t) {
+                        $erlaubt = [];
+                        foreach ($bytag as $bt) {
+                            list($wd, $ord) = $bt;
+                            $liste = $jeWt[$wd] ?? [];
+                            if ($ord === 0) {
+                                foreach ($liste as $i) { $erlaubt[$i] = 1; }
+                            } else {
+                                $i = $ord > 0 ? $ord - 1 : count($liste) + $ord;
+                                if ($i >= 0 && isset($liste[$i])) { $erlaubt[$liste[$i]] = 1; }
+                            }
+                        }
+                        foreach ($tage as $i => $tg) {
+                            list($mon, $t, , $imMonat) = $tg;
+                            // BYDAY und BYMONTHDAY zusammen: beide muessen passen
+                            // (bis 1.6.21 galt nur BYDAY, Pruefung 02.10.2026, Nr. 10).
+                            if ($bytag && !isset($erlaubt[$i])) { continue; }
+                            if ($bymonatstag) {
+                                if (!abfahrt_monatstag_passt($t, $imMonat, $bymonatstag)) { continue; }
+                            } elseif (!$bytag && $t !== $starttag) {
+                                continue;   // ohne beides der Tag des DTSTART - fehlt er, faellt der Monat aus
+                            }
                             $d = new DateTime(sprintf('%04d-%02d-%02d %02d:%02d:%02d',
                                                       $jahr, $mon, $t, $std, $minu, $sek), $tz);
                             $kandidaten[] = $d->getTimestamp();
@@ -1918,10 +2194,10 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         $aus = [];
                         foreach ($bysetpos as $pos) {
                             $i = $pos > 0 ? $pos - 1 : count($kandidaten) + $pos;
-                            if (isset($kandidaten[$i])) { $aus[] = $kandidaten[$i]; }
+                            if (isset($kandidaten[$i])) { $aus[$kandidaten[$i]] = 1; }
                         }
-                        sort($aus);
-                        $kandidaten = $aus;
+                        $kandidaten = array_keys($aus);
+                        sort($kandidaten);
                     }
 
                     foreach ($kandidaten as $ts) {
@@ -1931,10 +2207,19 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                         $emitted++;
                         if ($count !== null && $emitted > $count) { $fertig = true; break; }
                         if ($until !== null && $ts > $until)      { $fertig = true; break; }
-                        if ($ts > $maxTs)                          { $fertig = true; break; }
+                        if ($ts > $grenze)                         { $fertig = true; break; }
+                        $schon[$ts] = 1;
                         abfahrt_serie_aufnehmen($singles, $mst, $ts, $now, $maxTs,
                                                 $overridden, $verschoben);
                     }
+                }
+            }
+            // RDATE: weitere Einzeltermine der Serie (Nr. 10); EXDATE und
+            // RECURRENCE-ID gelten fuer sie genauso.
+            foreach ($mst['rd'] as $rts => $_) {
+                if (!isset($schon[$rts])) {
+                    abfahrt_serie_aufnehmen($singles, $mst, $rts, $now, $maxTs,
+                                            $overridden, $verschoben);
                 }
             }
         }
@@ -1972,10 +2257,25 @@ define('ABFAHRT_GEO_MUSTER', '/^-?\d{1,3}(\.\d+)?,-?\d{1,3}(\.\d+)?$/');
 /** Wie lange eine einmal ermittelte Koordinate gilt: 90 Tage. */
 define('ABFAHRT_GEO_TTL', 90 * 86400);
 
-function abfahrt_geocode($address, array $abfcfg, &$err = '', &$err_id = '') {
+/* Datei im Zwischenspeicher fuer eine Koordinate. Der Zusatz "|2" seit
+ * Pruefung 02.10.2026, Nr. 9: bis 1.6.21 suchte TomTom nur in DE, AT und CH;
+ * ein dort gefundener gleichnamiger Ort fuer eine Adresse in NL, BE oder FR
+ * haette sonst noch 90 Tage gegolten. $naehe (die Koordinate der
+ * Abfahrtsadresse) gehoert mit hinein, sie beeinflusst das Ergebnis. */
+function abfahrt_geo_cachedatei($provider, $address, $naehe = '') {
+    return abfahrt_tmpdir() . '/geo_' . md5($provider . '|' . $address . '|2|' . $naehe);
+}
+
+/**
+ * $naehe: "lat,lon" der Abfahrtsadresse oder ''. Damit wird ein Ziel ohne
+ * Land in der Naehe gesucht (TomTom lat/lon, HERE at=) statt ueber eine feste
+ * Laenderliste.
+ */
+function abfahrt_geocode($address, array $abfcfg, &$err = '', &$err_id = '', $naehe = '') {
     $key = $abfcfg['api_key'];
     $provider = $abfcfg['provider'];
-    $cache = abfahrt_tmpdir() . '/geo_' . md5($provider . '|' . $address);
+    $naehe = preg_match(ABFAHRT_GEO_MUSTER, (string) $naehe) ? (string) $naehe : '';
+    $cache = abfahrt_geo_cachedatei($provider, $address, $naehe);
     /* Zwei Aenderungen gegenueber frueher:
      * - der Inhalt wird geprueft. Eine leere Datei (abgebrochener
      *   Schreibvorgang, volle Ramdisk) lieferte bisher '' zurueck - und ''
@@ -1995,13 +2295,18 @@ function abfahrt_geocode($address, array $abfcfg, &$err = '', &$err_id = '') {
     $grund_id = '';
     $abf_hs = 0;
     if ($provider === 'tomtom') {
-        $url = 'https://api.tomtom.com/search/2/geocode/' . rawurlencode($address) . '.json?key=' . rawurlencode($key) . '&limit=1&countrySet=DE,AT,CH';
+        $url = 'https://api.tomtom.com/search/2/geocode/' . rawurlencode($address) . '.json?key=' . rawurlencode($key) . '&limit=1';
+        if ($naehe !== '') {
+            list($abf_lat, $abf_lon) = explode(',', $naehe);
+            $url .= '&lat=' . rawurlencode($abf_lat) . '&lon=' . rawurlencode($abf_lon);
+        }
         $g = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
         if (isset($g['results'][0]['position'])) {
             $pos = $g['results'][0]['position']['lat'] . ',' . $g['results'][0]['position']['lon'];
         }
     } elseif ($provider === 'here') {
-        $url = 'https://geocode.search.hereapi.com/v1/geocode?q=' . rawurlencode($address) . '&apiKey=' . rawurlencode($key);
+        $url = 'https://geocode.search.hereapi.com/v1/geocode?q=' . rawurlencode($address) . '&apiKey=' . rawurlencode($key)
+             . ($naehe !== '' ? '&at=' . rawurlencode($naehe) : '');
         $g = @json_decode((string) abfahrt_http_get($url, 12, $grund, $abf_hs, $grund_id), true);
         if (isset($g['items'][0]['position'])) {
             $pos = $g['items'][0]['position']['lat'] . ',' . $g['items'][0]['position']['lng'];
@@ -2053,7 +2358,7 @@ define('ABFAHRT_ROUTE_GNADE', 3600);
  * aber nicht wie ein neuer Termin aussehen.
  *
  * Deshalb wird der letzte gute Wert bis zu ABFAHRT_ROUTE_GNADE Sekunden
- * weiterverwendet. Das ist vertretbar: eine Fahrzeit aendert sich in einer
+ * ueber seine Haltbarkeit hinaus weiterverwendet. Das ist vertretbar: eine Fahrzeit aendert sich in einer
  * Stunde selten dramatisch, und ein leicht veralteter Wert ist allemal besser
  * als eine Falschmeldung. $veraltet sagt dem Aufrufer, dass es so weit
  * gekommen ist - die Statuszeile traegt das als FEHLER=7 nach Loxone.
@@ -2152,7 +2457,7 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
         // Kein vorzeitiges return: auch ein misslungenes Geocoding soll unten
         // noch in die Gnadenfrist laufen duerfen, sonst flattert es genauso.
         $home = abfahrt_geocode($abfcfg['home_address'], $abfcfg, $err, $err_id);
-        $dest = ($home === false) ? false : abfahrt_geocode($destAddress, $abfcfg, $err, $err_id);
+        $dest = ($home === false) ? false : abfahrt_geocode($destAddress, $abfcfg, $err, $err_id, $home);
         $grund = '';
         if ($home === false || $dest === false) {
             $minutes = false;
@@ -2185,9 +2490,13 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
         return $minutes;
     }
 
-    // Der Kartendienst hat nicht geliefert. Gibt es einen Wert aus der letzten
-    // Stunde, wird der weitergereicht, statt die Berechnung abzubrechen.
-    if ($alter !== null && $alter <= ABFAHRT_ROUTE_GNADE) {
+    // Der Kartendienst hat nicht geliefert. Ist der letzte Wert hoechstens eine
+    // Stunde ueber seiner Haltbarkeit, wird er weitergereicht, statt die
+    // Berechnung abzubrechen. Bis 1.6.21 zaehlte die Stunde ab dem Abruf - bei
+    // einem Termin in mehr als drei Stunden (Haltbarkeit selbst eine Stunde)
+    // war sie beim ersten neuen Versuch schon um, es kam FEHLER=6 statt
+    // FEHLER=7 (Pruefung 02.10.2026, Nr. 7).
+    if ($alter !== null && $alter <= abfahrt_route_ttl($minutenBisTermin) + ABFAHRT_ROUTE_GNADE) {
         $alt = abfahrt_cache_lesen($cache, '/^\d+(\.\d+)?$/');
         if ($alt !== false) {
             $veraltet = true;
@@ -2304,9 +2613,11 @@ function abfahrt_ng_rufen($url, array $felder, $tmo = 10)
 {
     /* Nr. 36 b: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst Datenstrom; ohne
      * Weiterleitung, ohne Proxy). Rueckgabe wie bisher; die Kennung eines Transportfehlers
-     * bleibt die dieser Linie (HTTP_OHNE_CURL statt HTTP_OHNE_ANTWORT). */
+     * bleibt die dieser Linie (HTTP_OHNE_CURL statt HTTP_OHNE_ANTWORT) - aber nur
+     * ohne curl; bis 1.6.21 hiess es "kein curl vorhanden" auch mit curl
+     * (Pruefung 02.10.2026, Nr. 3). */
     $a = ansage_ng_rufen($url, $felder, $tmo, abfahrt_ansage_k());
-    $gid = $a['grund_id'] === 'HTTP_OHNE_ANTWORT' ? 'HTTP_OHNE_CURL' : $a['grund_id'];
+    $gid = ($a['grund_id'] === 'HTTP_OHNE_ANTWORT' && !function_exists('curl_init')) ? 'HTTP_OHNE_CURL' : $a['grund_id'];
     return array('code' => $a['code'], 'zeile' => $a['zeile'], 'grund_id' => $gid, 'tmo' => (int) $tmo);
 }
 
@@ -2533,7 +2844,7 @@ function abfahrt_felder() {
      * 24.09.2026 (Regeln/07, Abschnitt 3) ordnen alle vier anders ein:
      *   OK      "Termin und Route berechnet" - eine Aussage des Dienstes ueber
      *           seine eigene Rechnung; ok ist nie retained.
-     *   FEHLER  Fehlergrund 0-8, darunter "Kalender bzw. Kartendienst nicht
+     *   FEHLER  Fehlergrund 0-9, darunter "Kalender bzw. Kartendienst nicht
      *           erreichbar" - ebenfalls der Dienst ueber sich selbst.
      *   AUDIO   haengt an den Sperrzeiten, PUSH mit "Sperrzeit auch fuer Push"
      *   PUSH    ebenso: beide werden allein durch die Uhr falsch (Zeitbezug).
@@ -2684,11 +2995,55 @@ function abfahrt_stand_write(array $st) {
 function abfahrt_stand_sichern(array &$st) {
     if (abfahrt_stand_write($st)) { return true; }
     $st['ok'] = 0;
+    /* Bis 1.6.21 blieb FEHLER stehen - bei einem Stand mit OK=1 hiess das
+     * OK=0;FEHLER=0, die Kombination, die die Tabelle nicht kennt. Jetzt 9
+     * (Pruefung 02.10.2026, Nr. 20). */
+    $st['fehler'] = 9;
+    $st['grund_id'] = 'STAND_SCHREIBEN';
+    $st['grund'] = abfahrt_grund_text('STAND_SCHREIBEN');
     @unlink(abfahrt_standfile());
     @unlink(abfahrt_tmpdir(false) . '/titel.json');
     abfahrt_log_gedrosselt('stand_schreiben', 'Dienst: Der Zwischenstand liess sich nicht schreiben ('
-        . abfahrt_standfile() . '). OK=0, bis es wieder gelingt.', 3600);
+        . abfahrt_standfile() . '). OK=0;FEHLER=9, bis es wieder gelingt.', 3600);
     return false;
+}
+
+/**
+ * Die Sperre des Rechnens: hoechstens ein Lauf von abfahrt_berechnen() zur
+ * selben Zeit, gleich ob aus dem Dienst oder aus termin.php?debug=1. Bis
+ * 1.6.21 hielt nur der Dienst sie; ?debug=1 rechnete daneben, fragte den
+ * Kartendienst ein zweites Mal und schrieb stand.json und titel.json im
+ * Wettlauf (Pruefung 02.10.2026, Nr. 21).
+ *
+ * Rueckgabe: der Dateizeiger (gehalten, freigeben mit abfahrt_sperre_frei())
+ * oder false; $grund ist dann 'oeffnen' (Sperrdatei nicht zu oeffnen, etwa
+ * nach einem Handstart als root) oder 'belegt'. Der Halter traegt Startzeit
+ * und PID ein - fuer einen Lauf, der die Sperre belegt findet.
+ */
+function abfahrt_sperrdatei() {
+    return abfahrt_tmpdir() . '/dienst.lock';
+}
+
+function abfahrt_sperre(&$grund = '') {
+    $grund = '';
+    $fh = @fopen(abfahrt_sperrdatei(), 'c');
+    if ($fh === false) { $grund = 'oeffnen'; return false; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        $grund = 'belegt';
+        return false;
+    }
+    @ftruncate($fh, 0);
+    @fwrite($fh, time() . ' ' . getmypid() . "\n");
+    @fflush($fh);
+    return $fh;
+}
+
+function abfahrt_sperre_frei($fh) {
+    if (is_resource($fh)) {
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
 }
 
 /**
@@ -2698,7 +3053,24 @@ function abfahrt_stand_sichern(array &$st) {
  */
 function abfahrt_rechentakt(array $st) {
     $st += array('abfahrt_in' => 9999, 'ok' => 0);
-    return ((int) $st['abfahrt_in'] <= 60 && (int) $st['ok'] === 1) ? 60 : 300;
+    /* 65, nicht 60: der abgelegte Wert kann aus einem Lauf im 300-s-Takt
+     * stammen und bis zu fuenf Minuten alt sein. Mit 60 kam der erste Wert
+     * der letzten Stunde als 56 bis 60 an (Pruefung 02.10.2026, Nr. 19). */
+    return ((int) $st['abfahrt_in'] <= 65 && (int) $st['ok'] === 1) ? 60 : 300;
+}
+
+/**
+ * Ist der Stand zu alt, um noch zu gelten? Kein Stand, ein Stand aus der
+ * Zukunft (die Uhr ist zurueckgesprungen - NTP auf einem Pi ohne Uhrbaustein;
+ * 60 s Spiel) oder aelter als das Dreifache des Rechentakts. Bis 1.6.21 galt
+ * ein Stand aus der Zukunft als frisch, bis die Uhr ihn eingeholt hatte
+ * (Pruefung 02.10.2026, Nr. 18).
+ */
+function abfahrt_stand_veraltet(array $st) {
+    $st += array('zeit' => 0);
+    $zeit = (int) $st['zeit'];
+    if ($zeit <= 0 || $zeit > time() + 60) { return true; }
+    return (time() - $zeit) > 3 * abfahrt_rechentakt($st);
 }
 
 /**
@@ -2710,8 +3082,28 @@ function abfahrt_rechentakt(array $st) {
  */
 function abfahrt_ok_wirksam(array $st) {
     $st += array('ok' => 0, 'zeit' => 0);
-    if ((int) $st['ok'] !== 1 || (int) $st['zeit'] <= 0) { return 0; }
-    return (time() - (int) $st['zeit']) > 3 * abfahrt_rechentakt($st) ? 0 : 1;
+    if ((int) $st['ok'] !== 1) { return 0; }
+    return abfahrt_stand_veraltet($st) ? 0 : 1;
+}
+
+/**
+ * FEHLER, wie es an Loxone geht: 9, solange kein frischer Stand da ist
+ * (abfahrt_stand_veraltet()), sonst der abgelegte Wert. Bis 1.6.21 gingen ein
+ * fehlender und ein veralteter Stand als OK=0;FEHLER=0 hinaus (Pruefung
+ * 02.10.2026, Nr. 20).
+ */
+function abfahrt_fehler_wirksam(array $st) {
+    $st += array('fehler' => 0);
+    return abfahrt_stand_veraltet($st) ? 9 : (int) $st['fehler'];
+}
+
+/** Der Grund zu abfahrt_fehler_wirksam(), in der Sprache des Lesers. */
+function abfahrt_grund_wirksam(array $st) {
+    $st += array('zeit' => 0, 'fehler' => 0);
+    if (abfahrt_stand_veraltet($st) && (int) $st['fehler'] !== 9) {
+        return abfahrt_grund_text((int) $st['zeit'] <= 0 ? 'STAND_FEHLT' : 'STAND_VERALTET');
+    }
+    return abfahrt_stand_grund($st);
 }
 
 /**
@@ -2760,7 +3152,7 @@ function abfahrt_werte(array $st, array $abfcfg) {
          * Vorlage eine Zusage, die die Zeile nicht einhaelt. */
         'FAHRT'      => max(0, min(1440, 0 + $st['fahrt'])),
         'ABFAHRT_IN' => max(-9999, min(9999, (int) $st['abfahrt_in'])),
-        'FEHLER'     => (int) $st['fehler'],
+        'FEHLER'     => abfahrt_fehler_wirksam($st),     // Nr. 20
         'ALTER'      => max(0, min(86400, $alter)),
         'AUDIO'      => abfahrt_audio_allowed($abfcfg, $why) ? 1 : 0,
         // Die Sperrzeit wirkte bisher nur auf die Ansage. Wer nachts auch
@@ -3328,7 +3720,8 @@ function abfahrt_mqtt_behalten_liste(array $themen)
  *   1. den Broker nach allen Themen aus abfahrt_mqtt_frueher_behalten()
  *      unter dem eingestellten Praefix fragen;
  *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
- *      einige belegt -> genau diese abraeumen, kein Merker ('belegt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'),
+ *      hoechstens dreimal am Tag je Praefix (.mqtt_altlast_belegt, seit 1.6.22);
  *      nicht zu fragen -> alle, aber hoechstens EINMAL AM TAG je Praefix
  *      (Merker .mqtt_altlast_versucht, M3 seit 1.6.16; bis 1.6.15 in jedem
  *      Lauf vier leere retain-Datagramme), kein Merker ('unbekannt').
@@ -3368,6 +3761,23 @@ function abfahrt_mqtt_altlast(array $abfcfg)
     if (is_file($versucht) && trim((string) @file_get_contents($versucht)) === $heute) {
         return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => array());
     }
+    /* Ebenso gedrosselt: der Zweig 'belegt', hoechstens drei Versuche je Tag
+     * und Praefix. Bis 1.6.21 fragte der Dienst jede Minute und schickte jede
+     * Minute leere Nutzlasten samt Werten fuer OK, FEHLER, AUDIO und PUSH,
+     * wenn ein Altwert immer wieder auftauchte (etwa von einem zweiten
+     * Absender) - der Eingang in Loxone flackerte (Pruefung 02.10.2026, Nr. 24). */
+    $belegt = $p['data'] . '/.mqtt_altlast_belegt';
+    $bel_n = 0;
+    if (is_file($belegt) && preg_match('/^belegt ' . preg_quote(date('Y-m-d') . ' ' . $praefix, '/') . ' ([0-9]+)\z/',
+            trim((string) @file_get_contents($belegt)), $bel_m)) {
+        $bel_n = (int) $bel_m[1];
+    }
+    if ($bel_n >= 3) {
+        abfahrt_log_gedrosselt('mqtt_altlast_belegt', 'MQTT: unter ' . $praefix . '/ stehen nach drei '
+            . 'Raeumversuchen heute noch frueher zurueckbehaltene Werte im Broker - sendet sie ein anderer '
+            . 'Absender? Der naechste Versuch folgt morgen. Von Hand: mosquitto_pub -r -n -t <thema>', 86400);
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => array());
+    }
     $voll = array();
     foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
     $f = abfahrt_mqtt_behalten_liste($voll);
@@ -3386,6 +3796,8 @@ function abfahrt_mqtt_altlast(array $abfcfg)
         $l = strlen($praefix) + 1;
         $t = array();
         foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        if (!is_dir($p['data'])) { @mkdir($p['data'], 0775, true); }
+        @file_put_contents($belegt, 'belegt ' . date('Y-m-d') . ' ' . $praefix . ' ' . ($bel_n + 1) . "\n");
         return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
     }
     if (!is_dir($p['data'])) { @mkdir($p['data'], 0775, true); }
@@ -3579,7 +3991,9 @@ function abfahrt_lebenszeichen(array $abfcfg, array $st) {
     $n = is_file($datei) ? (int) trim((string) @file_get_contents($datei)) : -1;
     $n = ($n + 1) % 1000;
     @file_put_contents($datei, (string) $n);
-    $frisch = ((int) $st['zeit'] > 0 && time() - (int) $st['zeit'] <= 660) ? 1 : 0;
+    // Nr. 18: ein Stand aus der Zukunft (Uhr zurueckgesprungen) ist nicht frisch.
+    $frisch = ((int) $st['zeit'] > 0 && (int) $st['zeit'] <= time() + 60
+               && time() - (int) $st['zeit'] <= 660) ? 1 : 0;
     $raus = abfahrt_mqtt_senden(array(), $abfcfg, abfahrt_lebenszeichen_werte($n, $frisch));
     /* M4 (Durchgang 29.09.2026): Die Marke fuer den Reiter Test entsteht nur,
      * wenn wirklich abgeschickt wurde. Bis 1.6.15 las der Reiter die
@@ -3639,7 +4053,7 @@ function abfahrt_abo_datei($praefix, $schreiben = false)
     $p = abfahrt_paths();
     $dir = dirname($p['config']);
     $pfad = $dir . '/mqtt_subscriptions.cfg';
-    $soll = trim((string) $praefix, '/') . '/#';
+    $soll = abfahrt_mqtt_praefix_norm($praefix) . '/#';     // Nr. 15: dieselbe Form wie beim Senden
     if ($p['lbhome'] === '') { return array($pfad, false); }
     $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
     $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
@@ -3872,8 +4286,13 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
                     $alter < 90 ? $alter . ' s' : round($alter / 60) . ' min'));
     }
 
-    /* Letztes Ergebnis */
-    if ((int) $st['ok'] === 1 && (int) $st['fehler'] === 0) {
+    /* Letztes Ergebnis. Ohne Stand neutral: bis 1.6.21 stand hier ein rotes
+     * "FEHLER=0: " ohne Grund, solange der Dienst noch nie gerechnet hatte
+     * (Pruefung 02.10.2026, Nr. 20). */
+    if ((int) $st['zeit'] <= 0) {
+        $zeile(-1, abfahrt_t('TEST.F_ERGEBNIS'),
+            sprintf(abfahrt_t('TEST.A_ERGEBNIS_FEHLER'), 9, abfahrt_e(abfahrt_grund_text('STAND_FEHLT'))));
+    } elseif ((int) $st['ok'] === 1 && (int) $st['fehler'] === 0) {
         $zeile(1, abfahrt_t('TEST.F_ERGEBNIS'),
             sprintf(abfahrt_t('TEST.A_ERGEBNIS_OK'), abfahrt_e($st['titel']),
                     (int) $st['minstart'], 0 + $st['fahrt'], (int) $st['abfahrt_in']));
@@ -3964,6 +4383,9 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
         $zeile(0, abfahrt_t('TEST.F_CFG'), abfahrt_t('TEST.A_CFG_WAR_LEER'));
     } elseif (in_array('token_aus_zweit', $abf_ebs, true)) {
         $zeile(0, abfahrt_t('TEST.F_CFG'), abfahrt_t('TEST.A_CFG_WAR_TOKEN'));
+    } elseif ($lage['zustand'] === 'unlesbar') {
+        $zeile(0, abfahrt_t('TEST.F_CFG'), sprintf(abfahrt_t('TEST.A_CFG_UNLESBAR'),
+            abfahrt_e(abfahrt_datei_rechte($p['config']))));
     } elseif ($lage['zustand'] === 'kaputt') {
         $zeile(0, abfahrt_t('TEST.F_CFG'), abfahrt_t('TEST.A_CFG_KAPUTT'));
     } elseif ($lage['zustand'] !== 'ok') {
@@ -4175,7 +4597,7 @@ function abfahrt_kalender_diagnose(?array $abfcfg = null) {
             $aus[] = $z;
             continue;
         }
-        $z['vevents'] = substr_count($ics, 'BEGIN:VEVENT');
+        $z['vevents'] = (int) preg_match_all('/^BEGIN:VEVENT[ \t]*\r?$/mi', $ics);
 
         /* Fuer die Zaehlung wird derselbe Weg benutzt wie im Betrieb - eine
          * zweite, eigene Zaehlung liefe frueher oder spaeter auseinander, und
@@ -4211,7 +4633,7 @@ function abfahrt_geo_stand(array $abfcfg) {
     $aus = ['adresse' => $adr, 'da' => false, 'koordinaten' => '', 'alter' => null,
             'karte' => ''];
     if ($adr === '') { return $aus; }
-    $cache = abfahrt_tmpdir() . '/geo_' . md5($abfcfg['provider'] . '|' . $adr);
+    $cache = abfahrt_geo_cachedatei($abfcfg['provider'], $adr);
     if (!is_file($cache)) { return $aus; }
     $wert = abfahrt_cache_lesen($cache, ABFAHRT_GEO_MUSTER);
     if ($wert === false) { return $aus; }
@@ -4290,7 +4712,9 @@ function abfahrt_ms4h_suchen() {
                 fclose($fp);
                 $aus['gefunden'] = true;
                 $aus['port'] = $port;
-                $aus['quelle'] = 'Port ' . $port . ' antwortet auf 127.0.0.1';
+                /* Bis 1.6.21 fest deutsch, auch in der englischen
+                 * Oberflaeche (Pruefung 02.10.2026, Nr. 27g). */
+                $aus['quelle'] = sprintf(abfahrt_t('MS4H.QUELLE_PORT'), $port);
                 break;
             }
         }
@@ -4456,21 +4880,14 @@ function abfahrt_datei_geheim_schreiben($datei, $inhalt) {
  * Zugelassen: Loopback, die privaten IPv4-Bereiche, und Namen ohne Punkt
  * oder mit den ueblichen Heimnetz-Endungen. Alles andere wird abgewiesen:
  * die Ansage traegt den Titel des naechsten Termins in der Adresse.
+ *
+ * Bis 1.6.21 eine eigene Rechnung: eine Zahl als Name (134744072, 0x8080808)
+ * galt als "Name ohne Punkt", 10.8.8.8 mit fuehrender Null als 10.8.8.8 - gerufen wurde beide Male
+ * 8.8.8.8 (Pruefung 02.10.2026, Nr. 2). Jetzt eine Quelle: die gemeinsame
+ * Sprachausgabe, die diese Bibliothek als erste laedt (ganz oben).
  */
 function abfahrt_heimnetz_host($h) {
-    $h = strtolower(trim((string) $h));
-    if ($h === '' || $h === 'localhost') { return $h === 'localhost'; }
-    if (preg_match('/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/', $h, $m)) {
-        foreach (array_slice($m, 1) as $o) { if ((int) $o > 255) { return false; } }
-        $a = (int) $m[1]; $b = (int) $m[2];
-        return $a === 10 || $a === 127 || ($a === 192 && $b === 168)
-            || ($a === 172 && $b >= 16 && $b <= 31) || ($a === 169 && $b === 254);
-    }
-    if (!preg_match('/^[a-z0-9]([a-z0-9\-]{0,62})(\.[a-z0-9]([a-z0-9\-]{0,62}))*$/', $h)) {
-        return false;
-    }
-    if (strpos($h, '.') === false) { return true; }
-    return (bool) preg_match('/\.(local|lan|home|home\.arpa|internal|fritz\.box|intern)$/', $h);
+    return ansage_heimnetz_host($h);
 }
 
 /**
@@ -4516,6 +4933,20 @@ function abfahrt_config_heilen() {
     list($zroh, $zzustand) = abfahrt_config_roh($zweit);
     $zweit_gut = ($zzustand === 'ok' && isset($zroh['aktionstoken'])
                   && is_string($zroh['aktionstoken']) && $zroh['aktionstoken'] !== '');
+
+    /* Nicht lesbar (Rechte): nichts verschieben, nichts aus der Zweitschrift
+     * darueberschreiben, kein Merkwort - nur melden, mit Eigentuemer und
+     * Rechten. Bis 1.6.21 lief eine unlesbare Datei als 'kaputt' hier durch
+     * (Pruefung 02.10.2026, Nr. 5). Ins Protokoll einmal je Stunde: der Dienst
+     * ruft diese Funktion jede Minute. */
+    if ($zustand === 'unlesbar') {
+        $m = sprintf(abfahrt_t('MELDUNG.CFG_UNLESBAR'), $datei, abfahrt_datei_rechte($datei));
+        abfahrt_log_gedrosselt('cfg_unlesbar', 'Konfiguration: ' . strip_tags($m), 3600);
+        $abf_erst['schritte'][] = 'unlesbar';
+        abfahrt_config_erstbefund($abf_erst);
+        abfahrt_config();     // Lage fuer den Reiter Test
+        return array($m);
+    }
 
     if ($zustand === 'kaputt') {
         $ziel = $datei . '.kaputt-' . date('Ymd-His');
@@ -4598,9 +5029,38 @@ function abfahrt_config_heilen() {
     return array_merge($meldungen, $abgew);
 }
 
+/** Eigentuemer, Gruppe und Rechte einer Datei fuer eine Meldung, z. B. "root:root 0600". */
+function abfahrt_datei_rechte($datei) {
+    clearstatcache(true, $datei);
+    $u = @fileowner($datei);
+    $g = @filegroup($datei);
+    $r = @fileperms($datei);
+    if ($u === false || $r === false) { return '?'; }
+    $un = (string) $u;
+    $gn = (string) $g;
+    if (function_exists('posix_getpwuid')) {
+        $x = @posix_getpwuid($u);
+        if (is_array($x) && isset($x['name'])) { $un = $x['name']; }
+    }
+    if ($g !== false && function_exists('posix_getgrgid')) {
+        $x = @posix_getgrgid($g);
+        if (is_array($x) && isset($x['name'])) { $gn = $x['name']; }
+    }
+    return $un . ':' . $gn . ' ' . sprintf('%04o', $r & 07777);
+}
+
 function abfahrt_config_speichern($cfg)
 {
     $p = abfahrt_paths();
+    /* Nr. 5: ueber eine Datei, die dieser Prozess nicht lesen kann, wird nicht
+     * geschrieben - der Aufrufer haette sonst die Vorgaben statt ihres
+     * Inhalts in der Hand, und die Zweitschrift ginge gleich mit. */
+    list(, $abf_zst) = abfahrt_config_roh($p['config']);
+    if ($abf_zst === 'unlesbar') {
+        abfahrt_log_gedrosselt('cfg_unlesbar_speichern', 'Konfiguration: ' . $p['config']
+            . ' ist nicht lesbar (' . abfahrt_datei_rechte($p['config']) . ') - nicht gespeichert.', 3600);
+        return false;
+    }
     $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE
                             | JSON_UNESCAPED_SLASHES);
     if ($js === false) {
@@ -4624,7 +5084,13 @@ function abfahrt_config_speichern($cfg)
      * trotzdem gelungen - gemeldet wird es im Protokoll, weil die Heilung
      * sonst beim naechsten Anlass auf einen alten Stand zurueckfiele. */
     $zweit = $p['backup'];
-    if (!abfahrt_datei_geheim_schreiben($zweit, $js)) {
+    list(, $abf_zzst) = abfahrt_config_roh($zweit);
+    if ($abf_zzst === 'unlesbar') {
+        // Nr. 5: eine Zweitschrift, die sich nicht lesen laesst, kann das
+        // einzige verbliebene Merkwort tragen - stehen lassen, melden.
+        abfahrt_log_gedrosselt('zweit_unlesbar', 'Konfiguration: Zweitschrift ' . $zweit . ' ist nicht lesbar ('
+            . abfahrt_datei_rechte($zweit) . ') - sie wurde nicht ueberschrieben.', 3600);
+    } elseif (!abfahrt_datei_geheim_schreiben($zweit, $js)) {
         abfahrt_log('Konfiguration: Zweitschrift ' . $zweit . ' liess sich nicht schreiben.');
     }
     return true;
@@ -4723,8 +5189,8 @@ function abfahrt_rueckspiel_altwerte(array $cfg)
  * 1.6.10 nahm eine Sicherungsdatei deshalb "aktionstoken": "abc123\n" an,
  * und jede in Loxone eingetragene Adresse war danach stumm ungueltig
  * (gemessen 24.09.2026 unter PHP 7.4 und 8.4; zuerst an AWM-Abfuhr 1.4.10).
- * tts.zones bleibt bei \s - dort ist Weissraum gewollt und wird vor der
- * Benutzung abgestreift.
+ * tts.zones erlaubt Leerzeichen um das Komma (ansage_zonen_ok()), seit der
+ * Pruefung 02.10.2026 aber keinen Tabulator und keinen Umbruch mehr.
  */
 function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
 {
@@ -4785,14 +5251,22 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
             if ($s !== '' && !preg_match('#^[A-Za-z0-9_/\-]+\z#', $s)) {
                 $grund = 'THEMA_ZEICHEN'; return null;
             }
-            return $s;
-        case 'ganztags_zeit':
-            $s = $text($wert, 5);
-            if ($s === null) { return null; }
-            if (!preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $s)) {
-                $grund = 'UHRZEIT'; return null;
+            /* Kein '/' am Rand, kein '//' (Nr. 15, abfahrt_mqtt_praefix_norm()). */
+            if ($s !== '' && !preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z#', $s)) {
+                $grund = 'THEMA_FORM'; return null;
             }
             return $s;
+        case 'ganztags_zeit':
+            /* Auf HH:MM gebracht: "8:00" wurde bis 1.6.21 angenommen, aber
+             * <input type="time"> zeigt den Wert dann leer, und jedes Speichern
+             * scheiterte an dem leeren Feld (Pruefung 02.10.2026). \z statt $:
+             * "8:00\n" passte sonst. */
+            $s = $text($wert, 5);
+            if ($s === null) { return null; }
+            if (!preg_match('/^([01]?\d|2[0-3]):([0-5]\d)\z/', $s, $hm)) {
+                $grund = 'UHRZEIT'; return null;
+            }
+            return sprintf('%02d:%02d', (int) $hm[1], (int) $hm[2]);
         case 'aktionstoken':
             /* Das Muster bleibt WEIT: zugelassen wird, was ohne Kodierung in
              * eine Adresse passt. Ein zu enges Muster verwirft ein von Hand
@@ -4860,10 +5334,10 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         if ($s === null) { return null; }
                         $neu['on'] = $s;
                     } elseif ($uk === 'from' || $uk === 'to') {
-                        if (is_array($uw) || !preg_match('/^([01]?\d|2[0-3]):[0-5]\d\z/', (string) $uw)) {
+                        if (is_array($uw) || !preg_match('/^([01]?\d|2[0-3]):([0-5]\d)\z/', (string) $uw, $hm)) {
                             $grund = 'TAG_UHRZEIT|' . $t; return null;
                         }
-                        $neu[$uk] = (string) $uw;
+                        $neu[$uk] = sprintf('%02d:%02d', (int) $hm[1], (int) $hm[2]);     // wie ganztags_zeit
                     } else {
                         $grund = 'TAG_EINTRAG|' . $t . '|' . $teil($uk); return null;
                     }
@@ -4897,9 +5371,14 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         }
                         $aus['mode'] = (string) $uw;
                         break;
+                    /* Bis 1.6.21 liessen ip, zones und template Tabulator, CR
+                     * und LF durch (die gemeinsame Pruefung weist sie ab), und
+                     * als Zonen galt auch "1 2" (Pruefung 02.10.2026, Nr. 14).
+                     * Leerraum am Rand faellt still weg. */
                     case 'ip':
                         $s = $text($uw, 253);
                         if ($s === null) { return null; }
+                        if (preg_match('/[\x00-\x1F\x7F]/', trim($s))) { $grund = 'STEUERZEICHEN'; return null; }
                         if (trim($s) !== '' && !abfahrt_heimnetz_host(trim($s))) {
                             $grund = 'TTS_IP'; return null;
                         }
@@ -4918,7 +5397,9 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                     case 'zones':
                         $s = $text($uw, 200);
                         if ($s === null) { return null; }
-                        if (!preg_match('/^[0-9~,\s]*$/', $s)) {
+                        $s = trim($s);
+                        if (preg_match('/[\x00-\x1F\x7F]/', $s)) { $grund = 'STEUERZEICHEN'; return null; }
+                        if (!ansage_zonen_ok($s)) {
                             $grund = 'TTS_ZONEN'; return null;
                         }
                         $aus['zones'] = $s;
@@ -4933,13 +5414,13 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         $s = $text($uw, 500);
                         if ($s === null) { return null; }
                         $s = trim($s);
+                        if (preg_match('/[\x00-\x1F\x7F]/', $s)) { $grund = 'STEUERZEICHEN'; return null; }
+                        /* Bis 1.6.21 endete der Rechner am ersten Doppelpunkt:
+                         * http://{ip}:80@example.com/ galt als {ip} (Pruefung
+                         * 02.10.2026, Nr. 2 a). Jetzt die gemeinsame Pruefung. */
                         if ($s !== '') {
-                            if (!preg_match('#^https?://([^/:?]+)#i', $s, $mh)) {
-                                $grund = 'TTS_VORLAGE_HTTP'; return null;
-                            }
-                            if ($mh[1] !== '{ip}' && !abfahrt_heimnetz_host($mh[1])) {
-                                $grund = 'TTS_VORLAGE_HEIMNETZ'; return null;
-                            }
+                            $grund = ansage_vorlage_grund($s);
+                            if ($grund !== '') { return null; }
                         }
                         $aus['template'] = $s;
                         break;
@@ -5041,7 +5522,9 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
          * lehnte diese Funktion eine sonst gueltige Sicherung mit _hinweis
          * und _stand vollstaendig ab - waehrend die eigene Ausfuhr gar
          * keinen Kopf schrieb. */
-        if ($k !== '' && $k[0] === '_') {
+        // is_string(): eine Liste ([1,2]) hat Zahlen als Schluessel, und $k[0]
+        // gab darauf unter PHP 8 eine Warnung (Pruefung 02.10.2026, Nr. 28c).
+        if (is_string($k) && $k !== '' && $k[0] === '_') {
             continue;
         }
         if (!array_key_exists($k, $vorgaben)) {

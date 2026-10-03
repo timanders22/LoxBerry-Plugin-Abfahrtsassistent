@@ -118,6 +118,22 @@ $info = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json
 if (!is_array($info)) { $info = []; }
 $text = ($eigener !== '') ? $eigener : abfahrt_ansagetext($info, $abfcfg);
 
+/* Bis 1.6.21 ging ein leerer Ansagetext hinaus und stand als gesprochen im
+ * Protokoll ("OK: TEXTLAENGE=0"), etwa bei einer eigenen Vorlage "{titel}"
+ * ohne Titel (Pruefung 02.10.2026, Nr. 11). Dieselbe Pruefung wie in
+ * ansage_sprechen(), fuer alle Ausgabearten. */
+list($abf_ts, $abf_tk) = ansage_text_pruefen($text, $tts['mode']);
+if ($abf_ts === -1) {
+    abfahrt_log('Ansage entfaellt: leerer Ansagetext');
+    echo "SKIP: leerer Ansagetext\n";
+    exit;
+}
+if ($abf_ts !== 1) {
+    abfahrt_log('Ansage entfaellt: Ansagetext abgewiesen (' . $abf_tk . ', ' . ansage_zeichen($text) . ' Zeichen)');
+    echo 'FEHLER: Ansagetext abgewiesen (' . $abf_tk . ")\n";
+    exit;
+}
+
 if ($tts['mode'] === 'audioserver') {
     // Kein HTTP-Push moeglich - Text fuer Loxone Config bereitstellen
     echo "TEXT=" . $text . "\n";
@@ -154,6 +170,7 @@ if ($tts['mode'] === 'cc4lox') {
     if ($abf_gg === '') {
         $abf_gk = abfahrt_ng_kurz($abf_ga);
         abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_OK'), $abf_gn, $abf_gk) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+        // Beginnt wie bei den anderen Arten mit "OK: TEXTLAENGE=N" (Pruefung 02.10.2026, Nr. 12 b).
         echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_OK'), $abf_gn, $abf_gk) . "\n";
     } else {
         $abf_ggt = abfahrt_grund_text($abf_gg);
@@ -168,6 +185,15 @@ $url = abfahrt_tts_url($text, $tts);
 // Die Pruefung sitzt seit 1.5.4 in abfahrt_tts_url() - vorher stand sie hier
 // vor dem Aufruf und sperrte auch eigene Vorlagen ohne {ip} aus (AWM 1.2.0).
 if ($url === '') {
+    /* Seit 1.6.22 strenger geprueft (Pruefung 02.10.2026, Nr. 2/14): ein
+     * abgewiesener tts-Block faellt auf die Vorgaben - dann fehlt die IP nicht,
+     * sondern die Einstellung wurde abgewiesen. */
+    $abf_lage = abfahrt_config_lage();
+    if (isset($abf_lage['abgewiesen']['tts'])) {
+        echo "FEHLER: Einstellungen der Sprachausgabe abgewiesen (" . $abf_lage['abgewiesen']['tts']
+           . ") - Plugin-Oberflaeche oeffnen, Reiter Test.\n";
+        exit;
+    }
     echo "FEHLER: Keine Audio-Server-IP konfiguriert (Plugin-Oberflaeche oeffnen).\n";
     exit;
 }
@@ -186,12 +212,30 @@ $status = 0;
 /* Nr. 36 b: abgerufen ueber den Transport der gemeinsamen Sprachausgabe (ohne Weiterleitung,
  * ohne Proxy, 8 s wie bisher, Erfolg nur bei HTTP 2xx); der Grund ist die Kennung dieser Linie. */
 $abf_k = abfahrt_ansage_k();
+/* Die fertige Adresse unmittelbar vor dem Senden pruefen (http/https, keine
+ * Zugangsdaten vor dem Rechner, Rechner im Heimnetz): sie traegt den
+ * Ansagetext. Bis 1.6.21 ging z. B. http://{ip}:80@example.com/... an
+ * example.com (Pruefung 02.10.2026, Nr. 2). */
+if (!ansage_url_heimnetz($url)) {
+    $abf_hg = abfahrt_grund_text($tts['mode'] === 'musicserver' ? 'TTS_IP' : 'TTS_VORLAGE_HEIMNETZ');
+    abfahrt_log('FEHLER: Ansage nicht gesendet - ' . $abf_hg);
+    echo 'FEHLER: Ansage nicht gesendet - ' . $abf_hg . "\n";
+    exit;
+}
 $abf_a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 8, $abf_k), $abf_k);
 $status = $abf_a['code'];
+/* Bis 1.6.21 hiess jeder Transportfehler ausser 6, 7 und 28 "kein curl
+ * vorhanden" - auch mit curl (52 leere Antwort, 35/60 TLS, 3 kaputte Adresse).
+ * 1.6.20 meldete noch "Netzfehler 52: Empty reply from server" (Pruefung
+ * 02.10.2026, Nr. 3). */
 if ($status > 0) {
     $abf_gid = abfahrt_http_grund_id(0, '', $status);
+} elseif ($abf_a['errno'] > 0) {
+    $abf_gid = abfahrt_http_grund_id($abf_a['errno'], $abf_a['fehler'], 0);
+} elseif ($abf_a['errno'] === -2) {
+    $abf_gid = 'HTTP_KEIN_HTTP';
 } else {
-    $abf_gid = in_array($abf_a['errno'], array(6, 7, 28), true) ? abfahrt_http_grund_id($abf_a['errno'], '', 0) : 'HTTP_OHNE_CURL';
+    $abf_gid = function_exists('curl_init') ? 'HTTP_OHNE_ANTWORT' : 'HTTP_OHNE_CURL';
 }
 $grund = $abf_gid !== '' ? abfahrt_grund_text($abf_gid) : '';
 $r = ($status >= 200 && $status < 300) ? $abf_a['rumpf'] : false;
@@ -203,7 +247,13 @@ if ($r !== false) {
     abfahrt_log('FEHLER beim Aufruf des Audio-Servers: ' . ($grund !== '' ? $grund : 'unbekannt'));
     echo 'FEHLER beim Aufruf des Audio-Servers'
        . ($grund !== '' ? ': ' . $grund : '.') . "\n";
+    /* Nur Schema, Rechner und Port: bis 1.6.21 stand hier die ganze Adresse
+     * samt Ansagetext und allem, was eine eigene Vorlage traegt (Pruefung
+     * 02.10.2026, Nr. 13). */
     if (abfahrt_schalter('debug')) {
-        echo "URL: $url\n";
+        $abf_u = @parse_url($url);
+        echo 'URL: ' . ((is_array($abf_u) && isset($abf_u['scheme'], $abf_u['host']))
+            ? $abf_u['scheme'] . '://' . $abf_u['host'] . (isset($abf_u['port']) ? ':' . (int) $abf_u['port'] : '')
+            : '-') . "\n";
     }
 }

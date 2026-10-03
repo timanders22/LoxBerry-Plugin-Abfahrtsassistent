@@ -23,6 +23,9 @@
  *   abfahrt_dienst.php jetzt        Takt umgehen
  *   abfahrt_dienst.php zeile        Statuszeile ausgeben, ohne zu rechnen
  *   abfahrt_dienst.php --selbsttest Einrichtung pruefen, ohne Netz
+ *   abfahrt_dienst.php --mqtt-leeren zurueckbehaltene MQTT-Themen leeren
+ *                                   (aus der Deinstallation)
+ * Jeder andere Aufruf endet mit einer Zeile auf stderr und Rueckgabe 2.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -87,6 +90,11 @@ if ($abf_lib === '') {
     exit(1);
 }
 require_once $abf_lib;
+
+/* Was dieser Prozess anlegt, gehoert nur seinem Konto (Pruefung 02.10.2026,
+ * Nr. 23): Kalenderkopien, Stand und Titel tragen private Angaben. Hier ein
+ * eigener Prozess - in der Bibliothek nicht, dort liefe es im Webserver. */
+umask(0077);
 
 
 /**
@@ -296,6 +304,17 @@ function abfahrt_dienst_lebenszeichen(array $abfcfg, $ziel)
 
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
 
+/* Nur bekannte Aufrufe. Bis 1.6.21 lief jeder unbekannte (ein Tippfehler wie
+ * "--mqtt-leren", ein "--help") als voller Rechen- und Sendelauf und endete
+ * mit 0 (Pruefung 02.10.2026, Nr. 26). Der Cron ruft ohne Argument -
+ * "cron=01min" bekommt das Cron-Skript, nicht dieser Dienst. */
+if (!in_array($modus, array('takt', 'jetzt', 'zeile', '--selbsttest', '--mqtt-leeren'), true)) {
+    fwrite(STDERR, 'Abfahrts-Assistent: unbekannter Aufruf "'
+        . substr(preg_replace('/[^\x20-\x7E]/', '?', $modus), 0, 40)
+        . '" - erlaubt: ohne Argument, jetzt, zeile, --selbsttest, --mqtt-leeren.' . "\n");
+    exit(2);
+}
+
 /* Aus der Deinstallation (uninstall/uninstall): die zurueckbehaltenen
  * MQTT-Themen der Linie leeren (abfahrt_mqtt_leeren()). Keine Rechnung, keine
  * Sperre, keine Datei. */
@@ -322,10 +341,13 @@ if ($modus === 'zeile') {
 abfahrt_keine_wurzel_abbruch('abfahrt_dienst.php');
 
 /* Nur ein Lauf gleichzeitig - sonst fragen zwei Laeufe denselben
-   Kartendienst und verbrauchen zwei Kontingente fuer eine Antwort. */
-$sperre = abfahrt_tmpdir() . '/dienst.lock';
-$fh = @fopen($sperre, 'c');
-if ($fh === false) {
+   Kartendienst und verbrauchen zwei Kontingente fuer eine Antwort. Seit
+   1.6.22 in der Bibliothek (abfahrt_sperre()), damit termin.php?debug=1
+   dieselbe Sperre nimmt (Pruefung 02.10.2026, Nr. 21). */
+$sperre = abfahrt_sperrdatei();
+$abf_sg = '';
+$fh = abfahrt_sperre($abf_sg);
+if ($fh === false && $abf_sg === 'oeffnen') {
     /* Nicht lautlos. Eintrittsweg: ein Handstart als root hinterlaesst die
      * Sperrdatei als root:root, und jeder weitere Cron-Lauf als loxberry
      * scheiterte hier mit Rueckgabewert 1 - ohne eine Zeile, obwohl der Cron
@@ -338,13 +360,13 @@ if ($fh === false) {
     abfahrt_log($abf_msg);
     exit(1);
 }
-if (!flock($fh, LOCK_EX | LOCK_NB)) {
+if ($fh === false) {
     /* Belegt: ein anderer Lauf rechnet noch. Bis 1.6.13 endete jeder weitere
      * Lauf hier ohne eine Zeile - hing ein Lauf, rechnete keiner mehr, und im
      * Protokoll stand nichts (in WSL gemessen, Pruefung-Abfahrtsassistent-1.6.14,
      * Faelle S3-S5). Die Sperrdatei traegt Startzeit und PID des Halters
-     * (gleich unten). Laeuft er nachweislich laenger als 10 Minuten: eine Zeile
-     * je Stunde ins Protokoll und nach stderr. Beendet wird er nicht. Ein
+     * (abfahrt_sperre()). Laeuft er nachweislich laenger als 10 Minuten: eine
+     * Zeile je Stunde ins Protokoll und nach stderr. Beendet wird er nicht. Ein
      * Inhalt, der nicht genau "<Unixzeit> <PID>" ist, bleibt still - mit ihm
      * wird nicht gerechnet (Fall S6). */
     $abf_halter = trim((string) @file_get_contents($sperre));
@@ -356,19 +378,33 @@ if (!flock($fh, LOCK_EX | LOCK_NB)) {
         if (abfahrt_log_gedrosselt('dienst_sperre_lang', $abf_msg, 3600)) {
             fwrite(STDERR, $abf_msg . "\n");
         }
+    } elseif ($modus === 'jetzt') {
+        /* Von Hand gerufen: nicht lautlos (Nr. 26). Rueckgabe 0 - der
+         * laufende Lauf rechnet ja. */
+        fwrite(STDERR, 'Abfahrts-Assistent: ein anderer Lauf rechnet gerade - "jetzt" wurde nicht'
+            . ' ausgefuehrt; sein Ergebnis steht gleich im Stand.' . "\n");
     }
     exit(0);
 }
-/* Startzeit und PID des Halters - fuer einen Lauf, der die Sperre belegt findet. */
-@ftruncate($fh, 0);
-@fwrite($fh, time() . ' ' . getmypid() . "\n");
-@fflush($fh);
 
 /* Konfiguration pruefen und, wo noetig, heilen - einmal, gemeldet
  * (abfahrt_config_heilen() in der Bibliothek). Hier und in der Oberflaeche,
  * nie im unangemeldeten Endpunkt. Danach neu lesen. */
 abfahrt_config_heilen();
 $abfcfg = abfahrt_config();
+$abf_lage = abfahrt_config_lage();
+if ($abf_lage['zustand'] === 'unlesbar') {
+    /* Nr. 5: mit den Vorgaben statt der Einstellungen zu rechnen, hiesse
+     * FEHLER=1 "kein Kalender" an Loxone - falsch. Nicht rechnen, nicht
+     * senden; der Stand altert, und Loxone sieht FEHLER=9. Gemeldet hat
+     * abfahrt_config_heilen(); nach stderr einmal je Stunde. */
+    if (abfahrt_log_gedrosselt('dienst_cfg_unlesbar', 'Dienst: Konfiguration nicht lesbar - es wird nicht gerechnet.', 3600)) {
+        fwrite(STDERR, 'Abfahrts-Assistent: ' . abfahrt_paths()['config'] . ' ist nicht lesbar ('
+            . abfahrt_datei_rechte(abfahrt_paths()['config']) . '). Der Dienst rechnet nicht.' . "\n");
+    }
+    abfahrt_sperre_frei($fh);
+    exit(1);
+}
 
 /* Das Lebenszeichen geht bei JEDEM Lauf hinaus, auch wenn gleich nicht
  * gerechnet wird (Hausstandard, Regeln/07) - seit 1.6.16 aber erst am Ende
@@ -389,19 +425,28 @@ abfahrt_abo_datei($abfcfg['mqtt_topic'], true);
  * stimmt. Sonst alle fuenf Minuten.
  */
 $stand = abfahrt_stand();
-$alter = $stand['zeit'] > 0 ? time() - (int) $stand['zeit'] : 999999;
 /* C4: der Takt kommt aus abfahrt_rechentakt() - derselben Stelle, an der
- * die Altersgrenze von OK haengt (5 s Luft zum Minutentakt wie bisher:
- * 55 bzw. 295 s). */
-$faellig = ($modus === 'jetzt') || $alter >= abfahrt_rechentakt($stand) - 5;
+ * die Altersgrenze von OK haengt.
+ *
+ * Gezaehlt werden ganze Cron-Minuten, nicht Sekunden. Bis 1.6.21 stand hier
+ * "Alter >= Takt - 5 s"; 'zeit' wird aber am ENDE der Rechnung gesetzt, nach
+ * bis zu 3 s Streuung und der Antwortzeit von Kalender und Kartendienst.
+ * Endete ein Lauf mehr als gut 5 s nach Minutenbeginn, war der Stand im
+ * naechsten Cron-Lauf erst ~54 s alt, es wurde nicht gerechnet, und
+ * ABFAHRT_IN sprang um 2 (Pruefung 02.10.2026, Nr. 6). 'zeit' bleibt der
+ * Zeitpunkt der Rechnung, damit ALTER und die Altersgrenze von OK weiter das
+ * Alter der Werte messen. Ein Stand ohne Zeit oder aus der Zukunft (Uhr
+ * zurueckgesprungen, Nr. 18) ist immer faellig. */
+$abf_zeit = (int) $stand['zeit'];
+$faellig = ($modus === 'jetzt') || $abf_zeit <= 0 || $abf_zeit > time()
+        || intdiv(time(), 60) - intdiv($abf_zeit, 60) >= intdiv(abfahrt_rechentakt($stand), 60);
 
 if (!$faellig) {
     /* M2: auch ohne Rechnung die Werte aus dem Stand bilden und Aenderungen
      * senden (ohne Netz); danach das Lebenszeichen. */
     abfahrt_dienst_mqtt($stand, $abfcfg);
     abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
-    flock($fh, LOCK_UN);
-    fclose($fh);
+    abfahrt_sperre_frei($fh);
     exit(0);
 }
 
@@ -427,9 +472,10 @@ $abf_sig = 'OK=' . (int) $st['ok'] . ';FEHLER=' . (int) $st['fehler'];
 $abf_sigdatei = abfahrt_tmpdir() . '/dienst_letzte.txt';
 $abf_vorher = is_file($abf_sigdatei) ? trim((string) @file_get_contents($abf_sigdatei)) : '';
 if ($abf_sig !== $abf_vorher) {
+    /* Ohne den Terminnamen: seit 1.6.21 steht der Ansagetext nicht mehr im
+     * Protokoll, der Titel stand hier aber weiter (Pruefung 02.10.2026, Nr. 12a). */
     abfahrt_log('Dienst: ' . $abf_sig
-              . ($st['grund'] !== '' ? ' - ' . $st['grund'] : '')
-              . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : ''));
+              . ($st['grund'] !== '' ? ' - ' . $st['grund'] : ''));
     foreach ($diag as $abf_d) { abfahrt_log('   ' . $abf_d); }
     @file_put_contents($abf_sigdatei, $abf_sig);
 }
@@ -438,8 +484,7 @@ if ($abf_sig !== $abf_vorher) {
 abfahrt_dienst_mqtt($st, $abfcfg);
 abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
 
-flock($fh, LOCK_UN);
-fclose($fh);
+abfahrt_sperre_frei($fh);
 
 /* RUECKGABEWERT 0 HEISST "DER LAUF IST DURCHGEKOMMEN", nicht "es gibt einen
  * Termin".

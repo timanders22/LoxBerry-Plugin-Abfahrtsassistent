@@ -198,7 +198,37 @@ function abf_eingaben_sammeln($formular) {
             $werte[$f] = $w;
         }
     }
-    return array('formular' => $formular, 'werte' => $werte, 'falsch' => abf_bean());
+    $erneut = abf_geheim_erneut();     // vor abf_bean(): markiert mit
+    return array('formular' => $formular, 'werte' => $werte, 'falsch' => abf_bean(), 'erneut' => $erneut);
+}
+/* Geheime Felder, in die bei einer Beanstandung etwas eingetippt war. Ihr Wert
+ * reist nie mit; bis 1.6.21 ging er still verloren - der Name eines neuen
+ * Kalenders stand wieder da, die Adresse nicht, und das naechste Speichern
+ * legte einen Kalender ohne Adresse an (Pruefung 02.10.2026, Nr. 27e). Jetzt
+ * wird jedes solche Feld markiert und traegt "bitte erneut eintragen". */
+function abf_geheim_erneut()
+{
+    $liste = array();
+    $urls = isset($_POST['cal_url']) && is_array($_POST['cal_url']) ? $_POST['cal_url'] : array();
+    foreach ($urls as $k => $v) {
+        if (preg_match('/^\d{1,2}\z/', (string) $k) && (int) $k < 10 && is_string($v) && trim($v) !== '') {
+            $liste[] = 'cal_url[' . (int) $k . ']';
+        }
+    }
+    foreach (array('api_key', 'tts_alexa_token', 'tts_google_token') as $f) {
+        if (isset($_POST[$f]) && is_string($_POST[$f]) && trim($_POST[$f]) !== '') { $liste[] = $f; }
+    }
+    foreach ($liste as $n) {
+        if (preg_match('/^([a-z_]+)\[(\d+)\]\z/', $n, $m)) { abf_bean($m[1], (int) $m[2]); } else { abf_bean($n); }
+    }
+    return $liste;
+}
+/* Ist dieses geheime Feld nach der Beanstandung neu einzutragen? */
+function abf_erneut($feld, $idx = null)
+{
+    $e = abf_eingaben();
+    $n = (string) $feld . ($idx !== null ? '[' . (int) $idx . ']' : '');
+    return $e !== null && isset($e['erneut']) && in_array($n, $e['erneut'], true);
 }
 /* Beim GET: die Eingaben aus der Einmalmeldung pruefen (Form, Felder der
  * Liste, nichts anderes) und fuer die Seite ablegen. */
@@ -223,7 +253,13 @@ function abf_eingaben($setzen = null) {
             foreach ($setzen['falsch'] as $n) {
                 if (is_string($n) && preg_match('/^[a-z_]+(\[\d{1,2}\])?\z/', $n)) { $falsch[] = $n; }
             }
-            if ($erlaubt) { $e = array('formular' => $setzen['formular'], 'werte' => $werte, 'falsch' => $falsch); }
+            $erneut = array();
+            if (isset($setzen['erneut']) && is_array($setzen['erneut'])) {
+                foreach ($setzen['erneut'] as $n) {
+                    if (is_string($n) && preg_match('/^(cal_url\[\d\]|api_key|tts_alexa_token|tts_google_token)\z/', $n)) { $erneut[] = $n; }
+                }
+            }
+            if ($erlaubt) { $e = array('formular' => $setzen['formular'], 'werte' => $werte, 'falsch' => $falsch, 'erneut' => $erneut); }
         }
     }
     return $e;
@@ -262,18 +298,140 @@ function abf_m($feld, $idx = null) {
  *
  * htmlauth schuetzt gegen den unangemeldeten Aufruf - nicht dagegen, dass der
  * Browser eines angemeldeten Bedieners ein Formular abschickt, das auf einer
- * fremden Seite steht. Das Merkmal wird aus dem Aktionstoken ABGELEITET und
- * nicht gespeichert; eine fremde Seite kann den Wert nicht lesen. */
+ * fremden Seite steht.
+ *
+ * Bis 1.6.21 war das Merkmal ein HMAC ueber das Merkwort - fest, ohne Ablauf,
+ * und das Merkwort steht im Loxone-Projekt, in jeder Sicherung, in jeder
+ * termin_say.php?token=...-Adresse und in den Zugriffsprotokollen. Wer es
+ * kannte, konnte das Merkmal ausrechnen, und weil der Browser die
+ * Basic-Anmeldung auch bei seitenfremden Formularen mitschickt, konnte eine
+ * fremde Seite speichern, zurueckspielen und das Merkwort neu wuerfeln
+ * (Pruefung 02.10.2026, Nr. 4). Jetzt gilt ein eigenes Zufallsgeheimnis
+ * (32 Byte) unter data/plugins/<ordner>/formgeheimnis, Rechte 0600 - nicht
+ * in abfahrt.json, also weder in "Einstellungen sichern" noch in der
+ * Zweitschrift. Ein Update raeumt data/ und damit das Geheimnis; ein danach
+ * abgeschicktes, noch offenes Formular wird einmal abgewiesen. Laesst es sich
+ * weder lesen noch anlegen, wird JEDES Formular abgewiesen (fail closed).
+ * Dazu: steht Origin oder Referer im Aufruf, muss der Rechner zur Seite
+ * passen. */
+function abf_formgeheimnis()
+{
+    static $g = null;
+    if ($g !== null) { return $g; }
+    $p = abfahrt_paths();
+    $datei = rtrim($p['data'], '/') . '/formgeheimnis';
+    $lesen = function () use ($datei) {
+        clearstatcache(true, $datei);
+        if (!is_file($datei)) { return ''; }
+        $w = trim((string) @file_get_contents($datei));
+        if (!preg_match('/^[0-9a-f]{64}\z/', $w)) { return ''; }
+        if ((@fileperms($datei) & 0077) !== 0) { @chmod($datei, 0600); }
+        return $w;
+    };
+    $w = $lesen();
+    if ($w === '' && function_exists('random_bytes')) {
+        try { $neu = bin2hex(random_bytes(32)); } catch (Exception $ex) { $neu = ''; }
+        if ($neu !== '') {
+            /* Unteilbar und ohne Ueberschreiben: Nebendatei mit 0600, dann
+             * link() - das scheitert, wenn ein zweiter Aufruf schneller war,
+             * und es gilt dessen Geheimnis. Nur eine unbrauchbare Datei wird
+             * ersetzt. */
+            $verz = dirname($datei);
+            if (!is_dir($verz)) { @mkdir($verz, 0775, true); }
+            $neben = $datei . '.' . getmypid() . '.neu';
+            if (@file_put_contents($neben, '') !== false) {
+                @chmod($neben, 0600);
+                if (@file_put_contents($neben, $neu) === strlen($neu)) {
+                    if (!is_file($datei)) { @link($neben, $datei); }
+                    $w = $lesen();
+                    if ($w === '') {
+                        @rename($neben, $datei);
+                        $w = $lesen();
+                    }
+                }
+                if (is_file($neben)) { @unlink($neben); }
+            }
+        }
+    }
+    $g = $w;
+    return $g;
+}
+/* Der Parameter bleibt fuer die Aufrufer im HTML; das Merkwort geht nicht mehr ein. */
 function abf_formtoken(array $cfg)
 {
-    return hash_hmac('sha256', 'formular-v1', (string) $cfg['aktionstoken']);
+    $geheim = abf_formgeheimnis();
+    if ($geheim === '') { return ''; }
+    return hash_hmac('sha256', 'abfahrt-formular-v2', $geheim);
+}
+/* Rechner und, falls genannt, Port aus Origin/Referer bzw. Host. */
+function abf_rechner_teile($wert, $mit_schema)
+{
+    $wert = trim((string) $wert);
+    if ($mit_schema) {
+        $u = @parse_url($wert);
+        if (!is_array($u) || !isset($u['host'])) { return null; }
+        return array(strtolower($u['host']), isset($u['port']) ? (int) $u['port'] : 0);
+    }
+    if (!preg_match('/^(\[[0-9a-fA-F:.]+\]|[^:\[\]]+)(?::(\d{1,5}))?\z/', $wert, $m)) { return null; }
+    return array(strtolower($m[1]), isset($m[2]) ? (int) $m[2] : 0);
+}
+/* Steht Origin (sonst Referer) im Aufruf, muss der Rechner zu Host passen -
+ * oder zu X-Forwarded-Host hinter einem Vorschaltrechner; den Kopf kann ein
+ * seitenfremdes Formular nicht setzen. Ports zaehlen nur, wenn beide Seiten
+ * einen nennen (ein TLS-Vorschaltrechner aendert sie). Fehlen beide Koepfe,
+ * entscheidet das Merkmal allein. */
+function abf_herkunft_ok()
+{
+    $quelle = '';
+    if (isset($_SERVER['HTTP_ORIGIN']) && (string) $_SERVER['HTTP_ORIGIN'] !== '') {
+        $quelle = (string) $_SERVER['HTTP_ORIGIN'];
+    } elseif (isset($_SERVER['HTTP_REFERER']) && (string) $_SERVER['HTTP_REFERER'] !== '') {
+        $quelle = (string) $_SERVER['HTTP_REFERER'];
+    }
+    if ($quelle === '') { return true; }
+    $von = abf_rechner_teile($quelle, true);     // auch "null" landet hier und wird abgewiesen
+    if ($von === null) { return false; }
+    $ziele = array();
+    if (isset($_SERVER['HTTP_HOST'])) { $ziele[] = (string) $_SERVER['HTTP_HOST']; }
+    if (isset($_SERVER['HTTP_X_FORWARDED_HOST'])) {
+        $ziele[] = trim(explode(',', (string) $_SERVER['HTTP_X_FORWARDED_HOST'])[0]);
+    }
+    foreach ($ziele as $ziel) {
+        $an = abf_rechner_teile($ziel, false);
+        if ($an === null || $an[0] !== $von[0]) { continue; }
+        if ($an[1] > 0 && $von[1] > 0 && $an[1] !== $von[1]) { continue; }
+        return true;
+    }
+    return false;
 }
 function abf_formtoken_ok(array $cfg)
 {
     $soll = abf_formtoken($cfg);
     $ist = (isset($_POST['formtoken']) && is_string($_POST['formtoken'])) ? $_POST['formtoken'] : '';
-    if ($ist === '' || (string) $cfg['aktionstoken'] === '') { return false; }
-    return hash_equals($soll, $ist);
+    if ($ist === '' || $soll === '') { return false; }
+    return hash_equals($soll, $ist) && abf_herkunft_ok();
+}
+/* Warum der Wachposten abwies - fuer die Meldung. */
+function abf_formtoken_grund()
+{
+    if (abf_post_zu_gross()) { return abf_upload_grenze_text(); }
+    if (abf_formgeheimnis() === '') { return abfahrt_t('MELDUNG.FORMGEHEIMNIS_FEHLT'); }
+    if (!abf_herkunft_ok()) { return abfahrt_t('MELDUNG.FORM_FREMD'); }
+    return abfahrt_t('MELDUNG.FORMTOKEN');
+}
+/* Ueberschreitet ein Absenden post_max_size, verwirft PHP $_POST UND $_FILES
+ * ganz. Bis 1.6.21 hiess das "Einmalmerkmal fehlte" (Pruefung 02.10.2026,
+ * Nr. 27f). */
+function abf_post_zu_gross()
+{
+    return isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST'
+        && isset($_SERVER['CONTENT_LENGTH']) && (int) $_SERVER['CONTENT_LENGTH'] > 0
+        && empty($_POST) && empty($_FILES);
+}
+function abf_upload_grenze_text()
+{
+    return sprintf(abfahrt_t('TEXT.SICH_UPLOAD_GRENZE'), (string) ini_get('post_max_size'),
+                   (string) ini_get('upload_max_filesize'));
 }
 
 /* Drei Stellen gehoeren immer zusammen: Reiterleiste, Bereich (sm-seite mit
@@ -310,7 +468,7 @@ $abf_heilmeldungen = abfahrt_config_heilen();
 list($abf_roh, $abf_rohzustand) = abfahrt_config_roh();
 $abf_hat_token = is_array($abf_roh) && array_key_exists('aktionstoken', $abf_roh)
                  && is_string($abf_roh['aktionstoken']) && $abf_roh['aktionstoken'] !== '';
-if (!$abf_hat_token && $abf_rohzustand !== 'kaputt') {
+if (!$abf_hat_token && $abf_rohzustand !== 'kaputt' && $abf_rohzustand !== 'unlesbar') {
     $abf_neu = abfahrt_config();
     $abf_neu['aktionstoken'] = abfahrt_token_erzeugen();
     if (abfahrt_config_speichern($abf_neu)) {
@@ -325,7 +483,7 @@ if ($abf_post && !abf_formtoken_ok($abfcfg)) {
      * Umleitung einmal nicht beendete. Die Zuweisung ist ausserdem die Form,
      * an der wachposten_pruefen.py die Wache erkennt. */
     $abf_post = false;
-    abf_umleiten($data_dir, $active_tab, array('fehler' => abfahrt_t('MELDUNG.FORMTOKEN')));
+    abf_umleiten($data_dir, $active_tab, array('fehler' => abf_formtoken_grund()));
 }
 
 // ---------- Loxone-Vorlage herunterladen (Download: keine Umleitung) ----------
@@ -773,7 +931,9 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
      * Knopf ("Neu einlesen", "Audio-Server suchen") laeuft dann nicht. */
     if ($abf_hw) {
         array_unshift($abf_hw, abfahrt_t('MELDUNG.EINGABEN_ZURUECK'));
-        abf_umleiten($data_dir, 'tab-settings', array('hinweise' => $abf_hw, 'eingaben' => abf_eingaben_sammeln('settings')));
+        $abf_ein = abf_eingaben_sammeln('settings');
+        if ($abf_ein['erneut']) { $abf_hw[] = abfahrt_t('MELDUNG.GEHEIM_ERNEUT'); }     // Nr. 27e
+        abf_umleiten($data_dir, 'tab-settings', array('hinweise' => $abf_hw, 'eingaben' => $abf_ein));
     }
     if (!abfahrt_config_speichern($abfneu)) {
         abf_umleiten($data_dir, 'tab-settings', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file), 'hinweise' => $abf_hw));
@@ -816,7 +976,12 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
 if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
     $abf_hw = array();
     $abf_erg = array();
-    if (!isset($_FILES['abfahrt_sicherung']) || !is_array($_FILES['abfahrt_sicherung'])
+    /* Nr. 27f: ueber upload_max_filesize (oder MAX_FILE_SIZE) kommt keine
+     * Datei an - bis 1.6.21 hiess das "keine Datei ausgewaehlt". */
+    $abf_ufehler = isset($_FILES['abfahrt_sicherung']['error']) ? (int) $_FILES['abfahrt_sicherung']['error'] : 0;
+    if ($abf_ufehler === UPLOAD_ERR_INI_SIZE || $abf_ufehler === UPLOAD_ERR_FORM_SIZE) {
+        $abf_hw[] = abf_upload_grenze_text();
+    } elseif (!isset($_FILES['abfahrt_sicherung']) || !is_array($_FILES['abfahrt_sicherung'])
         || !isset($_FILES['abfahrt_sicherung']['tmp_name'])
         || !is_string($_FILES['abfahrt_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['abfahrt_sicherung']['tmp_name'])) {
@@ -824,8 +989,12 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
     } elseif ((int) $_FILES['abfahrt_sicherung']['size'] > 65536) {
         $abf_hw[] = abfahrt_t('TEXT.SICH_ZU_GROSS');
     } else {
-        list($abfahrt_neu, $abfahrt_mangel, $abfahrt_n) = abfahrt_sicherung_lesen(
-            (string) @file_get_contents($_FILES['abfahrt_sicherung']['tmp_name']));
+        /* Nr. 27f: Eine mit UTF-8-BOM gespeicherte Sicherung (Windows-Editor)
+         * scheiterte bis 1.6.21 an json_decode(). */
+        $abf_roh = (string) @file_get_contents($_FILES['abfahrt_sicherung']['tmp_name']);
+        if (substr($abf_roh, 0, 3) === "\xEF\xBB\xBF") { $abf_roh = (string) substr($abf_roh, 3); }
+        $abf_vorher = abfahrt_config();     // Nr. 27d: Praefix und Schalter VOR dem Zurueckspielen
+        list($abfahrt_neu, $abfahrt_mangel, $abfahrt_n) = abfahrt_sicherung_lesen($abf_roh);
         if ($abfahrt_neu === null) {
             // ALLE Beanstandungen, nicht nur die erste - und geaendert wird nichts.
             $abf_hw[] = abfahrt_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $abfahrt_mangel);
@@ -850,6 +1019,15 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
             $abf_hw[] = sprintf(abfahrt_t('MELDUNG.DIENST_NACHGEZOGEN'), $abf_weg);
             // M5: das Praefix kann mit der Sicherung gewechselt haben.
             $abf_nach = abfahrt_config();
+            /* Nr. 27d (Pruefung 02.10.2026): wie beim MQTT-Formular (M1) unter
+             * dem BISHERIGEN Praefix raeumen, wenn die Sicherung es wechselt
+             * oder MQTT abschaltet. Bis 1.6.21 blieb dort alles stehen. */
+            $abf_wechsel = ((string) $abf_nach['mqtt_topic'] !== (string) $abf_vorher['mqtt_topic']);
+            $abf_aus = (!empty($abf_vorher['mqtt_ein']) && empty($abf_nach['mqtt_ein']));
+            if ($abf_wechsel || $abf_aus) {
+                $abf_r = abfahrt_mqtt_praefix_raeumen((string) $abf_vorher['mqtt_topic'], $abf_aus ? 'aus' : 'wechsel');
+                if ($abf_r !== '') { $abf_hw[] = $abf_r; }
+            }
             abfahrt_abo_datei($abf_nach['mqtt_topic'], true);
         } else {
             $abf_hw[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
@@ -881,6 +1059,11 @@ $abf_kaldiag   = isset($abf_flash['kaldiag']) && is_array($abf_flash['kaldiag'])
 $abf_gtest     = isset($abf_flash['google_test']) && is_array($abf_flash['google_test']) ? $abf_flash['google_test'] : null;     // Ansage-3
 abf_eingaben(isset($abf_flash['eingaben']) ? $abf_flash['eingaben'] : array());     // X-2
 foreach ($abf_heilmeldungen as $abf_m) { $abf_hinweise[] = $abf_m; }
+/* Nr. 4: ohne Formulargeheimnis wird jedes Absenden abgewiesen - das steht
+ * schon vor dem ersten Versuch da, nicht erst als Antwort darauf. */
+if (abf_formgeheimnis() === '' && $save_error !== abfahrt_t('MELDUNG.FORMGEHEIMNIS_FEHLT')) {
+    $abf_hinweise[] = abfahrt_t('MELDUNG.FORMGEHEIMNIS_FEHLT');
+}
 
 $abfcfg = abfahrt_config();
 $abf_kal_echt = count($abfcfg['calendars']);     // U1: so viele Zeilen tragen einen Kalender
@@ -1107,7 +1290,7 @@ for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
     $abf_kal_da = ($i < $abf_kal_echt && trim((string) $cal['url']) !== ''); ?>
 <div class="sm-cal">
     <input data-role="none" type="text" name="cal_name[]" value="<?= e(abf_w('cal_name', $cal['name'], $i)) ?>"<?= abf_m('cal_name', $i) ?> placeholder="<?= e(abfahrt_t('SEITE.P_KAL_NAME')) ?>">
-    <input data-role="none" type="text" name="cal_url[]" value="" autocomplete="off"<?= abf_m('cal_url', $i) ?> placeholder="<?= e($abf_kal_da ? abfahrt_t('SEITE.P_KAL_BEHALTEN') : 'https://calendar.google.com/calendar/ical/.../basic.ics') ?>">
+    <input data-role="none" type="text" name="cal_url[]" value="" autocomplete="off"<?= abf_m('cal_url', $i) ?> placeholder="<?= e(abf_erneut('cal_url', $i) ? abfahrt_t('SEITE.P_ERNEUT') : ($abf_kal_da ? abfahrt_t('SEITE.P_KAL_BEHALTEN') : 'https://calendar.google.com/calendar/ical/.../basic.ics')) ?>">
     <button data-role="none" class="sm-rfbtn" type="submit" name="refresh" value="<?= $i ?>" formnovalidate title="<?= e(abfahrt_t('SEITE.T_NEU_EINLESEN')) ?>"><?= e(abfahrt_t('SEITE.K_NEU_EINLESEN')) ?></button>
     <input data-role="none" type="hidden" name="cal_idx[]" value="<?= $i < $abf_kal_echt ? $i : '' ?>">
 </div>
@@ -1136,7 +1319,7 @@ for ($i = 0; $i < 10; $i++) { $cal = $abfcfg['calendars'][$i];
         <label><?= e(abfahrt_t('SEITE.L_API_KEY')) ?></label>
 <?php /* U1: nie mit Wert in der Seite; leer abgeschickt heisst behalten. */
 $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
-        <input data-role="none" type="password" name="api_key" value="" autocomplete="new-password"<?= abf_m('api_key') ?> placeholder="<?= e($abf_key_laenge > 0 ? sprintf(abfahrt_t('SEITE.P_API_KEY_HINTERLEGT'), $abf_key_laenge) : abfahrt_t('SEITE.P_API_KEY')) ?>">
+        <input data-role="none" type="password" name="api_key" value="" autocomplete="new-password"<?= abf_m('api_key') ?> placeholder="<?= e(abf_erneut('api_key') ? abfahrt_t('SEITE.P_ERNEUT') : ($abf_key_laenge > 0 ? sprintf(abfahrt_t('SEITE.P_API_KEY_HINTERLEGT'), $abf_key_laenge) : abfahrt_t('SEITE.P_API_KEY'))) ?>">
 <?php if ($abf_key_laenge > 0) { ?>
         <div class="sm-small"><?= e(sprintf(abfahrt_t('SEITE.KEY_HINTERLEGT'), $abf_key_laenge)) ?>
             <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0 14px;font-weight:normal;"><input data-role="none" type="checkbox" name="api_key_loeschen" value="1"<?= abf_h('api_key_loeschen', false) ? ' checked' : '' ?><?= abf_m('api_key_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_KEY_LOESCHEN')) ?></label></div>
@@ -1253,7 +1436,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
         <input data-role="none" type="text" name="tts_lang" value="<?= e(abf_w('tts_lang', $abfcfg['tts']['lang'])) ?>"<?= abf_m('tts_lang') ?> maxlength="2">
     </div>
 </div>
-<div id="tts_template_row">
+<div id="tts_template_row" class="abf-ttszeile">
     <label><?= e(abfahrt_t('SEITE.L_VORLAGE_URL')) ?></label>
     <textarea data-role="none" name="tts_template" id="tts_template"<?= abf_m('tts_template') ?> rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= e(abf_w('tts_template', $abfcfg['tts']['template'])) ?></textarea>
     <div class="sm-small"><?= abfahrt_t('SEITE.VORLAGE_URL_HINWEIS') ?></div>
@@ -1264,7 +1447,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <?php /* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Das Sprechtoken steht nie
          in der Seite - das Feld ist immer leer, der Platzhalter sagt, ob
          eines gespeichert ist und wie lang es ist. */ ?>
-<div id="tts_alexa_rows">
+<div id="tts_alexa_rows" class="abf-ttszeile">
 <div class="sm-alert sm-info"><?= abfahrt_t('SEITE.ALEXA_HINWEIS') ?></div>
 <div class="sm-row">
     <div>
@@ -1279,7 +1462,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
     </div>
 </div>
 <label for="tts_alexa_token"><?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN')) ?></label>
-<input data-role="none" type="password" id="tts_alexa_token" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?= e((string) $abfcfg['tts']['alexa_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_ALEXA_TOKEN_DA'), strlen((string) $abfcfg['tts']['alexa_token'])) : abfahrt_t('SEITE.P_ALEXA_TOKEN_LEER')) ?>"<?= abf_m('tts_alexa_token') ?>>
+<input data-role="none" type="password" id="tts_alexa_token" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?= e(abf_erneut('tts_alexa_token') ? abfahrt_t('SEITE.P_ERNEUT') : ((string) $abfcfg['tts']['alexa_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_ALEXA_TOKEN_DA'), strlen((string) $abfcfg['tts']['alexa_token'])) : abfahrt_t('SEITE.P_ALEXA_TOKEN_LEER'))) ?>"<?= abf_m('tts_alexa_token') ?>>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1" <?= abf_h('tts_alexa_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_alexa_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN_LOESCHEN')) ?>
 </label>
@@ -1288,7 +1471,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <?php /* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox
          NG). Das Sprechtoken steht nie in der Seite - das Feld ist immer
          leer, der Platzhalter sagt, ob eines gespeichert ist und wie lang. */ ?>
-<div id="tts_google_rows">
+<div id="tts_google_rows" class="abf-ttszeile">
 <div class="sm-alert sm-info"><?= abfahrt_t('SEITE.GOOGLE_HINWEIS') ?></div>
 <div class="sm-row">
     <div>
@@ -1303,7 +1486,7 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
     </div>
 </div>
 <label for="tts_google_token"><?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN')) ?></label>
-<input data-role="none" type="password" id="tts_google_token" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?= e((string) $abfcfg['tts']['google_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_GOOGLE_TOKEN_DA'), strlen((string) $abfcfg['tts']['google_token'])) : abfahrt_t('SEITE.P_GOOGLE_TOKEN_LEER')) ?>"<?= abf_m('tts_google_token') ?>>
+<input data-role="none" type="password" id="tts_google_token" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?= e(abf_erneut('tts_google_token') ? abfahrt_t('SEITE.P_ERNEUT') : ((string) $abfcfg['tts']['google_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_GOOGLE_TOKEN_DA'), strlen((string) $abfcfg['tts']['google_token'])) : abfahrt_t('SEITE.P_GOOGLE_TOKEN_LEER'))) ?>"<?= abf_m('tts_google_token') ?>>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="tts_google_token_loeschen" value="1" <?= abf_h('tts_google_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_google_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN_LOESCHEN')) ?>
 </label>
@@ -1658,7 +1841,7 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 
 <h3 class="sm-h3"><?= e(abfahrt_t('TEST.H_KALENDER')) ?></h3>
 <div class="sm-small"><?= abfahrt_t('TEST.KALENDER_TEXT') ?></div>
-<?php if (is_array($abf_kaldiag)) { ?>
+<?php if (is_array($abf_kaldiag)) {     /* Nr. 27c: bis 1.6.21 ohne den Grund ("nicht ladbar" allein) */ ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= e(abfahrt_t('TEST.T_KAL_NAME')) ?></th><th><?= e(abfahrt_t('TEST.T_KAL_QUELLE')) ?></th>
@@ -1668,7 +1851,7 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 <tr><td><?= e(($abf_kd['name'] ?? '') !== '' ? $abf_kd['name'] : '#' . (int) ($abf_kd['nr'] ?? 0)) ?></td>
     <td><span class="sm-mono"><?= e($abf_kd['gastgeber'] ?? '') ?></span></td>
     <td><?= !isset($abf_kd['alter']) ? '&mdash;' : ((int) round($abf_kd['alter'] / 60) . ' min') ?></td>
-    <td><?= ($abf_kd['grund'] ?? '') !== '' ? '<span class="sm-aus">' . e(abfahrt_t('TEST.KAL_NICHT_LADBAR')) . '</span>' : (int) ($abf_kd['vevents'] ?? 0) ?></td>
+    <td><?= ($abf_kd['grund'] ?? '') !== '' ? '<span class="sm-aus">' . e(abfahrt_t('TEST.KAL_NICHT_LADBAR')) . '</span>: ' . e($abf_kd['grund']) : (int) ($abf_kd['vevents'] ?? 0) ?></td>
     <td><?= (int) ($abf_kd['mit_ort'] ?? 0) ?></td>
     <td><?php if (!empty($abf_kd['naechste'][0])) {
             $abf_n1 = $abf_kd['naechste'][0];
@@ -1713,8 +1896,11 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="google_testansage" value="1"><?= e(abfahrt_t('TEST.K_GOOGLE_TEST')) ?></button>
 </form>
 <?php } ?>
+<?php /* Nr. 27b: der Text als JSON-Zeichenkette. Bis 1.6.21 in einfachen
+         Anfuehrungszeichen - ein Apostroph in der Uebersetzung zerbrach den
+         Handler, und das Merkwort wurde ohne Rueckfrage neu gewuerfelt. */ ?>
 <form action="index.php" method="post" style="margin:0;"
-      onsubmit="return confirm('<?= e(strip_tags(abfahrt_t('TEST.TOKEN_NEU_WARNUNG'))) ?>');">
+      onsubmit="return confirm(<?= e(json_encode(html_entity_decode(strip_tags(abfahrt_t('TEST.TOKEN_NEU_WARNUNG')), ENT_QUOTES, 'UTF-8'), JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE)) ?>);">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= e(abfahrt_t('TEST.K_TOKEN_NEU')) ?></button>
@@ -1754,7 +1940,11 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 function abfTtsMode() {
     var m = document.getElementById('tts_mode').value;
     document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
-    document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
+    /* Nr. 27a: ein beanstandetes Feld bleibt sichtbar, wie bei Alexa und
+     * Google - bis 1.6.21 stand "tts.template zeigt nicht ins Heimnetz" ueber
+     * einer ausgeblendeten Zeile. */
+    var tz = document.getElementById('tts_template_row');
+    tz.style.display = (m === 'ms4h' || m === 'custom' || tz.querySelector('.sm-beanstandet')) ? 'block' : 'none';
     var al = document.getElementById('tts_alexa_rows');
     if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
     var gl = document.getElementById('tts_google_rows');
@@ -1764,6 +1954,23 @@ function abfTtsMode() {
     if (m === 'musicserver' && !port.value) { port.value = 7091; }
 }
 abfTtsMode();
+/* Nr. 27a: Ein ungueltiges Feld in einer ausgeblendeten Zeile (etwa eine
+ * Lautstaerke 150 fuer Alexa-NG, danach Ausgabeart gewechselt) hielt das
+ * Absenden still an - "not focusable". Die Zeile wird jetzt eingeblendet und
+ * das Feld markiert, der Browser zeigt seinen Hinweis daran. disabled kommt
+ * nicht in Frage: ein deaktiviertes Feld wird nicht gesendet, und der
+ * Speichern-Zweig liest ein fehlendes Feld als leer - Geraet, Lautstaerke und
+ * Vorlage waeren geloescht. */
+document.getElementById('tts_mode').form.addEventListener('invalid', function (ereignis) {
+    var f = ereignis.target, z = f;
+    while (z && z !== this) {
+        if (z.classList && z.classList.contains('abf-ttszeile') && z.style.display === 'none') {
+            z.style.display = 'block';
+            f.classList.add('sm-beanstandet');
+        }
+        z = z.parentNode;
+    }
+}, true);
 (function () {
     var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {

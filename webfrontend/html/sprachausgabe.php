@@ -121,7 +121,7 @@ if (PHP_SAPI !== 'cli') {
 
 if (!defined('ANSAGE_FASSUNG')) {
 
-define('ANSAGE_FASSUNG', '1.0.2');
+define('ANSAGE_FASSUNG', '1.0.3');
 
 /** Hoechstlaenge eines Ansagetexts in Zeichen (Schnittstelle Alexa-NG/Chromecast: 1-1000). */
 define('ANSAGE_TEXT_MAX', 1000);
@@ -228,7 +228,8 @@ function ansage_geraet_ok($g)
 /**
  * Liegt ein Rechner im Heimnetz? Loopback, private IPv4-Bereiche, Namen ohne
  * Punkt oder mit den ueblichen Heimnetz-Endungen. Alles andere wird
- * abgewiesen: die Adresse traegt den Ansagetext.
+ * abgewiesen: die Adresse traegt den Ansagetext. IPv6-Adressen ([::1]) werden
+ * nicht zugelassen.
  */
 function ansage_heimnetz_host($h)
 {
@@ -236,6 +237,11 @@ function ansage_heimnetz_host($h)
     if ($h === '') { return false; }
     if ($h === 'localhost') { return true; }
     if (preg_match('/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\z/', $h, $m)) {
+        /* Bis 1.0.2 galt 10.8.8.8 mit fuehrender Null als privat; curl und der Resolver lesen
+         * die fuehrende Null oktal und rufen 8.8.8.8 (Pruefung 02.10.2026, Nr. 2 c). */
+        for ($i = 1; $i <= 4; $i++) {
+            if (!preg_match('/^(?:0|[1-9]\d{0,2})\z/', $m[$i])) { return false; }
+        }
         $o = array((int) $m[1], (int) $m[2], (int) $m[3], (int) $m[4]);
         foreach ($o as $x) { if ($x > 255) { return false; } }
         if ($o[0] === 10 || $o[0] === 127) { return true; }
@@ -244,13 +250,72 @@ function ansage_heimnetz_host($h)
         if ($o[0] === 169 && $o[1] === 254) { return true; }
         return false;
     }
+    /* Eine Zahl ist kein Name: 134744072, 0x8080808 oder 10.1 liest der Resolver
+     * als IPv4-Adresse. Bis 1.0.2 galten sie als "Name ohne Punkt" (Pruefung
+     * 02.10.2026, Nr. 2 b). */
+    if (preg_match('/^(?:\d+|0x[0-9a-f]*)(?:\.(?:\d+|0x[0-9a-f]*))*\z/', $h)) {
+        return false;
+    }
     if (preg_match('/^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\z/', $h)) {
         return true;    // ein Name ohne Punkt loest nur im Heimnetz auf
     }
-    if (preg_match('/^[a-z0-9](?:[a-z0-9.\-]{0,251}[a-z0-9])?\.(local|lan|home|fritz\.box|home\.arpa|internal|intranet)\z/', $h)) {
+    // .intern liess der Abfahrts-Assistent schon vor der gemeinsamen Fassung zu (seit 1.0.3 hier).
+    if (preg_match('/^[a-z0-9](?:[a-z0-9.\-]{0,251}[a-z0-9])?\.(local|lan|home|fritz\.box|home\.arpa|internal|intranet|intern)\z/', $h)) {
         return true;
     }
     return false;
+}
+
+/**
+ * Zonenliste: leer oder Zonen mit Komma getrennt, je Zone eine Zahl, wahlweise
+ * mit ~Lautstaerke ("2,4,6", "2~30, 4"). Leerzeichen um das Komma und leere
+ * Eintraege ("1,2,") fallen in ansage_tts_url() weg. Bis 1.0.2 galt auch
+ * "1 2" oder "~~" (Pruefung 02.10.2026, Nr. 14).
+ */
+function ansage_zonen_ok($z)
+{
+    return is_string($z) && preg_match('/^ *(?:\d+(?:~\d+)?)? *(?:, *(?:\d+(?:~\d+)?)? *)*\z/', $z) === 1;
+}
+
+/**
+ * Taugt eine Adressvorlage? Rueckgabe: '' oder TTS_VORLAGE_HTTP bzw.
+ * TTS_VORLAGE_HEIMNETZ. Zwischen :// und dem ersten / ? # stehen nur {ip} oder
+ * ein Rechner im Heimnetz, dahinter wahlweise :Zahl oder :{port}. Bis 1.0.2
+ * endete der Rechner am ersten Doppelpunkt: http://{ip}:80@example.com/ galt
+ * als {ip}, gerufen wurde example.com (Pruefung 02.10.2026, Nr. 2 a).
+ */
+function ansage_vorlage_grund($tpl)
+{
+    if (!is_string($tpl) || !preg_match('#^https?://([^/?\#]*)#i', $tpl, $m) || $m[1] === '') {
+        return 'TTS_VORLAGE_HTTP';
+    }
+    if (!preg_match('/^(\{ip\}|[A-Za-z0-9.\-]+)(?::(?:\d{1,5}|\{port\}))?\z/', $m[1], $mh)) {
+        return 'TTS_VORLAGE_HEIMNETZ';
+    }
+    if ($mh[1] !== '{ip}' && !ansage_heimnetz_host($mh[1])) {
+        return 'TTS_VORLAGE_HEIMNETZ';
+    }
+    return '';
+}
+
+/**
+ * Die fertige Adresse unmittelbar vor dem Senden: http oder https, ohne
+ * Zugangsdaten, Rechner im Heimnetz - nach dem Wortlaut UND nach parse_url(),
+ * damit beide dasselbe Ziel sehen (Pruefung 02.10.2026, Nr. 2).
+ */
+function ansage_url_heimnetz($url)
+{
+    if (!is_string($url) || !preg_match('#^https?://([^/?\#]*)#i', $url, $m)
+        || !preg_match('/^([A-Za-z0-9.\-]+)(?::\d{1,5})?\z/', $m[1], $mh)
+        || !ansage_heimnetz_host($mh[1])) {
+        return false;
+    }
+    $p = @parse_url($url);
+    if (!is_array($p) || isset($p['user']) || isset($p['pass']) || !isset($p['scheme'], $p['host'])
+        || !in_array(strtolower($p['scheme']), array('http', 'https'), true)) {
+        return false;
+    }
+    return strtolower($p['host']) === strtolower($mh[1]);
 }
 
 /**
@@ -304,7 +369,7 @@ function ansage_wert_pruefen($tts, &$grund = '', $modi = null)
             case 'zones':
                 $x = $text($w, 200);
                 if ($x === null) { $grund = 'UNTER|tts.zones|' . $grund; return null; }
-                if (!preg_match('/^[0-9~, ]*\z/', $x)) { $grund = 'TTS_ZONEN'; return null; }
+                if (!ansage_zonen_ok($x)) { $grund = 'TTS_ZONEN'; return null; }
                 $aus['zones'] = $x;
                 break;
             case 'lang':
@@ -315,12 +380,8 @@ function ansage_wert_pruefen($tts, &$grund = '', $modi = null)
                 $x = $text($w, 500);
                 if ($x === null) { $grund = 'UNTER|tts.template|' . $grund; return null; }
                 if ($x !== '') {
-                    if (trim($x) !== $x || !preg_match('#^https?://([^/:?\#\s]+)#i', $x, $mh)) {
-                        $grund = 'TTS_VORLAGE_HTTP'; return null;
-                    }
-                    if ($mh[1] !== '{ip}' && !ansage_heimnetz_host($mh[1])) {
-                        $grund = 'TTS_VORLAGE_HEIMNETZ'; return null;
-                    }
+                    $grund = trim($x) !== $x ? 'TTS_VORLAGE_HTTP' : ansage_vorlage_grund($x);
+                    if ($grund !== '') { return null; }
                 }
                 $aus['template'] = $x;
                 break;
@@ -631,8 +692,13 @@ function ansage_transport(array $anf)
     return array('code' => $code, 'rumpf' => $rumpf, 'errno' => 0, 'fehler' => '');
 }
 
-/** Kennung eines Transportfehlers oder eines unerwuenschten Status ('' = in Ordnung). */
-function ansage_http_grund_id($errno, $status)
+/**
+ * Kennung eines Transportfehlers oder eines unerwuenschten Status ('' = in
+ * Ordnung). $fehler (seit 1.0.3) ist der Fehlertext des Transports; bis 1.0.2
+ * fehlte er, und "Netzfehler %s: %s" endete mit "Netzfehler 52: " (Pruefung
+ * 02.10.2026, Nr. 3).
+ */
+function ansage_http_grund_id($errno, $status, $fehler = '')
 {
     $errno = (int) $errno;
     $status = (int) $status;
@@ -641,7 +707,10 @@ function ansage_http_grund_id($errno, $status)
     if ($errno === 6) { return 'HTTP_NAME'; }
     if ($errno === 28) { return 'HTTP_ZEIT'; }
     if ($errno === -1) { return 'HTTP_OHNE_ANTWORT'; }
-    if ($errno !== 0) { return 'HTTP_NETZ|' . $errno; }
+    if ($errno !== 0) {
+        $f = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', str_replace('|', '/', (string) $fehler)), 0, 200);
+        return 'HTTP_NETZ|' . $errno . ($f !== '' ? '|' . $f : '');
+    }
     if ($status === 401 || $status === 403) { return 'HTTP_ZUGANG|' . $status; }
     if ($status === 404) { return 'HTTP_404'; }
     if ($status === 429) { return 'HTTP_429'; }
@@ -664,7 +733,7 @@ function ansage_ng_rufen($url, array $felder, $tmo, array $k)
     $a = ansage_ausfuehren(ansage_anfrage('POST', $url, $felder, $tmo, $k), $k);
     $gid = '';
     if ($a['code'] <= 0) {
-        $gid = ansage_http_grund_id($a['errno'] === 0 ? -1 : $a['errno'], 0);
+        $gid = ansage_http_grund_id($a['errno'] === 0 ? -1 : $a['errno'], 0, $a['fehler']);
     }
     $zeilen = preg_split('/\r?\n/', trim($a['rumpf']));
     $erste = trim((string) $zeilen[0]);
@@ -800,9 +869,13 @@ function ansage_sprechen($text, array $tts, array $k = array())
         $r['kennung'] = 'KEINE_IP';
         return ansage_letzte_merken($r, $k);
     }
+    if (!ansage_url_heimnetz($url)) {
+        $r['kennung'] = 'EINSTELLUNG|' . ($modus === 'musicserver' ? 'TTS_IP' : 'TTS_VORLAGE_HEIMNETZ');
+        return ansage_letzte_merken($r, $k);
+    }
     $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, ANSAGE_TMO, $k), $k);
     $r['http'] = $a['code'];
-    $gid = ansage_http_grund_id($a['code'] > 0 ? 0 : ($a['errno'] === 0 ? -1 : $a['errno']), $a['code']);
+    $gid = ansage_http_grund_id($a['code'] > 0 ? 0 : ($a['errno'] === 0 ? -1 : $a['errno']), $a['code'], $a['fehler']);
     $r['kennung'] = $gid;
     $r['stand'] = $gid === '' ? 1 : 0;
     return ansage_letzte_merken($r, $k);
@@ -1467,6 +1540,38 @@ function ansage_selbsttest()
                    'ms.fritz.box' => true, 'example.com' => false, '' => false, $KAPUTT => false) as $hst => $soll) {
         $pruef('heimnetz ' . $hst, ansage_heimnetz_host($hst), $soll);
     }
+    /* Pruefung 02.10.2026, Nr. 2: Zahlen als Name, fuehrende Nullen, Zugangsdaten vor dem Rechner, IPv6. */
+    $ZAHL = (string) (8 * 16777216 + 8 * 65536 + 8 * 256 + 8);       // eine oeffentliche Adresse als eine Zahl
+    $HEX = '0x' . dechex(8 * 16777216 + 8 * 65536 + 8 * 256 + 8);
+    $OKTAL = '0' . implode('.', array(10, 8, 8, 8));                  // fuehrende Null: oktal gelesen
+    foreach (array($ZAHL => false, $HEX => false, $OKTAL => false, '10.0.0.01' => false, '10.1' => false,
+                   '0x7f.1' => false, '192.168.0.10' => true, 'box1' => true, 'ms.intern' => true,
+                   '[::1]' => false, '::1' => false) as $hst => $soll) {
+        $pruef('heimnetz ' . $hst, ansage_heimnetz_host($hst), $soll);
+    }
+    foreach (array('http://{ip}:{port}/tts?t={text}' => '', 'http://ms.local:81/s?t={text}' => '',
+                   'http://{ip}:80@example.com/tts?t={text}' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://localhost:x@example.com/' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://{ip}@example.com/' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://example.com\\@{ip}/' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://' . $ZAHL . '/t?{text}' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://{text}/' => 'TTS_VORLAGE_HEIMNETZ', 'http://{ip}.example.com/' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http://[::1]:7091/' => 'TTS_VORLAGE_HEIMNETZ', 'http://{ip}:{text}/' => 'TTS_VORLAGE_HEIMNETZ',
+                   'http:///t' => 'TTS_VORLAGE_HTTP', 'ftp://{ip}/' => 'TTS_VORLAGE_HTTP') as $tpl => $soll) {
+        $pruef('vorlage ' . $tpl, ansage_vorlage_grund($tpl), $soll);
+    }
+    foreach (array('http://192.168.1.7:7091/x?t=a%40b' => true, 'https://ms.local/x' => true,
+                   'http://192.168.1.7:80@example.com/' => false, 'http://ms.local@example.com/' => false,
+                   'http://example.com#@192.168.1.7/' => false, 'http://' . $OKTAL . '/' => false,
+                   'http://' . $HEX . '/' => false, 'file://192.168.1.7/x' => false, 'http://[::1]/' => false,
+                   'http://192.168.1.7\\@example.com/' => false) as $u => $soll) {
+        $pruef('url heimnetz ' . $u, ansage_url_heimnetz($u), $soll);
+    }
+    foreach (array('' => true, '1' => true, '2,4,6' => true, '2~30, 4' => true, '1,2,' => true, ' 1 , 2 ' => true,
+                   '1 2' => false, '~~' => false, '1~' => false, '~5' => false, '1~2~3' => false, "1,\t2" => false,
+                   '1;2' => false) as $z => $soll) {
+        $pruef('zonen ' . $z, ansage_zonen_ok((string) $z), $soll);
+    }
 
     // --- Wertpruefung (Sicherung) ---
     $g = '';
@@ -1481,6 +1586,10 @@ function ansage_selbsttest()
     $pruef('wp ip liste', array(ansage_wert_pruefen(array('ip' => array()), $g), $g), array(null, 'UNTER|tts.ip|KEIN_TEXT'));
     $pruef('wp zonen', array(ansage_wert_pruefen(array('zones' => "1\n2"), $g), $g), array(null, 'UNTER|tts.zones|STEUERZEICHEN'));
     $pruef('wp zonen buchst', array(ansage_wert_pruefen(array('zones' => '1,a'), $g), $g), array(null, 'TTS_ZONEN'));
+    $pruef('wp zonen leerzeichen', array(ansage_wert_pruefen(array('zones' => '1 2'), $g), $g), array(null, 'TTS_ZONEN'));
+    $pruef('wp zonen tab', array(ansage_wert_pruefen(array('zones' => "1,\t2"), $g), $g), array(null, 'UNTER|tts.zones|STEUERZEICHEN'));
+    $pruef('wp vorlage zugang', array(ansage_wert_pruefen(array('template' => 'http://{ip}:80@example.com/t?{text}'), $g), $g), array(null, 'TTS_VORLAGE_HEIMNETZ'));
+    $pruef('wp vorlage tab', array(ansage_wert_pruefen(array('template' => "http://{ip}/t?\t{text}"), $g), $g), array(null, 'UNTER|tts.template|STEUERZEICHEN'));
     $pruef('wp sprache', array(ansage_wert_pruefen(array('lang' => 'deu'), $g), $g), array(null, 'TTS_SPRACHE'));
     $pruef('wp vorlage extern', array(ansage_wert_pruefen(array('template' => 'https://example.com/t?x={text}'), $g), $g), array(null, 'TTS_VORLAGE_HEIMNETZ'));
     $pruef('wp vorlage file', array(ansage_wert_pruefen(array('template' => 'file:///etc/passwd'), $g), $g), array(null, 'TTS_VORLAGE_HTTP'));
@@ -1639,6 +1748,11 @@ function ansage_selbsttest()
     $pruef('ms zeit', array($r['stand'], $r['kennung']), array(0, 'HTTP_ZEIT'));
     $antworten = array(array('code' => 0, 'rumpf' => '', 'errno' => 0));
     $pruef('ms ohne antwort', ansage_sprechen($TEXT, $msx, $k)['kennung'], 'HTTP_OHNE_ANTWORT');
+    $antworten = array(array('code' => 0, 'rumpf' => '', 'errno' => 52, 'fehler' => 'Empty reply from server'));
+    $pruef('ms netz mit text', ansage_sprechen($TEXT, $msx, $k)['kennung'], 'HTTP_NETZ|52|Empty reply from server');
+    $antworten = array(array('code' => 0, 'rumpf' => '', 'errno' => 35, 'fehler' => "a|b\nc"));
+    $pruef('alexa netz mit text', ansage_sprechen($TEXT, $ax, $k)['kennung'], 'ALEXA_KEINE_ANTWORT|' . $alexa_url . '|10|HTTP_NETZ|35|a/bc');
+    $pruef('kennung netz ohne text', ansage_http_grund_id(52, 0), 'HTTP_NETZ|52');
     $log = array();
     $r = ansage_sprechen($TEXT, array('ip' => '') + $msx, $k);
     $pruef('ms ohne ip', array($r['stand'], $r['kennung'], count($log)), array(0, 'KEINE_IP', 0));

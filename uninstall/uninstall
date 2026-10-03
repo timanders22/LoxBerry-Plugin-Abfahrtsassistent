@@ -57,6 +57,29 @@ entferne() {
     return 0
 }
 
+# Einen laufenden Lauf des Dienstes abwarten (Pruefung 02.10.2026, Nr. 22).
+# Er haelt die Sperre bis zu gut 40 s (Lebenszeichen 5 bis 40 s nach dem
+# Start) und legte bis 1.6.21 nach dem Abraeumen /tmp/<ordner> wieder an und
+# sendete noch ein Lebenszeichen. flock(1) nimmt dieselbe flock(2)-Sperre wie
+# PHPs flock() im Dienst (abfahrt_sperre()); gewartet wird hoechstens 90 s.
+# Zwei Orte: der Zwischenordner und sein Ersatz unter data/ (abfahrt_tmpdir()).
+for UN_SPERRE in "/tmp/$UN_FOLDER/dienst.lock" "$UN_BASE/data/plugins/$UN_FOLDER/tmp/dienst.lock"; do
+    [ -f "$UN_SPERRE" ] && [ ! -L "$UN_SPERRE" ] || continue
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "<INFO> flock fehlt - ein eventuell laufender Lauf des Dienstes wurde nicht abgewartet."
+        break
+    fi
+    if flock -n "$UN_SPERRE" true 2>/dev/null; then
+        continue
+    fi
+    echo "<INFO> Ein Lauf des Dienstes rechnet noch - warte bis zu 90 s auf sein Ende."
+    if flock -w 90 "$UN_SPERRE" true 2>/dev/null; then
+        echo "<OK> Der laufende Lauf des Dienstes ist beendet."
+    else
+        echo "<WARNING> Der Lauf des Dienstes hielt die Sperre nach 90 s noch ($UN_SPERRE) - er kann den Zwischenordner nach dem Abraeumen wieder anlegen."
+    fi
+done
+
 # Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn
 # das Praefix steht in der Konfiguration. Bis 1.6.12 blieben OK, FEHLER, AUDIO
 # und PUSH (von 1.6.8 bis 1.6.12 retained gesendet) nach dem Deinstallieren im

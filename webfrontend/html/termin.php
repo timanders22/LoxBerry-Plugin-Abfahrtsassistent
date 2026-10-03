@@ -31,6 +31,10 @@
  *                8 kein einziger Kalender liess sich lesen, und es gibt
  *                  keinen gueltigen Stand mehr - OK=0 (neu in 1.6.10; bis
  *                  dahin trug dieser Fall ebenfalls die 5)
+ *                9 kein frischer Stand: der Dienst hat noch nicht gerechnet,
+ *                  rechnet nicht mehr (Stand aelter als die Grenze von OK)
+ *                  oder konnte ihn nicht ablegen - OK=0 (neu in 1.6.22; bis
+ *                  dahin stand hier OK=0;FEHLER=0)
  *
  *   ALTER steht nur in dieser Zeile, nicht ueber MQTT (seit 1.6.10): ueber
  *   MQTT war der Wert immer 0. Dort heisst die Ausfallerkennung
@@ -110,15 +114,30 @@ if (abfahrt_schalter('selftest')) {
 }
 
 $diag = [];
+$abf_belegt = false;
 if ($debug) {
     // Nur im Debug-Fall wird gerechnet - und dann bewusst und sichtbar.
     abfahrt_nur_lesen(false);
-    list($st, $diag) = abfahrt_berechnen($abfcfg);
+    /* Unter der Sperre des Dienstes (abfahrt_sperre()). Bis 1.6.21 rechnete
+     * ?debug=1 daneben: doppeltes Kontingent beim Kartendienst und ein
+     * Wettlauf um stand.json und titel.json (Pruefung 02.10.2026, Nr. 21).
+     * Ist sie belegt, gilt der abgelegte Stand. */
+    $abf_fh = abfahrt_sperre();
+    if ($abf_fh !== false) {
+        list($st, $diag) = abfahrt_berechnen($abfcfg);
+        abfahrt_sperre_frei($abf_fh);
+    } else {
+        $abf_belegt = true;
+        $st = abfahrt_stand();
+    }
 } else {
     $st = abfahrt_stand();
 }
 
 if ($debug) {
+    if ($abf_belegt) {
+        echo 'DEBUG: ' . abfahrt_t('DIAG.SPERRE_BELEGT') . "\n";
+    }
     foreach ($diag as $d) {
         echo "DEBUG: $d\n";
     }
@@ -127,7 +146,7 @@ if ($debug) {
     if ((int) $st['zeit'] === 0) {
         echo 'DEBUG: ' . abfahrt_t('DIAG.NOCH_KEINE') . "\n";
     }
-    $abf_grund = abfahrt_stand_grund($st);
+    $abf_grund = abfahrt_grund_wirksam($st);
     if ($abf_grund !== '') {
         echo 'DEBUG: ' . $abf_grund . "\n";
     }
@@ -171,9 +190,10 @@ if (is_dir($abf_tmp) && is_dir($abf_logdir)) {
     $sig = preg_replace('/(MINSTART|FAHRT|ABFAHRT_IN|ALTER|ANKUNFT)=[-0-9.]+/', '', $out);
     $prev = is_file($f) ? trim((string) @file_get_contents($f)) : '';
     if ($sig !== $prev) {
-        $abf_sg = abfahrt_stand_grund($st);     // b1: Grund in der Sprache dieses Laufs
-        abfahrt_log('Ergebnis: ' . $out . ($st['titel'] !== '' ? ' (' . $st['titel'] . ')' : '')
-                  . ($abf_sg !== '' ? ' [' . $abf_sg . ']' : ''));
+        $abf_sg = abfahrt_grund_wirksam($st);     // b1: Grund in der Sprache dieses Laufs
+        /* Ohne den Terminnamen (Pruefung 02.10.2026, Nr. 12a): diese Zeile
+         * loest auch ein anonymer Lesezugriff aus. */
+        abfahrt_log('Ergebnis: ' . $out . ($abf_sg !== '' ? ' [' . $abf_sg . ']' : ''));
         @file_put_contents($f, $sig);
     }
 }

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.21 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,54 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.22
+
+Fehlerbehebungen aus der Prüfung vom 02.10.2026. Gemessen an Attrappen unter PHP 8.3 (Kalender gegen
+`python-dateutil`, Endpunkte gegen eine lokale Gegenstelle, Dienst und Deinstallation in einem nachgebauten
+LoxBerry-Baum); nicht am Gerät, nicht unter PHP 7.4.
+
+* **Sperrzeiten:** Eine ganztägige Sperre (gleiche Anfangs- und Endzeit) sperrte auch den ganzen Folgetag. Und an einem
+  Sondertag mit eingeschalteter Zeile ersetzte diese die Nachtsperre des Vortags – um 01:50 wurde dann angesagt.
+* **Neuer Code `FEHLER=9`:** kein frischer Stand. Der Dienst hat noch nicht gerechnet, rechnet nicht mehr (Stand älter als
+  das Dreifache des Takts, oder die Uhr ist zurückgesprungen) oder konnte den Stand nicht ablegen; `OK` ist dann 0. Bis 1.6.21
+  stand dort `OK=0;FEHLER=0`. **In Loxone:** die 9 am Statusbaustein belegen.
+* **Countdown:** `ABFAHRT_IN` übersprang in der letzten Stunde regelmäßig eine Minute (fällig wurde nach Sekunden statt
+  nach Cron-Minuten gerechnet). Der Minutentakt setzt jetzt schon ab 65 Minuten ein.
+* **Fahrzeit:** Die Gnadenfrist bei einem Ausfall des Kartendienstes griff bei Terminen mehr als drei Stunden entfernt nie
+  (sofort `FEHLER=6` statt `FEHLER=7`). Die TomTom-Geokodierung war fest auf DE, AT und CH beschränkt; jetzt gilt sie
+  weltweit, mit der Abfahrtsadresse als Bezugspunkt (bei HERE ebenso). Die Koordinaten werden dadurch einmal neu bestimmt.
+* **Serientermine:** BYDAY zusammen mit BYMONTHDAY (z. B. „Freitag, der 13.“) ergab jeden Freitag; BYMONTH und BYMONTHDAY
+  wirkten bei täglichen und wöchentlichen Serien nicht; WKST wurde übergangen. Neu: RDATE. Eine Serie mit einem nicht
+  unterstützten Regelteil (BYWEEKNO, BYYEARDAY, stündlich …) entfällt jetzt mit einer Zeile in der Diagnose, statt falsche
+  Termine zu liefern. Dazu: `BEGIN:VEVENT` in Kleinschreibung, maskierte Backslashes im Text, nach vorn verschobene
+  Serienteile (RANGE=THISANDFUTURE) am Fensterrand.
+* **Kalenderabruf:** Ein Kalender, dessen Abruf scheiterte, wird fünf Minuten nicht neu gefragt (es gilt die Kopie), und je
+  Lauf stehen höchstens 30 s Abrufzeit zur Verfügung. Bisher konnten zehn tote Kalender einen Lauf über eine Minute ziehen.
+* **Zeitzone:** kommt aus den LoxBerry-Einstellungen bzw. vom System statt fest `Europe/Berlin`.
+* **Sprachausgabe:** Die Heimnetz-Prüfung von IP und Adressvorlage ließ sich umgehen (Zugangsdaten vor dem Rechner, IP als
+  eine Zahl, führende Nullen) – der Termintitel konnte so an einen fremden Rechner gehen. Geprüft wird jetzt auch die fertige
+  Adresse unmittelbar vor dem Senden. Zonen nur noch als `2,4,6` bzw. `2~30,4`, ohne Steuerzeichen. Eine abgewiesene
+  Einstellung meldet `termin_say.php` als solche.
+* **`termin_say.php`:** Transportfehler heißen wieder, was sie sind (z. B. „Netzfehler 52: Empty reply from server“ statt
+  „kein curl vorhanden“). Ein leerer Ansagetext wird nicht mehr gesendet (`SKIP: leerer Ansagetext`). Im Google-Modus
+  beginnt die Antwort jetzt ebenfalls mit `OK: TEXTLAENGE=…`. `debug=1` nennt nur noch Schema, Rechner und Port.
+* **Protokoll:** Der Termintitel steht nicht mehr darin (Zeilen „Ergebnis:“ und „Dienst:“).
+* **Oberfläche:** Das Formularmerkmal hing am Merkwort, das im Loxone-Projekt und in jeder Sicherung steht – eine fremde Seite
+  konnte so beim angemeldeten Bediener speichern. Jetzt gilt ein eigenes Zufallsgeheimnis (`data/plugins/<ordner>/formgeheimnis`,
+  nicht in Sicherungen), dazu wird Origin/Referer geprüft. Weiter: Uhrzeiten wie „8:00“ blockierten jedes Speichern (jetzt
+  „08:00“); beanstandete Felder in ausgeblendeten Zeilen werden gezeigt; neu eingetippte Geheimwerte werden nach einer
+  Beanstandung zum erneuten Eintragen markiert; Kalenderdiagnose mit Grund; Sicherungen mit UTF-8-BOM werden angenommen,
+  zu große Dateien klar gemeldet; das Zurückspielen räumt ein altes MQTT-Präfix.
+* **Konfiguration:** Eine gültige, aber nicht lesbare `abfahrt.json` (etwa nach einem Aufruf als root) wurde als „kaputt“
+  beiseitegelegt, und die Oberfläche würfelte ein neues Merkwort. Jetzt bleibt alles stehen, die Meldung nennt Eigentümer und
+  Rechte, und der Dienst rechnet nicht. Abhilfe: `chown loxberry:loxberry` und `chmod 600`.
+* **MQTT:** Ein Präfix mit `/` am Rand oder `//` wird abgewiesen bzw. beim Lesen geglättet (das Abo passte sonst nicht).
+  Ein im Broker stehender Altwert wird höchstens dreimal am Tag geräumt.
+* **Dienst und Deinstallation:** `/tmp/<ordner>` ist nur noch für den Eigentümer lesbar (Ersatz `data/plugins/<ordner>/tmp`,
+  falls der Ordner fremd oder ein Verweis ist). `termin.php?debug=1` nimmt die Sperre des Dienstes. Unbekannte Aufrufe des
+  Dienstes enden mit Rückgabe 2. Die Deinstallation wartet bis zu 90 s auf einen laufenden Lauf.
+* Die gemeinsame `sprachausgabe.php` steht auf Fassung 1.0.3.
 
 ## Neu in 1.6.21
 
@@ -689,8 +737,11 @@ Eingängen. Ein zweiter Knopf, *Vorlage der Steuerbefehle erzeugen*, legt den
 virtuellen Ausgang für die Ansage an; diese Datei trägt das Merkwort.
 
 `FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,
-2 kein API-Key, 3 keine Abfahrtsadresse, 4 kein Termin, 6 Kartendienst tot,
-**7 Kartendienst tot, letzte bekannte Fahrzeit gilt weiter** (OK bleibt 1).
+2 kein API-Key, 3 keine Abfahrtsadresse, 4 kein Termin, 5 Kalender zu lange
+nicht ladbar, 6 Kartendienst tot,
+**7 Kartendienst tot, letzte bekannte Fahrzeit gilt weiter** (OK bleibt 1),
+8 kein einziger Kalender lesbar, **9 kein frischer Stand** (Dienst rechnet
+nicht; seit 1.6.22).
 
 ## Hinweise
 
@@ -705,7 +756,7 @@ virtuellen Ausgang für die Ansage an; diese Datei trägt das Merkwort.
   viertelstündlich, letzte Stunde alle 5 min. Über zwölf Stunden gerechnet
   sind das 51 statt 144 Abfragen.
 - Fällt der Kartendienst aus, gilt die letzte bekannte Fahrzeit **bis zu eine
-  Stunde** weiter (`FEHLER=7`) statt die Berechnung abzubrechen. Ohne das fiel
+  Stunde** über ihre Haltbarkeit hinaus weiter (`FEHLER=7`) statt die Berechnung abzubrechen. Ohne das fiel
   der Schwellwertschalter in Loxone ab und löste beim nächsten gelungenen
   Abruf ein zweites Mal aus — derselbe Termin sagte zweimal Bescheid.
 - Der API-Key liegt mit Rechten `0600` in der Konfiguration, ebenso die
