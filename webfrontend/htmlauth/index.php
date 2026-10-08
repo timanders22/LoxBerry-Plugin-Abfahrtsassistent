@@ -1153,6 +1153,35 @@ if ($use_frame) {
     isset($status['abfahrt_in']) ? (int) $status['abfahrt_in'] : 0) ?></div>
 <?php } ?>
 
+<?php
+/* Kopf (Entscheidung Nr. 43, seit 1.6.24): Statusuebersicht ueber den
+ * Reitern, immer sichtbar. Nur, was die Seite schon liest: stand.json ueber
+ * abfahrt_stand() (auch der Reiter MQTT liest es) und die Konfiguration.
+ * Keine Anfrage an Kalender oder Kartendienst. Einen Dauerdienst gibt es
+ * nicht - der Cron weckt den Hintergrunddienst jede Minute; die Grenze von
+ * 600 s ist dieselbe wie in der Pruefzeile TEST.F_DIENST. */
+$abf_k_st = abfahrt_stand();
+$abf_k_alter = (int) $abf_k_st['zeit'] > 0 ? time() - (int) $abf_k_st['zeit'] : -1;
+$abf_k_ok = abfahrt_ok_wirksam($abf_k_st);
+?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= e(abfahrt_t('SEITE.KOPF_EIGENSCHAFT')) ?></th><th><?= e(abfahrt_t('SEITE.KOPF_WERT')) ?></th></tr>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_DIENST')) ?></td>
+    <td><?= $abf_k_alter < 0 ? '<span class="sm-aus">' . e(abfahrt_t('SEITE.KOPF_DIENST_NIE')) . '</span>'
+        : ($abf_k_alter <= 600 ? '<span class="sm-an">' . e(sprintf(abfahrt_t('SEITE.KOPF_DIENST_OK'), abf_alter_text($abf_k_alter))) . '</span>'
+                               : '<span class="sm-aus">' . e(sprintf(abfahrt_t('SEITE.KOPF_DIENST_ALT'), abf_alter_text($abf_k_alter))) . '</span>') ?></td></tr>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_ERGEBNIS')) ?></td>
+    <td><?= $abf_k_alter < 0 ? '&ndash;'
+        : ($abf_k_ok === 1 ? '<span class="sm-an">' . e(abfahrt_t('SEITE.KOPF_OK')) . '</span>'
+                           : '<span class="sm-aus">' . e(sprintf(abfahrt_t('TEST.A_ERGEBNIS_FEHLER'),
+                                 abfahrt_fehler_wirksam($abf_k_st), abfahrt_grund_wirksam($abf_k_st))) . '</span>') ?></td></tr>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_ABFAHRT')) ?></td>
+    <td><?= ($abf_k_ok === 1 && (int) $abf_k_st['abfahrt_in'] !== 9999)
+        ? e(sprintf(abfahrt_t('SEITE.KOPF_MIN'), (int) $abf_k_st['abfahrt_in'])) : '&ndash;' ?></td></tr>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_KALENDER')) ?></td>
+    <td><?= (int) $abf_kal_echt ?></td></tr>
+</table>
+
 <?php /* Welcher Reiter offen ist, entscheidet der SERVER: sm-active steht schon
          im ausgelieferten HTML, an der Leiste UND am Bereich. Die fuenf Zeilen
          stehen bewusst ausgeschrieben da - die Pruefwerkzeuge lesen den
@@ -1167,6 +1196,7 @@ if ($use_frame) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $active_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= abfahrt_t('SEITE.WAS_IST_DAS') ?></div>
 <?php /* Eine Legende oben im Reiter, mit genau den Farben, die hier als Knopf
          vorkommen (Regeln/04). Bis 1.6.9 standen zwei Legenden mitten im
          Reiter, und keine nannte alle Farben. */ ?>
