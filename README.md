@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.22 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.23 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,30 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.23
+
+Sprachausgabe in Hausform über die gemeinsame Sprachausgabe 1.1.1 (Entscheidung 40, Stufe 2).
+Gemessen unter PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG, Chromecast); nicht am Gerät, nicht an
+einem echten Lautsprecher.
+
+* **Einstellungen, Abschnitt „Sprachausgabe“:** das Formular der gemeinsamen Sprachausgabe (wie Intercom und
+  Raumklima); die Suche nach MusicServer4Home steht darunter. Neu in der Auswahl ist „aus“. Ab Werk bleibt es
+  beim Loxone Music Server ohne Adresse; gespeicherte Einstellungen bleiben, wie sie sind.
+* `termin_say.php` spricht über die gemeinsame Sprachausgabe; Sperrzeiten, `force=1`, eigener Text und die
+  Antwort an Loxone (`OK: TEXTLAENGE=…` bzw. `FEHLER …`) bleiben. Der Music Server bekommt jetzt 10 s statt 8 s.
+  Mit `debug=1` nennt eine gescheiterte Ansage weiterhin nur Schema, Rechner und Port, nie den Text.
+* Strenger beim Speichern: Lautstärke für Alexa-NG und Google 1 bis 100 (0 war stumm und galt trotzdem als
+  gesendet), Zonen je wahlweise mit `~Lautstärke` 1 bis 100. Ein gespeicherter Wert, der das verletzt, wird beim
+  nächsten Speichern beanstandet (dann wird nichts gespeichert); geladen wird er weiter.
+* **Testansage als Knopf im Reiter Test** (ein fester Satz mit den gespeicherten Einstellungen, für jede
+  Ausgabeart; Neuladen spricht nicht erneut). Der bisherige Verweis „Ansage jetzt auslösen“ mit dem Merkwort
+  entfällt dort; `termin_say.php` selbst bleibt für Loxone.
+* Reiter Test: eine Zeile „Ist die Audioausgabe eingerichtet?“ für alle Ausgabearten, mit der letzten Ansage.
+  Alexa-NG und Chromecast werden mit `selftest=1` gefragt (dort wird nichts gesprochen).
+* Protokoll: eine Zeile je Ansage, „Ansage: art=… stand=… zeichen=… http=…“ – nie Text oder Token.
+
+**In Loxone:** nichts zu tun.
 
 ## Neu in 1.6.22
 

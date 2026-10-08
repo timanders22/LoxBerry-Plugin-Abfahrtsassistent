@@ -139,7 +139,8 @@ function abf_eingabe_felder($formular) {
                      'ob_muster', 'ob_adresse', 'ganztags_ein', 'ganztags_zeit', 'tts_mode', 'tts_ip',
                      'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template',
                      'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen',
-                     'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen', 'ansage_vorlage',
+                     'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen',
+                     'tts_sonos_zone', 'tts_sonos_laut', 'ansage_vorlage',     // Nr. 36 b: Felder des Formularblocks
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
     return array();
@@ -548,26 +549,25 @@ if ($abf_post && isset($_POST['selftest'])) {
     abf_umleiten($data_dir, 'tab-test', array('selftest' => $abf_st));
 }
 
-// ---------- Testansage ueber Google-Lautsprecher (Ansage-3, 01.10.2026) ----------
-/* Spricht einen festen Satz ueber Chromecast 4 Lox NG - Geraet, Lautstaerke
- * und Sprechtoken aus den gespeicherten Einstellungen - und zeigt die
- * Antwortzeile (HTTP-Code, GRUND; nie Token oder Text). Endet wie jeder
- * Handler mit der Umleitung: ein F5 danach loest nichts aus. Sperrzeiten und
- * Haken gelten hier nicht (wie "Ansage jetzt ausloesen" mit force=1). */
-if ($abf_post && isset($_POST['google_testansage'])) {
-    $abf_ga = null;
-    $abf_gtx = abfahrt_t('TEST.GOOGLE_TESTTEXT');
-    $abf_gg = abfahrt_google_sprechen($abf_gtx, $abfcfg, $abf_ga);
-    $abf_gn = (int) preg_match_all('/./us', $abf_gtx);
-    if ($abf_gg === '') {
-        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_OK'), $abf_gn, abfahrt_ng_kurz($abf_ga)) . ' [Testansage]');
-        $abf_gte = array('stufe' => 1, 'text' => sprintf(abfahrt_t('TEST.GOOGLE_TEST_OK'), abfahrt_ng_kurz($abf_ga)));
+// ---------- Testansage (Nr. 36 b, Stufe 2) ----------
+/* Spricht einen festen Satz (ansage_testansage(), aus der Sprachdatei) ueber die
+ * gespeicherte Ausgabeart - fuer jede Art, nicht mehr nur fuer Google - und zeigt das
+ * Ergebnis (nie Token oder Text). Sperrzeiten und Haken gelten hier nicht (wie bisher
+ * "Ansage jetzt ausloesen" mit force=1, das bis 1.6.22 ein Verweis mit dem Merkwort war:
+ * F5 sprach erneut, Entwurf B6). Endet wie jeder Handler mit der Umleitung. */
+if ($abf_post && isset($_POST['ansage_test'])) {
+    $abf_tk = abfahrt_ansage_k();
+    $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk);
+    abfahrt_log('Testansage: ' . ansage_kurz($abf_tr));
+    if ($abf_tr['stand'] === 1) {
+        $abf_ate = array('stufe' => 1, 'text' => abfahrt_t('TTS.M_TEST_OK'));
+    } elseif ($abf_tr['kennung'] === 'AUS') {
+        $abf_ate = array('stufe' => 0, 'text' => abfahrt_t('TTS.M_TEST_AUS'));
     } else {
-        $abf_ggt = abfahrt_grund_text($abf_gg);
-        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_FEHL'), $abf_gn, $abf_ggt) . ' [Testansage]');
-        $abf_gte = array('stufe' => 0, 'text' => sprintf(abfahrt_t('TEST.GOOGLE_TEST_FEHL'), $abf_ggt));
+        $abf_ate = array('stufe' => 0, 'text' => sprintf(abfahrt_t('TTS.M_TEST_FEHL'),
+                                                         ansage_kennung_text($abf_tr['kennung'], $abf_tk)));
     }
-    abf_umleiten($data_dir, 'tab-test', array('google_test' => $abf_gte));
+    abf_umleiten($data_dir, 'tab-test', array('ansage_test' => $abf_ate));
 }
 
 // ---------- Koordinaten verwerfen ----------
@@ -765,119 +765,22 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push'  => isset($_POST['notify_push']) ? 1 : 0,
     );
-    /* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Geraet und Lautstaerke
-     * werden beanstandet statt zurechtgebogen (Nr. 19; nur Leerraum am Rand
-     * faellt still weg). Das Sprechtoken ist ein Kennwort: es steht nie in der
-     * Seite und reist nach einer Beanstandung nicht zurueck. Leer abgeschickt
-     * heisst behalten, der Haken loescht es, beides zugleich ist ein
-     * Widerspruch (wie beim Schluessel des Kartendienstes). Ein Feld statt
-     * eines Textes (name[]) ist eine Beanstandung. */
-    $abf_al_roh = function ($k) {
-        if (!isset($_POST[$k])) { return ''; }
-        return is_string($_POST[$k]) ? trim($_POST[$k]) : null;
-    };
-    $abf_ag = $abf_al_roh('tts_alexa_geraet');
-    if ($abf_ag === null || !abfahrt_alexa_geraet_ok($abf_ag)) {
-        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_GERAET');
-        abf_bean('tts_alexa_geraet');
-        $abf_ag = (string) $abf_alt['tts']['alexa_geraet'];
+    /* Nr. 36 b, Stufe 2: die Sprachausgabe liest das Modul (ansage_formular_lesen()):
+     * Ausgabeart aus abfahrt_ansage_modi(), Adresse und Vorlage im Heimnetz, Zonen,
+     * Lautstaerke 1-100, Sprache zwei Buchstaben, Sprechtoken (leer = behalten, Haken =
+     * loeschen, beides zugleich ist ein Widerspruch; ein Feld statt eines Textes ist eine
+     * Beanstandung). Jede Beanstandung kommt in die Liste dieses Formulars, das Feld wird
+     * markiert, die Eingabe reist zurueck (X-2), gespeichert wird nichts (Nr. 16). Ohne
+     * Beanstandung prueft abf_feld() den Block noch einmal mit der Pruefung der Linie. */
+    $abf_tmangel = array();
+    $abf_tbean = array();
+    $abf_tts_neu = ansage_formular_lesen($_POST, $abf_alt['tts'], $abf_tmangel, $abf_tbean,
+        array('modi' => abfahrt_ansage_modi()), abfahrt_ansage_k());
+    foreach ($abf_tmangel as $abf_tm) { $abf_hw[] = $abf_tm['text']; }
+    foreach ($abf_tbean as $abf_tb) { abf_bean($abf_tb); }
+    if (!$abf_tmangel) {
+        abf_feld($abfneu, $abf_alt, 'tts', $abf_tts_neu, $abf_hw);
     }
-    $abf_al = $abf_al_roh('tts_alexa_laut');
-    if ($abf_al === '') {
-        $abf_al = -1;       // leer: die Lautstaerke des Geraets bleibt
-    } elseif ($abf_al !== null && preg_match('/^\d{1,3}\z/', $abf_al) === 1 && (int) $abf_al <= 100) {
-        $abf_al = (int) $abf_al;
-    } else {
-        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_LAUT');
-        abf_bean('tts_alexa_laut');
-        $abf_al = (int) $abf_alt['tts']['alexa_laut'];
-    }
-    $abf_at = (string) $abf_alt['tts']['alexa_token'];
-    $abf_atn = $abf_al_roh('tts_alexa_token');
-    if ($abf_atn === null) {
-        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_TOKEN');
-        abf_bean('tts_alexa_token');
-    } elseif (!empty($_POST['tts_alexa_token_loeschen'])) {
-        if ($abf_atn !== '') {
-            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.ALEXA_TOKEN'));
-            abf_bean('tts_alexa_token');
-            abf_bean('tts_alexa_token_loeschen');
-        } else {
-            $abf_at = '';
-        }
-    } elseif ($abf_atn !== '') {
-        if (abfahrt_alexa_token_ok($abf_atn)) {
-            $abf_at = $abf_atn;
-        } else {
-            $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_TOKEN');
-            abf_bean('tts_alexa_token');
-        }
-    }
-    if ($abf_post_text('tts_mode') === 'alexang' && $abf_at === '' && !in_array('tts_alexa_token', abf_bean(), true)) {
-        $abf_hw[] = abfahrt_t('MELDUNG.ALEXA_OHNE_TOKEN');
-        abf_bean('tts_alexa_token');
-    }
-    /* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox
-     * NG) - dieselben Regeln wie bei Alexa-NG oben: Geraet und Lautstaerke
-     * werden beanstandet statt zurechtgebogen, das eigene Sprechtoken steht
-     * nie in der Seite und reist nach einer Beanstandung nicht zurueck; leer
-     * heisst behalten, der Haken loescht, beides zugleich ist ein Widerspruch. */
-    $abf_gg = $abf_al_roh('tts_google_geraet');
-    if ($abf_gg === null || !abfahrt_alexa_geraet_ok($abf_gg)) {
-        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_GERAET');
-        abf_bean('tts_google_geraet');
-        $abf_gg = (string) $abf_alt['tts']['google_geraet'];
-    }
-    $abf_gl = $abf_al_roh('tts_google_laut');
-    if ($abf_gl === '') {
-        $abf_gl = -1;       // leer: die Ansagelautstaerke des Chromecast-Plugins
-    } elseif ($abf_gl !== null && preg_match('/^\d{1,3}\z/', $abf_gl) === 1 && (int) $abf_gl <= 100) {
-        $abf_gl = (int) $abf_gl;
-    } else {
-        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_LAUT');
-        abf_bean('tts_google_laut');
-        $abf_gl = (int) $abf_alt['tts']['google_laut'];
-    }
-    $abf_gt = (string) $abf_alt['tts']['google_token'];
-    $abf_gtn = $abf_al_roh('tts_google_token');
-    if ($abf_gtn === null) {
-        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_TOKEN');
-        abf_bean('tts_google_token');
-    } elseif (!empty($_POST['tts_google_token_loeschen'])) {
-        if ($abf_gtn !== '') {
-            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.LOESCHEN_WIDERSPRUCH'), abfahrt_t('FELDNAME.GOOGLE_TOKEN'));
-            abf_bean('tts_google_token');
-            abf_bean('tts_google_token_loeschen');
-        } else {
-            $abf_gt = '';
-        }
-    } elseif ($abf_gtn !== '') {
-        if (abfahrt_alexa_token_ok($abf_gtn)) {
-            $abf_gt = $abf_gtn;
-        } else {
-            $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_TOKEN');
-            abf_bean('tts_google_token');
-        }
-    }
-    if ($abf_post_text('tts_mode') === 'cc4lox' && $abf_gt === '' && !in_array('tts_google_token', abf_bean(), true)) {
-        $abf_hw[] = abfahrt_t('MELDUNG.GOOGLE_OHNE_TOKEN');
-        abf_bean('tts_google_token');
-    }
-    abf_feld($abfneu, $abf_alt, 'tts', array(
-        'mode'     => $abf_post_text('tts_mode'),
-        'ip'       => $abf_post_text('tts_ip'),
-        'port'     => $abf_post_text('tts_port'),
-        'zones'    => $abf_post_text('tts_zones'),
-        'volume'   => $abf_post_text('tts_volume'),
-        'lang'     => $abf_post_text('tts_lang'),
-        'template' => $abf_post_text('tts_template'),
-        'alexa_geraet' => $abf_ag,
-        'alexa_laut'   => $abf_al,
-        'alexa_token'  => $abf_at,
-        'google_geraet' => $abf_gg,     // Ansage-3
-        'google_laut'   => $abf_gl,
-        'google_token'  => $abf_gt,
-    ), $abf_hw);
 
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
      * halbe wird gemeldet statt weggelassen. */
@@ -1056,7 +959,7 @@ $abf_hinweise  = isset($abf_flash['hinweise']) && is_array($abf_flash['hinweise'
 $abf_ms4h      = isset($abf_flash['ms4h']) && is_array($abf_flash['ms4h']) ? $abf_flash['ms4h'] : null;
 $abf_selftest  = isset($abf_flash['selftest']) && is_array($abf_flash['selftest']) ? $abf_flash['selftest'] : null;
 $abf_kaldiag   = isset($abf_flash['kaldiag']) && is_array($abf_flash['kaldiag']) ? $abf_flash['kaldiag'] : null;
-$abf_gtest     = isset($abf_flash['google_test']) && is_array($abf_flash['google_test']) ? $abf_flash['google_test'] : null;     // Ansage-3
+$abf_atest     = isset($abf_flash['ansage_test']) && is_array($abf_flash['ansage_test']) ? $abf_flash['ansage_test'] : null;     // Nr. 36 b
 abf_eingaben(isset($abf_flash['eingaben']) ? $abf_flash['eingaben'] : array());     // X-2
 foreach ($abf_heilmeldungen as $abf_m) { $abf_hinweise[] = $abf_m; }
 /* Nr. 4: ohne Formulargeheimnis wird jedes Absenden abgewiesen - das steht
@@ -1384,22 +1287,17 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
 <div class="sm-small"><?= abfahrt_t('TEXT.GANZTAGS_HINWEIS') ?></div>
 
 <h2><?= e(abfahrt_t('SEITE.H_SPRACHAUSGABE')) ?></h2>
-<div class="sm-row">
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_AUDIO')) ?></label>
-<?php $abf_tmod = abf_w('tts_mode', $abfcfg['tts']['mode']); ?>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="abfTtsMode()"<?= abf_m('tts_mode') ?>>
-            <option value="musicserver"<?= $abf_tmod === 'musicserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_MUSICSERVER')) ?></option>
-            <option value="ms4h"<?= $abf_tmod === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
-            <option value="audioserver"<?= $abf_tmod === 'audioserver' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_AUDIOSERVER')) ?></option>
-            <option value="custom"<?= $abf_tmod === 'custom' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_EIGENE')) ?></option>
-            <option value="alexang"<?= $abf_tmod === 'alexang' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_ALEXA')) ?></option>
-            <option value="cc4lox"<?= $abf_tmod === 'cc4lox' ? ' selected' : '' ?>><?= e(abfahrt_t('SEITE.O_GOOGLE')) ?></option>
-        </select>
-    </div>
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_TTS_IP')) ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= e(abf_w('tts_ip', $abfcfg['tts']['ip'])) ?>"<?= abf_m('tts_ip') ?> placeholder="<?= e(abfahrt_t('SEITE.P_TTS_IP')) ?>">
+<?php /* Nr. 36 b, Stufe 2: der Formularblock der gemeinsamen Sprachausgabe
+   (ansage_formular_html(), Klassen sm-feld/sm-hilfe/sm-hinweis aus der Vorlage). X-2
+   ueber die Helfer der Linie. Die Sprechtoken reisen nie in die Seite (Kennwortfeld, der
+   Platzhalter nennt nur die Laenge). */
+echo ansage_formular_html($abfcfg['tts'], array(
+    'w' => function ($n, $g) { return abf_w($n, $g); },
+    'm' => function ($n) { return abf_m($n); },
+    'c' => function ($n, $g) { return abf_h($n, $g); },
+    'modi' => abfahrt_ansage_modi()), abfahrt_ansage_k()); ?>
+<div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
+<div class="sm-feld">
 <?php if ($abf_ms4h !== null) { ?>
   <?php if (!empty($abf_ms4h['gefunden'])) { ?>
     <div class="sm-alert sm-info"><?= sprintf(abfahrt_t('MS4H.GEFUNDEN'), (int) $abf_ms4h['port'], e($abf_ms4h['quelle'])) ?></div>
@@ -1415,82 +1313,6 @@ $abf_key_laenge = strlen((string) $abfcfg['api_key']); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ms4h_suchen" value="1" title="<?= e(abfahrt_t('MS4H.T_SUCHEN')) ?>"><?= e(abfahrt_t('MS4H.K_SUCHEN')) ?></button>
 </div>
 <div class="sm-small"><?= abfahrt_t('MS4H.HINWEIS') ?></div>
-    </div>
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_PORT')) ?></label>
-        <input data-role="none" type="number" name="tts_port" value="<?= e(abf_w('tts_port', $abfcfg['tts']['port'])) ?>"<?= abf_m('tts_port') ?> min="1" max="65535">
-    </div>
-</div>
-<div class="sm-row">
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_ZONEN')) ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= e(abf_w('tts_zones', $abfcfg['tts']['zones'])) ?>"<?= abf_m('tts_zones') ?> placeholder="<?= e(abfahrt_t('SEITE.P_TTS_ZONEN')) ?>">
-        <div class="sm-small"><?= abfahrt_t('SEITE.ZONEN_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_LAUTSTAERKE')) ?></label>
-        <input data-role="none" type="number" name="tts_volume" value="<?= e(abf_w('tts_volume', $abfcfg['tts']['volume'])) ?>"<?= abf_m('tts_volume') ?> min="1" max="100">
-    </div>
-    <div>
-        <label><?= e(abfahrt_t('SEITE.L_SPRACHE')) ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= e(abf_w('tts_lang', $abfcfg['tts']['lang'])) ?>"<?= abf_m('tts_lang') ?> maxlength="2">
-    </div>
-</div>
-<div id="tts_template_row" class="abf-ttszeile">
-    <label><?= e(abfahrt_t('SEITE.L_VORLAGE_URL')) ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template"<?= abf_m('tts_template') ?> rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= e(abf_w('tts_template', $abfcfg['tts']['template'])) ?></textarea>
-    <div class="sm-small"><?= abfahrt_t('SEITE.VORLAGE_URL_HINWEIS') ?></div>
-</div>
-<div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
-    <?= abfahrt_t('SEITE.AUDIOSERVER_HINWEIS') ?>
-</div>
-<?php /* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Das Sprechtoken steht nie
-         in der Seite - das Feld ist immer leer, der Platzhalter sagt, ob
-         eines gespeichert ist und wie lang es ist. */ ?>
-<div id="tts_alexa_rows" class="abf-ttszeile">
-<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.ALEXA_HINWEIS') ?></div>
-<div class="sm-row">
-    <div>
-        <label for="tts_alexa_geraet"><?= e(abfahrt_t('SEITE.L_ALEXA_GERAET')) ?></label>
-        <input data-role="none" type="text" id="tts_alexa_geraet" name="tts_alexa_geraet" value="<?= e(abf_w('tts_alexa_geraet', $abfcfg['tts']['alexa_geraet'])) ?>"<?= abf_m('tts_alexa_geraet') ?> maxlength="200" placeholder="kueche">
-        <div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_GERAET_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label for="tts_alexa_laut"><?= e(abfahrt_t('SEITE.L_ALEXA_LAUT')) ?></label>
-        <input data-role="none" type="number" id="tts_alexa_laut" name="tts_alexa_laut" value="<?= e(abf_w('tts_alexa_laut', (int) $abfcfg['tts']['alexa_laut'] >= 0 ? (int) $abfcfg['tts']['alexa_laut'] : '')) ?>"<?= abf_m('tts_alexa_laut') ?> min="0" max="100">
-        <div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_LAUT_HINWEIS') ?></div>
-    </div>
-</div>
-<label for="tts_alexa_token"><?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN')) ?></label>
-<input data-role="none" type="password" id="tts_alexa_token" name="tts_alexa_token" value="" autocomplete="new-password" placeholder="<?= e(abf_erneut('tts_alexa_token') ? abfahrt_t('SEITE.P_ERNEUT') : ((string) $abfcfg['tts']['alexa_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_ALEXA_TOKEN_DA'), strlen((string) $abfcfg['tts']['alexa_token'])) : abfahrt_t('SEITE.P_ALEXA_TOKEN_LEER'))) ?>"<?= abf_m('tts_alexa_token') ?>>
-<label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="tts_alexa_token_loeschen" value="1" <?= abf_h('tts_alexa_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_alexa_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_ALEXA_TOKEN_LOESCHEN')) ?>
-</label>
-<div class="sm-small"><?= abfahrt_t('SEITE.ALEXA_TOKEN_HINWEIS') ?></div>
-</div>
-<?php /* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox
-         NG). Das Sprechtoken steht nie in der Seite - das Feld ist immer
-         leer, der Platzhalter sagt, ob eines gespeichert ist und wie lang. */ ?>
-<div id="tts_google_rows" class="abf-ttszeile">
-<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.GOOGLE_HINWEIS') ?></div>
-<div class="sm-row">
-    <div>
-        <label for="tts_google_geraet"><?= e(abfahrt_t('SEITE.L_GOOGLE_GERAET')) ?></label>
-        <input data-role="none" type="text" id="tts_google_geraet" name="tts_google_geraet" value="<?= e(abf_w('tts_google_geraet', $abfcfg['tts']['google_geraet'])) ?>"<?= abf_m('tts_google_geraet') ?> maxlength="200" placeholder="Wohnzimmer">
-        <div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_GERAET_HINWEIS') ?></div>
-    </div>
-    <div>
-        <label for="tts_google_laut"><?= e(abfahrt_t('SEITE.L_GOOGLE_LAUT')) ?></label>
-        <input data-role="none" type="number" id="tts_google_laut" name="tts_google_laut" value="<?= e(abf_w('tts_google_laut', (int) $abfcfg['tts']['google_laut'] >= 0 ? (int) $abfcfg['tts']['google_laut'] : '')) ?>"<?= abf_m('tts_google_laut') ?> min="0" max="100">
-        <div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_LAUT_HINWEIS') ?></div>
-    </div>
-</div>
-<label for="tts_google_token"><?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN')) ?></label>
-<input data-role="none" type="password" id="tts_google_token" name="tts_google_token" value="" autocomplete="new-password" placeholder="<?= e(abf_erneut('tts_google_token') ? abfahrt_t('SEITE.P_ERNEUT') : ((string) $abfcfg['tts']['google_token'] !== '' ? sprintf(abfahrt_t('SEITE.P_GOOGLE_TOKEN_DA'), strlen((string) $abfcfg['tts']['google_token'])) : abfahrt_t('SEITE.P_GOOGLE_TOKEN_LEER'))) ?>"<?= abf_m('tts_google_token') ?>>
-<label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="tts_google_token_loeschen" value="1" <?= abf_h('tts_google_token_loeschen', false) ? 'checked' : '' ?><?= abf_m('tts_google_token_loeschen') ?>> <?= e(abfahrt_t('SEITE.L_GOOGLE_TOKEN_LOESCHEN')) ?>
-</label>
-<div class="sm-small"><?= abfahrt_t('SEITE.GOOGLE_TOKEN_HINWEIS') ?></div>
 </div>
 
 <label><?= e(abfahrt_t('TEXT.L_ANSAGE_VORLAGE')) ?></label>
@@ -1883,19 +1705,19 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 </div>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('SEITE.H_LOEST_AUS')) ?></h3>
-<?php if ($abf_gtest !== null) {     // Ansage-3: Antwort der Testansage (einmal, nach der Umleitung)
-    $abf_gk = ((int) $abf_gtest['stufe'] === 1) ? 'sm-alert sm-ok' : 'sm-alert sm-err'; ?>
-<div class="<?= $abf_gk ?>"><?= e($abf_gtest['text']) ?></div>
+<?php if ($abf_atest !== null) {     // Nr. 36 b: Ergebnis der Testansage (einmal, nach der Umleitung)
+    $abf_ak = ((int) $abf_atest['stufe'] === 1) ? 'sm-alert sm-ok' : 'sm-alert sm-err'; ?>
+<div class="<?= $abf_ak ?>"><?= e($abf_atest['text']) ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" href="/plugins/<?= e($plugindir) ?>/termin_say.php?force=1&amp;token=<?= e($abf_token) ?>" target="_blank" rel="noopener noreferrer"><?= e(abfahrt_t('SEITE.K_ANSAGE')) ?></a>
-<?php if ($abfcfg['tts']['mode'] === 'cc4lox') {     /* Ansage-3 */ ?>
+<?php /* Nr. 36 b, Stufe 2: Testansage per POST mit Formularmerkmal (ein fester Satz mit den
+   gespeicherten Einstellungen, jede Ausgabeart). Bis 1.6.22 ein Verweis auf
+   termin_say.php?force=1 mit dem Merkwort (F5 sprach erneut) und ein Knopf nur fuer Google. */ ?>
 <form action="index.php" method="post" style="margin:0;">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="google_testansage" value="1"><?= e(abfahrt_t('TEST.K_GOOGLE_TEST')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= e(abfahrt_t('TTS.K_TESTANSAGE')) ?></button>
 </form>
-<?php } ?>
 <?php /* Nr. 27b: der Text als JSON-Zeichenkette. Bis 1.6.21 in einfachen
          Anfuehrungszeichen - ein Apostroph in der Uebersetzung zerbrach den
          Handler, und das Merkwort wurde ohne Rueckfrage neu gewuerfelt. */ ?>
@@ -1908,9 +1730,6 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 </div>
 <div class="sm-alert sm-warn"><?= abfahrt_t('TEST.TOKEN_NEU_WARNUNG') ?></div>
 <div class="sm-small"><?= abfahrt_t('SEITE.TEST_KNOEPFE_HINWEIS') ?></div>
-<?php if ($abfcfg['tts']['mode'] === 'cc4lox') { ?>
-<div class="sm-small"><?= abfahrt_t('TEST.GOOGLE_TEST_HINWEIS') ?></div>
-<?php } ?>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
@@ -1937,35 +1756,17 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 </div>
 </div>
 <script>
-function abfTtsMode() {
-    var m = document.getElementById('tts_mode').value;
-    document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
-    /* Nr. 27a: ein beanstandetes Feld bleibt sichtbar, wie bei Alexa und
-     * Google - bis 1.6.21 stand "tts.template zeigt nicht ins Heimnetz" ueber
-     * einer ausgeblendeten Zeile. */
-    var tz = document.getElementById('tts_template_row');
-    tz.style.display = (m === 'ms4h' || m === 'custom' || tz.querySelector('.sm-beanstandet')) ? 'block' : 'none';
-    var al = document.getElementById('tts_alexa_rows');
-    if (al) { al.style.display = (m === 'alexang' || al.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
-    var gl = document.getElementById('tts_google_rows');
-    if (gl) { gl.style.display = (m === 'cc4lox' || gl.querySelector('.sm-beanstandet')) ? 'block' : 'none'; }
-    var port = document.getElementsByName('tts_port')[0];
-    /* Nur ein LEERES Feld wird vorbelegt - eine bewusst eingetragene 80 bleibt. */
-    if (m === 'musicserver' && !port.value) { port.value = 7091; }
-}
-abfTtsMode();
-/* Nr. 27a: Ein ungueltiges Feld in einer ausgeblendeten Zeile (etwa eine
- * Lautstaerke 150 fuer Alexa-NG, danach Ausgabeart gewechselt) hielt das
- * Absenden still an - "not focusable". Die Zeile wird jetzt eingeblendet und
- * das Feld markiert, der Browser zeigt seinen Hinweis daran. disabled kommt
- * nicht in Frage: ein deaktiviertes Feld wird nicht gesendet, und der
- * Speichern-Zweig liest ein fehlendes Feld als leer - Geraet, Lautstaerke und
- * Vorlage waeren geloescht. */
-document.getElementById('tts_mode').form.addEventListener('invalid', function (ereignis) {
+/* Nr. 27a: Ein ungueltiges Feld in einem ausgeblendeten Teil des Formularblocks (etwa eine
+ * Lautstaerke 150 fuer Alexa-NG, danach Ausgabeart gewechselt) hielte das Absenden still an
+ * - "not focusable". Der Teil wird eingeblendet und das Feld markiert, der Browser zeigt
+ * seinen Hinweis daran. Seit 1.6.23 sind es die Teile des Moduls (ansage_klassisch,
+ * ansage_vorlage, ansage_alexa, ansage_google, ansage_sonos); das Umschalten nach der
+ * Ausgabeart macht ansageUmschalten() des Moduls. */
+document.getElementById('ansage_mode').form.addEventListener('invalid', function (ereignis) {
     var f = ereignis.target, z = f;
     while (z && z !== this) {
-        if (z.classList && z.classList.contains('abf-ttszeile') && z.style.display === 'none') {
-            z.style.display = 'block';
+        if (z.id && z.id.indexOf('ansage_') === 0 && z.style && z.style.display === 'none') {
+            z.style.display = '';
             f.classList.add('sm-beanstandet');
         }
         z = z.parentNode;

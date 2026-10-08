@@ -142,52 +142,32 @@ if ($tts['mode'] === 'audioserver') {
     exit;
 }
 
-/* Ansage-2 (01.10.2026): Ausgabeart Alexa-NG. Faellt Alexa-NG aus, entfaellt
- * die Ansage - kein stiller Wechsel auf einen anderen Lautsprecher. Protokoll
- * und Antwort nennen HTTP-Code und GRUND, nie das Sprechtoken. */
-if ($tts['mode'] === 'alexang') {
-    $abf_ag = abfahrt_alexa_sprechen($text, $abfcfg);
-    if ($abf_ag === '') {
-        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_OK'), ansage_zeichen($text)) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
-        echo 'OK: TEXTLAENGE=' . ansage_zeichen($text) . "\n";    // Nr. 40: die Laenge, nicht der Text
+/* Nr. 36 b, Stufe 2: alle uebrigen Ausgabearten spricht die gemeinsame Sprachausgabe
+ * (ansage_sprechen()): Music Server und Vorlagen per GET (Erfolg nur HTTP 2xx, die fertige
+ * Adresse vorher erneut auf das Heimnetz geprueft), Alexa-NG und Chromecast 4 Lox NG per
+ * POST (Erfolg nur HTTP 200 und SPRECHEN;OK=1), ohne Weiterleitung, ohne Proxy, 10 s.
+ * Faellt die Gegenseite aus, entfaellt die Ansage - kein stiller Wechsel auf einen
+ * anderen Lautsprecher, keine eigene Wiederholung. Ins Protokoll kommt nur ansage_kurz()
+ * (nie Text, Token oder die Adresse des Music Servers). Die Antwort an Loxone bleibt in
+ * der Form bis 1.6.22: "OK: TEXTLAENGE=N" bzw. eine Zeile, die mit "FEHLER" beginnt. */
+$abf_k = abfahrt_ansage_k();
+$abf_r = ansage_sprechen($text, $tts, $abf_k);
+abfahrt_log('Ansage: ' . ansage_kurz($abf_r) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
+if ($abf_r['stand'] === 1) {
+    if ($abf_r['art'] === 'cc4lox') {
+        // Wie bisher: "OK: TEXTLAENGE=N; an Google-Lautsprecher gesendet, HTTP 200, <Antwortzeile>".
+        echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_OK'), $abf_r['zeichen'],
+                     'HTTP ' . (int) $abf_r['http'] . ', ' . ($abf_r['zeile'] !== '' ? $abf_r['zeile'] : '-')) . "\n";
     } else {
-        $abf_agt = abfahrt_grund_text($abf_ag);
-        abfahrt_log(sprintf(abfahrt_t('TEXT.ALEXA_LOG_FEHL'), $abf_agt));
-        echo sprintf(abfahrt_t('TEXT.ALEXA_ANTWORT_FEHL'), $abf_agt) . "\n";
+        echo 'OK: TEXTLAENGE=' . $abf_r['zeichen'] . "\n";     // Nr. 40: die Laenge, nicht der Text
     }
     exit;
 }
-
-/* Ansage-3 (01.10.2026): Ausgabeart Google-Lautsprecher (Chromecast 4 Lox NG).
- * Faellt das Plugin aus, entfaellt die Ansage - kein stiller Wechsel auf einen
- * anderen Lautsprecher, keine eigene Wiederholung. Protokoll und Antwort nennen
- * HTTP-Code und Antwortzeile bzw. GRUND und vom Text nur die Zeichenzahl - nie
- * das Sprechtoken, nie den Text. */
-if ($tts['mode'] === 'cc4lox') {
-    $abf_ga = null;
-    $abf_gg = abfahrt_google_sprechen($text, $abfcfg, $abf_ga);
-    $abf_gn = (int) preg_match_all('/./us', (string) $text);
-    if ($abf_gg === '') {
-        $abf_gk = abfahrt_ng_kurz($abf_ga);
-        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_OK'), $abf_gn, $abf_gk) . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
-        // Beginnt wie bei den anderen Arten mit "OK: TEXTLAENGE=N" (Pruefung 02.10.2026, Nr. 12 b).
-        echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_OK'), $abf_gn, $abf_gk) . "\n";
-    } else {
-        $abf_ggt = abfahrt_grund_text($abf_gg);
-        abfahrt_log(sprintf(abfahrt_t('TEXT.GOOGLE_LOG_FEHL'), $abf_gn, $abf_ggt));
-        echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_FEHL'), $abf_ggt) . "\n";
-    }
-    exit;
-}
-
-$url = abfahrt_tts_url($text, $tts);
-// '' heisst: die IP fehlt, obwohl der Modus bzw. die Vorlage sie braucht.
-// Die Pruefung sitzt seit 1.5.4 in abfahrt_tts_url() - vorher stand sie hier
-// vor dem Aufruf und sperrte auch eigene Vorlagen ohne {ip} aus (AWM 1.2.0).
-if ($url === '') {
-    /* Seit 1.6.22 strenger geprueft (Pruefung 02.10.2026, Nr. 2/14): ein
-     * abgewiesener tts-Block faellt auf die Vorgaben - dann fehlt die IP nicht,
-     * sondern die Einstellung wurde abgewiesen. */
+$abf_kid = explode('|', (string) $abf_r['kennung']);
+if ($abf_kid[0] === 'KEINE_IP') {
+    /* Seit 1.6.22 strenger geprueft (Pruefung 02.10.2026, Nr. 2/14): ein abgewiesener
+     * tts-Block faellt beim Laden auf die Vorgaben - dann fehlt die IP nicht, sondern die
+     * Einstellung wurde abgewiesen. */
     $abf_lage = abfahrt_config_lage();
     if (isset($abf_lage['abgewiesen']['tts'])) {
         echo "FEHLER: Einstellungen der Sprachausgabe abgewiesen (" . $abf_lage['abgewiesen']['tts']
@@ -197,63 +177,27 @@ if ($url === '') {
     echo "FEHLER: Keine Audio-Server-IP konfiguriert (Plugin-Oberflaeche oeffnen).\n";
     exit;
 }
-/* Die WIRKUNG pruefen, nicht den Rueckgabewert.
- *
- * Bisher galt jede Antwort ausser einem Transportfehler als Erfolg - curl
- * liefert den Rumpf auch bei HTTP 404 und 500. Eine falsche Zonennummer
- * fuehrte damit zu "Ansage gesprochen" im Protokoll, obwohl nichts gesagt
- * wurde. Eine stille Falschaussage ist die schlimmste Art von Fehler.
- *
- * $grund sagt jetzt auch, WER geantwortet hat: "Verbindung abgewiesen"
- * (Rechner da, Dienst aus) fuehrt zu einer voellig anderen Suche als eine
- * Zeitueberschreitung. */
-$grund = '';
-$status = 0;
-/* Nr. 36 b: abgerufen ueber den Transport der gemeinsamen Sprachausgabe (ohne Weiterleitung,
- * ohne Proxy, 8 s wie bisher, Erfolg nur bei HTTP 2xx); der Grund ist die Kennung dieser Linie. */
-$abf_k = abfahrt_ansage_k();
-/* Die fertige Adresse unmittelbar vor dem Senden pruefen (http/https, keine
- * Zugangsdaten vor dem Rechner, Rechner im Heimnetz): sie traegt den
- * Ansagetext. Bis 1.6.21 ging z. B. http://{ip}:80@example.com/... an
- * example.com (Pruefung 02.10.2026, Nr. 2). */
-if (!ansage_url_heimnetz($url)) {
-    $abf_hg = abfahrt_grund_text($tts['mode'] === 'musicserver' ? 'TTS_IP' : 'TTS_VORLAGE_HEIMNETZ');
-    abfahrt_log('FEHLER: Ansage nicht gesendet - ' . $abf_hg);
-    echo 'FEHLER: Ansage nicht gesendet - ' . $abf_hg . "\n";
+$abf_grund = ansage_kennung_text($abf_r['kennung'], $abf_k);
+if ($abf_r['art'] === 'alexang') {
+    echo sprintf(abfahrt_t('TEXT.ALEXA_ANTWORT_FEHL'), $abf_grund) . "\n";
     exit;
 }
-$abf_a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 8, $abf_k), $abf_k);
-$status = $abf_a['code'];
-/* Bis 1.6.21 hiess jeder Transportfehler ausser 6, 7 und 28 "kein curl
- * vorhanden" - auch mit curl (52 leere Antwort, 35/60 TLS, 3 kaputte Adresse).
- * 1.6.20 meldete noch "Netzfehler 52: Empty reply from server" (Pruefung
- * 02.10.2026, Nr. 3). */
-if ($status > 0) {
-    $abf_gid = abfahrt_http_grund_id(0, '', $status);
-} elseif ($abf_a['errno'] > 0) {
-    $abf_gid = abfahrt_http_grund_id($abf_a['errno'], $abf_a['fehler'], 0);
-} elseif ($abf_a['errno'] === -2) {
-    $abf_gid = 'HTTP_KEIN_HTTP';
-} else {
-    $abf_gid = function_exists('curl_init') ? 'HTTP_OHNE_ANTWORT' : 'HTTP_OHNE_CURL';
+if ($abf_r['art'] === 'cc4lox') {
+    echo sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_FEHL'), $abf_grund) . "\n";
+    exit;
 }
-$grund = $abf_gid !== '' ? abfahrt_grund_text($abf_gid) : '';
-$r = ($status >= 200 && $status < 300) ? $abf_a['rumpf'] : false;
-if ($r !== false) {
-    /* Nr. 40: vom Ansagetext nur seine Laenge, in Protokoll und Antwort. */
-    abfahrt_log('Ansage gesprochen (' . ansage_zeichen($text) . ' Zeichen)' . (abfahrt_schalter('force') ? ' [Test/force]' : ''));
-    echo 'OK: TEXTLAENGE=' . ansage_zeichen($text) . "\n";
-} else {
-    abfahrt_log('FEHLER beim Aufruf des Audio-Servers: ' . ($grund !== '' ? $grund : 'unbekannt'));
-    echo 'FEHLER beim Aufruf des Audio-Servers'
-       . ($grund !== '' ? ': ' . $grund : '.') . "\n";
-    /* Nur Schema, Rechner und Port: bis 1.6.21 stand hier die ganze Adresse
-     * samt Ansagetext und allem, was eine eigene Vorlage traegt (Pruefung
-     * 02.10.2026, Nr. 13). */
-    if (abfahrt_schalter('debug')) {
-        $abf_u = @parse_url($url);
-        echo 'URL: ' . ((is_array($abf_u) && isset($abf_u['scheme'], $abf_u['host']))
-            ? $abf_u['scheme'] . '://' . $abf_u['host'] . (isset($abf_u['port']) ? ':' . (int) $abf_u['port'] : '')
-            : '-') . "\n";
-    }
+if ($abf_kid[0] === 'EINSTELLUNG') {
+    // Die fertige Adresse liegt nicht im Heimnetz oder eine Einstellung taugt nicht - nichts gesendet.
+    echo 'FEHLER: Ansage nicht gesendet - ' . $abf_grund . "\n";
+    exit;
+}
+echo 'FEHLER beim Aufruf des Audio-Servers: ' . $abf_grund . "\n";
+/* k1: mit debug=1 nur Schema, Rechner und Port der Adresse - nie der Pfad, der den
+ * Ansagetext und alles traegt, was eine eigene Vorlage enthaelt (bis 1.6.21 die ganze
+ * Adresse, Pruefung 02.10.2026, Nr. 13). */
+if (abfahrt_schalter('debug')) {
+    $abf_u = @parse_url((string) ansage_tts_url($text, $tts));
+    echo 'URL: ' . ((is_array($abf_u) && isset($abf_u['scheme'], $abf_u['host']))
+        ? $abf_u['scheme'] . '://' . $abf_u['host'] . (isset($abf_u['port']) ? ':' . (int) $abf_u['port'] : '')
+        : '-') . "\n";
 }
