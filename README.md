@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.24 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.25 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,22 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.25
+
+Gemeinsame Sprachausgabe 1.1.2.
+
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Das Modul weiß
+  jetzt, dass hier ab Werk der Loxone Music Server eingestellt ist: Die Auswahl nennt ihn
+  „(ab Werk)“, „aus“ heißt schlicht „aus“, und der Hinweis darunter kommt aus dem Modul (gleicher
+  Inhalt wie der bisherige eigene Satz, der gestrichen ist). Dazu aus dem Modul: eigene Sätze zu
+  einem unbekannten Eintrag im Block der Sprachausgabe, Zeichenzahl bei kaputtem UTF-8 in Zeichen,
+  die Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Abfahrts-Assistent, Abfuhrkalender und Ferien und Feiertage teilen sich das Modul in einem Aufruf
+  (Sondertage über das Ferien-Plugin); alle drei kommen mit 1.1.2.
+* Baustein-Liste unverändert – bis auf die Bedienung in der App (#10) und den MQTT-Weg von #15
+  (Lebenszeichen, siehe Erläuterung) ist sie schon in der Schreibweise des Leitungswerkzeugs.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.6.24
 

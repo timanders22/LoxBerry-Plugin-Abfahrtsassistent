@@ -882,14 +882,15 @@ function abfahrt_ansage_modi() {
 /**
  * Kontext fuer die gemeinsame Sprachausgabe: Webport, Kopfzeilen, Ordner der letzten
  * Ansage (Zwischenordner; angelegt wird dafuer nichts, wie bis 1.6.22) und die Texte
- * ([ANSAGE] der Sprachdateien). Zwei Saetze des Moduls sagen "ab Werk aus"; hier ist ab
- * Werk der Music Server ohne Adresse eingestellt - dafuer stehen eigene Saetze unter [TTS].
+ * ([ANSAGE] der Sprachdateien). Ab Werk ist der Music Server ohne Adresse eingestellt:
+ * 'werk' => 'musicserver' (Modul 1.1.2) bringt die passenden Saetze mit; die eigenen
+ * Umlenkungen ART_HINWEIS/O_AUS auf [TTS] sind seit 1.6.25 gestrichen (X-10).
  */
 function abfahrt_ansage_k() {
     return array('port' => abfahrt_webport(), 'kopf' => array('User-Agent: LoxBerry Abfahrts-Assistent'),
                  'ordner' => abfahrt_tmpdir(false),
                  't' => function ($s) { return abfahrt_t($s); },
-                 'schluessel' => array('ART_HINWEIS' => 'TTS.ART_HINWEIS', 'O_AUS' => 'TTS.O_AUS'));
+                 'werk' => 'musicserver');
 }
 
 /** Adresse eines oertlichen Plugin-Skripts, mit dem richtigen Port. */
