@@ -1137,6 +1137,10 @@ if ($use_frame) {
 /* X-2 (Welle 2): ein beanstandetes Feld nach der Umleitung - eigene Zutat, nicht Teil der Hausvorlage. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
+/* Welle Bild (Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <div class="sm-wrap">
 
@@ -1624,6 +1628,11 @@ foreach (abfahrt_felder() as $abf_n => $abf_d) {
 </table>
 </div>
 <div class="sm-alert sm-info"><?= abfahrt_tn('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= e(abfahrt_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= e(abfahrt_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?= abfahrt_t('LOX.MUSTERPROJEKT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('LOX.H_GEGENPROBE')) ?></b><br><br>
