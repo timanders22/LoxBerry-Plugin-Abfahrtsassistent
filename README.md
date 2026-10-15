@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.26 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,37 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.27
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit einem Bild und
+Schritt-für-Schritt-Anleitung.
+
+* **Reiter Einbindung in Loxone, „Komplette Baustein-Liste“:** die Seite „Abfahrtsassistent“ aus dem
+  Musterprojekt mit 39 Nummern statt 23 – neu Fahrzeit und Ankunft (`ABFAHRT_FAHRT` mit Statistik,
+  `ABFAHRT_ANKUNFT`), die Vorwarnung als Schieberegler in der App, Ansage und Push nur, wenn jemand zu
+  Hause ist und die Meldung 5 s ansteht, die Störungsmeldung „Abfahrtsassistent gestört“ (Abruf steht,
+  Plugin rechnet nicht, Fehlergrund), Verspätung und Ankunftszeit als Formeln, der Status
+  „Abfahrts-Assistent“ mit 14 Zeilen und der Status „Abfahrt Meldewege“. Darüber der Kasten „So
+  übernehmen Sie diese Seite“, darunter Hinweise, die Erläuterungen „Zu #…“ und das neue Bild der Seite.
+* **Drei Schwellwertschalter entfallen** (#14 „Daten gültig“, #19 „Ansage erlaubt“, #20 „Push erlaubt“):
+  hinter einem abgefragten digitalen Eingang gibt ein Schwellwertschalter bei jeder Abfrage einen kurzen
+  Impuls – nach der alten Liste drohte, sobald die Abfahrt fällig war, alle 60 s eine Push-Nachricht.
+  `ABFAHRT_OK`, `ABFAHRT_AUDIO` und `ABFAHRT_PUSH` gehen jetzt direkt an die UND, davor sitzt „Abfahrt
+  bestätigt“ (#38, 5 s). Wer die alte Liste nachgebaut hat, baut die drei Schwellwertschalter ab.
+* **Namen der Eingänge:** die Liste nennt die Befehle der Importdatei (`ABFAHRT_OK` …) wie das Bild; der
+  Name des MQTT-Eingangs (`abfahrt_OK` …) steht daneben in der Spalte Parameter. Die Seite ist für den
+  HTTP-Weg gebaut – über MQTT gibt es kein Alter.
+* **Vorlagen unverändert:** Importdatei und Steuerbefehle bleiben, wie sie sind – kein neuer Import nötig.
+  Neu im eigenen Projekt sind nur Bausteine, darunter von Hand der Virtuelle Eingang „Abfahrt Vorwarnung
+  (min)“ und die Benachrichtigung „Abfahrtsassistent gestört“ (Kasten, Schritte 4 und 5).
+* **Textberichtigungen:** die Liste verweist für die Adresse des Ausgangsbefehls nicht mehr auf einen
+  „Schritt 3“, den es im Reiter nicht gab; „Optional: Statusbaustein für die App“ und die Liste beschreiben
+  denselben Status (#23, bisher zwei verschiedene Belegungen); der Absatz „Systemstart-Impuls →
+  Ausschaltverzögerung 300 s vor die ODER-Zusammenführung“ ist gestrichen (die Liste hat kein solches ODER,
+  und auf dem HTTP-Weg steht bis zur ersten Abfrage der Fehlwert 9999, danach kommt eine neue Flanke); die
+  Erläuterung zu den unterschiedlichen Schwellen nennt die Nummern der verbliebenen Schwellwertschalter.
+* Plugin-Verhalten unverändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.6.26
 
@@ -799,7 +830,9 @@ virtuellen Ausgang für die Ansage an; diese Datei trägt das Merkwort.
 
 **Musterprojekt:** Die Bausteine der Baustein-Liste stehen fertig verbunden auf der Seite
 „Abfahrtsassistent“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
-einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen (39 Nummern, gebaut für den
+HTTP-Weg mit der Importdatei; der Reiter *Einbindung in Loxone* führt Schritt für Schritt durch den
+Nachbau).
 
 `FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,
 2 kein API-Key, 3 keine Abfahrtsadresse, 4 kein Termin, 5 Kalender zu lange

@@ -2650,6 +2650,13 @@ function abfahrt_feld_mqtt($name) {
     return !empty($f[$name][5]);
 }
 
+/** Der Titel des Befehls eines Feldes in der Importdatei (ABFAHRT_<FELD>) - fuer Vorlage UND
+ *  Baustein-Liste, eine Stelle. Welle Bild 13 (1.6.27): die Liste nennt seit dieser Fassung die
+ *  Befehle der Importdatei wie das Musterprojekt; bis 1.6.26 stand dort der Name des MQTT-Eingangs. */
+function abfahrt_befehl_titel($name) {
+    return 'ABFAHRT_' . $name;
+}
+
 /** Der Suchtext eines Feldes - fuer Vorlage UND Anleitung, eine Stelle. */
 function abfahrt_suchtext($name) {
     return '\\i;' . $name . '=\\i\\v';
@@ -3891,7 +3898,7 @@ function abfahrt_vorlage($host = '') {
         $einheit = (string) $d[6];
         $nachkomma = ($name === 'FAHRT') ? 1 : 0;
         $cmds[] = [
-            'title'   => 'ABFAHRT_' . $name,
+            'title'   => abfahrt_befehl_titel($name),
             'comment' => trim(strip_tags(html_entity_decode(abfahrt_t('FELDKURZ.' . $name), ENT_QUOTES, 'UTF-8'))),
             'check'   => abfahrt_suchtext($name),
             'analog'  => $analog, 'min' => $min, 'max' => $max,

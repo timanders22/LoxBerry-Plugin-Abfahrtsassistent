@@ -1141,6 +1141,11 @@ if ($use_frame) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 13 (1.6.27): Abschnitt, Schritte und Hinweise der Baustein-Liste (wie Fensterbilanz 0.12.16). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <div class="sm-wrap">
 
@@ -1597,7 +1602,7 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_STATUS')) ?></b><br><br>
-<?= abfahrt_t('SEITE.STATUS_TEXT') ?>
+<?= abfahrt_tn('SEITE.STATUS_TEXT') ?>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_AUDIO')) ?></b><br><br>
@@ -1605,7 +1610,25 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('LOX.H_BAUSTEINE')) ?></b><br><br>
+<?php /* Welle Bild 13 (1.6.27; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
+         leicht uebernehmen koennen; Entwurf Welle 13 ab, Entscheidungen 1-13 wie empfohlen): die Seite
+         "Abfahrtsassistent" aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit
+         leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt, 39 Nummern, wortgleich). Nummern wie
+         bisher: 1-9 die Felder (Befehle der Importdatei, daneben der Name des MQTT-Eingangs), 10-39 =
+         BAUSTEIN.B1 ... B30; #14, #19 und #20 (B5, B10, B11) entfallen und bleiben als Zeile stehen, damit
+         die Nummern zum Musterprojekt passen. Verweise ueber {B..}/{F:..} (abfahrt_nummern()). Bis 1.6.26:
+         23 Zeilen, Ausgang und Benachrichtigung in B12/B13 versteckt. */
+$abf_bausteine = 30;
+$abf_schritte = array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8');
+$abf_hinweise = array('LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5', 'LOX.SEITE1_N6', 'LOX.SEITE1_N7'); ?>
 <?= abfahrt_t('LOX.BAUSTEINE_TEXT') ?>
+<h4 class="sm-h4"><?= e(abfahrt_t('LOX.SEITE1_H')) ?></h4>
+<div class="sm-hinweis"><b><?= e(abfahrt_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($abf_schritte as $abf_x) { ?>
+<li><?= abfahrt_tn($abf_x) ?></li>
+<?php } ?>
+</ol></div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= e(abfahrt_t('LOX.T_BAUSTEIN')) ?></th><th><?= e(abfahrt_t('LOX.T_NAME')) ?></th>
@@ -1614,12 +1637,13 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 $abf_i = 0;
 foreach (abfahrt_felder() as $abf_n => $abf_d) {
     $abf_i++; ?>
-<tr><td><?= $abf_i ?></td><td><?= e(abfahrt_t('LOX.B_EINGANG')) ?></td>
-    <td><span class="sm-mono"><?= e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_n)) ?></span></td>
-    <td><?= empty($abf_d[5]) ? e(abfahrt_t('LOX.B_NUR_HTTP')) : e(abfahrt_t('LOX.B_THEMA')) . ' <span class="sm-mono">' . e($abfcfg['mqtt_topic']) . '/' . e($abf_n) . '</span>' ?></td>
+<tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.FELD_TYP') ?></td>
+    <td><span class="sm-mono"><?= e(abfahrt_befehl_titel($abf_n)) ?></span></td>
+    <td><?= abfahrt_tn('BAUSTEIN.F_' . $abf_n) ?> <?= empty($abf_d[5]) ? e(abfahrt_t('LOX.B_NUR_HTTP'))
+        : sprintf(abfahrt_t('LOX.B_MQTT'), '<span class="sm-mono">' . e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_n)) . '</span>') ?></td>
     <td>&mdash;</td></tr>
 <?php } ?>
-<?php for ($abf_b = 1; $abf_b <= 14; $abf_b++) { $abf_i++; ?>
+<?php for ($abf_b = 1; $abf_b <= $abf_bausteine; $abf_b++) { $abf_i++; ?>
 <tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_TYP') ?></td>
     <td><span class="sm-mono"><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_NAME') ?></span></td>
     <td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_PARAM') ?></td>
@@ -1627,6 +1651,12 @@ foreach (abfahrt_felder() as $abf_n => $abf_d) {
 <?php } ?>
 </table>
 </div>
+<div class="sm-warnung"><b><?= e(abfahrt_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($abf_hinweise as $abf_x) { ?>
+<li><?= abfahrt_tn($abf_x) ?></li>
+<?php } ?>
+</ul></div>
 <div class="sm-alert sm-info"><?= abfahrt_tn('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
 <figure class="sm-bild">
 <img src="einbindung_loxone.png" alt="<?= e(abfahrt_t('LOX.BILD_ALT')) ?>" loading="lazy">
