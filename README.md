@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.27 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.28 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,23 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.28
+
+Textberichtigungen im Reiter „Einbindung in Loxone“ und in der Hilfe. Plugin-Verhalten, Bild und Vorlagen
+unverändert – kein neuer Import nötig.
+
+* **Komplette Baustein-Liste, Textberichtigungen der Einbindungstabelle:** die entfallenen Zeilen #14, #19 und #20
+  heißen wie im Musterprojekt nur noch „(entfällt)“ mit „nicht mehr nötig – OK geht direkt an #17“ (AUDIO an
+  #21, PUSH an #22). Bisher stand dort „(entfällt, Entscheidung 4)“ und „Baustein löschen“ – Begriffe aus dem
+  Umbau des Musterprojekts, die ein neuer Anwender nicht einordnen kann.
+* **Logik auf der Programmierseite:** der Text nennt jetzt wie die Liste die Anwesenheit (#36, UND #37) und die
+  Bestätigung nach 5 s (#38); ist niemand zu Hause, kommen weder Ansage noch Push.
+* **Gegenprobe:** beschreibt beide Wege – Importdatei (HTTP: `ABFAHRT_ALTER`, `ABFAHRT_ABFAHRT_IN`) und MQTT;
+  bisher nur die MQTT-Eingänge.
+* **Hilfe und Reiter MQTT:** der Virtuelle HTTP-Eingang der Importdatei fragt alle 60 s ab (Abfragezeit), nicht „alle
+  5 min“; ebenso im Text „MQTT ist der bevorzugte Weg“.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.6.27
 

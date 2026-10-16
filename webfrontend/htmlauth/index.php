@@ -1598,7 +1598,8 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <tr><td><?= e(abfahrt_t('SEITE.T_MERKWORT')) ?></td><td><span class="sm-mono"><?= e($abf_token) ?></span></td></tr>
 </table>
 <div class="sm-alert sm-warn"><?= abfahrt_t('TEXT.MERKWORT_HINWEIS') ?></div>
-<?= abfahrt_t('SEITE.LOGIK_TEXT') ?>
+<?php /* Nachzug Welle 13 (1.6.28): der Text nennt Anwesenheit und Bestaetigung mit Nummern {B..}/{F:..}. */ ?>
+<?= abfahrt_tn('SEITE.LOGIK_TEXT') ?>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_STATUS')) ?></b><br><br>
