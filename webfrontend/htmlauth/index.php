@@ -1621,7 +1621,7 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
          23 Zeilen, Ausgang und Benachrichtigung in B12/B13 versteckt. */
 $abf_bausteine = 30;
 $abf_schritte = array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8');
-$abf_hinweise = array('LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5', 'LOX.SEITE1_N6', 'LOX.SEITE1_N7'); ?>
+$abf_hinweise = array('LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5', 'LOX.SEITE1_N6', 'LOX.SEITE1_N7', 'LOX.SEITE1_N8'); ?>
 <?= abfahrt_t('LOX.BAUSTEINE_TEXT') ?>
 <h4 class="sm-h4"><?= e(abfahrt_t('LOX.SEITE1_H')) ?></h4>
 <div class="sm-hinweis"><b><?= e(abfahrt_t('LOX.SCHRITTE_TITEL')) ?></b>
