@@ -131,7 +131,7 @@ function abf_umleiten($data_dir, $tab, array $inhalt) {
  * sein Feld zeigt dann den gespeicherten Wert (und bleibt markiert). */
 function abf_eingabe_felder($formular) {
     if ($formular === 'mqtt') {
-        return array('mqtt_ein', 'mqtt_topic', 'mqtt_vollsend_min');
+        return array('mqtt_ein', 'befehle_mqtt_ein', 'mqtt_topic', 'mqtt_vollsend_min');
     }
     if ($formular === 'settings') {
         return array('cal_name', 'cal_loeschen', 'provider', 'api_key_loeschen', 'home_address',
@@ -492,9 +492,17 @@ if ($abf_post && isset($_POST['download'])) {
     $host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
     $host = $host !== '' ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', $host) : '';
     /* U7: download=xml_out ist die Vorlage der Steuerbefehle (Ansage mit
-     * Merkwort), sonst die Eingangsvorlage wie bisher. */
-    $v = (is_string($_POST['download']) && $_POST['download'] === 'xml_out')
-       ? abfahrt_vorlage_ausgang($host) : abfahrt_vorlage($host);
+     * Merkwort), sonst die Eingangsvorlage wie bisher. Gruppe 2 / MQTT (1.6.30): download=xml_mqtt ist die Vorlage
+     * der MQTT-Befehle (bb_vorlage(), eigener Ausgang an den UDP-Eingang des Gateways, kein Merkwort). */
+    if (is_string($_POST['download']) && $_POST['download'] === 'xml_mqtt') {
+        $v = abfahrt_befehle_vorlage($host);
+        if ($v === null) {
+            abf_umleiten($data_dir, 'tab-loxone', array('fehler' => abfahrt_t('LOX.S5_KEINE')));
+        }
+    } else {
+        $v = (is_string($_POST['download']) && $_POST['download'] === 'xml_out')
+           ? abfahrt_vorlage_ausgang($host) : abfahrt_vorlage($host);
+    }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $v[0] . '"');
     header('Content-Length: ' . strlen($v[1]));
@@ -627,6 +635,9 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     $abf_neu = $abf_alt;
     $abf_hw = array();
     $abf_neu['mqtt_ein'] = empty($_POST['mqtt_ein']) ? 0 : 1;
+    /* Gruppe 2 / MQTT (1.6.30): "Befehle ueber MQTT annehmen" (ab Werk aus) - im MQTT-Formular, damit beide
+     * Haken zusammen gespeichert werden; die Befehlsbruecke schaltet unten sofort (abfahrt_bruecke_schalten()). */
+    $abf_neu['befehle_mqtt_ein'] = empty($_POST['befehle_mqtt_ein']) ? 0 : 1;
     abf_feld($abf_neu, $abf_alt, 'mqtt_vollsend_min', isset($_POST['mqtt_vollsend_min']) ? trim((string) $_POST['mqtt_vollsend_min']) : '', $abf_hw);
     $abf_t = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']) ? trim($_POST['mqtt_topic']) : '';
     if ($abf_t === '') {
@@ -665,6 +676,25 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     }
     // M5: die Abo-Datei des Gateways auf das (neue) Praefix nachfuehren.
     abfahrt_abo_datei($abf_neu['mqtt_topic'], true);
+    /* Gruppe 2 / MQTT (1.6.30; Entwurf aa 3, Bauart FerienFeiertage 1.2.27): die Befehlsbruecke sofort schalten -
+     * starten, wenn Haken und MQTT an sind, sonst anhalten. Der Waechter im Minutenlauf startet nach einem Start
+     * hoechstens alle 600 s neu; ohne den Direktstart liefe die Bruecke nach dem Einschalten bis zu 10 Minuten nicht.
+     * Eine laufende Bruecke liest Haken und Praefix spaetestens alle 30 s selbst. */
+    if ((int) $abf_neu['befehle_mqtt_ein'] !== (int) $abf_alt['befehle_mqtt_ein']) {
+        abfahrt_log('Befehle ueber MQTT ' . ($abf_neu['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+    }
+    list($abf_brc, $abf_bart, $abf_baus) = abfahrt_bruecke_schalten($abf_neu);
+    if ($abf_bart === 'start' && $abf_brc === 0) {
+        $abf_hw[] = abfahrt_t('BEFEHL.M_EIN');
+    } elseif ($abf_bart === 'start') {
+        $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $abf_baus);
+    } elseif ($abf_bart === 'stop' && $abf_brc === 0) {
+        $abf_hw[] = abfahrt_t('BEFEHL.M_AUS');
+    } elseif ($abf_bart === 'stop') {
+        $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $abf_baus);
+    } elseif (!empty($abf_neu['befehle_mqtt_ein']) && empty($abf_neu['mqtt_ein'])) {
+        $abf_hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
+    }
     abf_umleiten($data_dir, 'tab-mqtt', array('gespeichert' => 1, 'hinweise' => $abf_hw));
 }
 
@@ -1146,6 +1176,9 @@ if ($use_frame) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 2 / MQTT (1.6.30): Kopierknopf in der Namenstabelle (Reiter Einbindung, Schritt 3). */
+.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 6px; cursor: pointer; border: 1px solid #bbb;
+    border-radius: 3px; background: #f4f4f4; }
 </style>
 <div class="sm-wrap">
 
@@ -1481,6 +1514,7 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <?php } ?>
 </table>
 <div class="sm-small"><?= abfahrt_t('MQTT.RETAIN_ERKLAERUNG') ?></div>
+<div class="sm-small"><?= abfahrt_t('MQTT.LZ_ERKLAERUNG') ?></div>
 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
@@ -1489,6 +1523,10 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <div class="sm-row"><label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= abf_h('mqtt_ein', !empty($abfcfg['mqtt_ein'])) ? ' checked' : '' ?><?= abf_m('mqtt_ein') ?>> <?= e(abfahrt_t('MQTT.L_EIN')) ?></label></div>
 <div class="sm-row"><label><?= e(abfahrt_t('MQTT.L_TOPIC')) ?></label>
 <input data-role="none" type="text" name="mqtt_topic" value="<?= e(abf_w('mqtt_topic', $abfcfg['mqtt_topic'])) ?>"<?= abf_m('mqtt_topic') ?> size="24"></div>
+<?php /* Gruppe 2 / MQTT (1.6.30; Entwurf gemeinsam 2.11): Haken der Befehlsbruecke, ab Werk aus. */ ?>
+<div class="sm-row"><label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= abf_h('befehle_mqtt_ein', !empty($abfcfg['befehle_mqtt_ein'])) ? ' checked' : '' ?><?= abf_m('befehle_mqtt_ein') ?>> <?= e(abfahrt_t('BEFEHL.L_ANNEHMEN')) ?></label></div>
+<div class="sm-small"><?= abfahrt_t('BEFEHL.H_ANNEHMEN') ?></div>
+<div class="sm-small"><?= sprintf(abfahrt_t('BEFEHL.H_THEMEN'), e($abfcfg['mqtt_topic'])) ?></div>
 <div class="sm-row"><label><?= e(abfahrt_t('TEXT.L_MQTT_VOLLSEND')) ?></label>
 <input data-role="none" type="number" name="mqtt_vollsend_min" value="<?= e(abf_w('mqtt_vollsend_min', $abfcfg['mqtt_vollsend_min'])) ?>"<?= abf_m('mqtt_vollsend_min') ?> min="0" max="1440"></div>
 <div class="sm-small"><?= abfahrt_t('TEXT.MQTT_VOLLSEND_HINWEIS') ?></div>
@@ -1504,39 +1542,186 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <h2><?= e(abfahrt_t('SEITE.H_EINBINDUNG')) ?></h2>
 <p><?= abfahrt_t('SEITE.EINBINDUNG_TEXT') ?></p>
 
+<?php /* Gruppe 2 / MQTT (1.6.30; Entwurf aa 2.5, Entwurf gemeinsam 2.11; Gliederung wie FerienFeiertage 1.2.27 und
+   Abfuhrkalender 1.4.25): MQTT ist der Weg des Musterprojekts. Schritt 1 MQTT einschalten (Zustand), Schritt 2 das
+   Gateway nach seiner Fassung (V1: das Plugin bringt sein Abo selbst mit; V2 und "nicht feststellbar": Hakenliste aus
+   abfahrt_mqtt_hakenliste(), aufgeklappt), Schritt 3 die Namenstabelle (keine Importvorlage fuer Werte, Hausherr
+   19.10.2026), Schritt 4 Ausfallerkennung, Schritt 5 der Befehl aus der Befehlsbruecke (bb_liste(), EINE Quelle mit
+   der Vorlage), Schritt 6 die Baustein-Liste, Schritt 7 Gegenprobe. Der Weg ueber HTTP (bis 1.6.29 der Hauptteil
+   dieses Reiters) steht unten zugeklappt, Tabellen und Vorlagen unveraendert. Alle Namen aus
+   abfahrt_mqtt_gateway_name() / abfahrt_mqtt_namen(). */
+$abf_gwf = (int) ($abf_mz['fassung'] ?? 0);
+$abf_praefix = (string) $abfcfg['mqtt_topic'];
+$abf_haken = abfahrt_mqtt_hakenliste($abf_praefix);
+$abf_namen = abfahrt_mqtt_namen($abf_praefix);
+$abf_bliste = abfahrt_befehle_liste(); ?>
 <div class="sm-step"><b><?= e(abfahrt_t('LOX.S1_T')) ?></b><br><br>
-<?= abfahrt_t('LOX.S1') ?></div>
+<?= abfahrt_t('LOX.S1') ?>
+<?php if (!empty($abfcfg['mqtt_ein'])) { ?>
+<div class="sm-hinweis"><?= sprintf(abfahrt_t('LOX.S1_EIN'), e($abf_praefix)) ?></div>
+<?php } else { ?>
+<div class="sm-alert sm-err"><?= abfahrt_t('LOX.S1_AUS') ?></div>
+<?php } ?>
+</div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('LOX.S2_T')) ?></b><br><br>
 <?= e(abfahrt_t('LOX.S2')) ?>
-<div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abfcfg['mqtt_topic']) ?>/#</div>
+<div class="sm-mono" style="display:block;padding:8px;margin:6px 0;"><?= e($abf_praefix) ?>/#</div>
 <div class="<?= $abf_abo_klasse ?>"><?= abfahrt_abo_text() ?></div>
-<?= abfahrt_t('LOX.S2_THEMEN') ?>
-<?php /* Die Tabelle kommt aus abfahrt_felder(), damit Tabelle und Sendeweg nicht
-         auseinanderlaufen. Die Spalte "Name in Loxone" ist der Name, den das
-         Gateway VERGIBT - Schraegstrich und Prozentzeichen werden zu "_"
-         (am Geraet gemessen: mqttgateway.pl, Zeile 503-504). Bis 1.6.9 stand
-         in der Baustein-Liste "Abfahrt ABFAHRT_IN" - einen Eingang dieses
-         Namens legt das Gateway nie an. */ ?>
-<table class="sm-tbl">
-<tr><th><?= e(abfahrt_t('MQTT.T_THEMA')) ?></th><th><?= e(abfahrt_t('LOX.T_LOXONE_NAME')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('MQTT.T_RETAIN')) ?></th></tr>
-<?php foreach (abfahrt_felder() as $abf_n => $abf_d) { if (empty($abf_d[5])) { continue; } ?>
-<tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_n) ?></span></td>
-    <td><span class="sm-mono"><?= e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_n)) ?></span></td>
-    <td><?= e(abfahrt_t($abf_d[3])) ?></td>
-    <td><?= e(abfahrt_t(!empty($abf_d[4]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
+<?php if ($abf_gwf !== 1) { ?>
+<details open><summary><?= e(sprintf(abfahrt_t('LOX.HAKEN_AUF'), count($abf_haken))) ?></summary>
+<div class="sm-small"><?= sprintf(abfahrt_t('LOX.HAKEN_VOR'), e($abf_praefix)) ?></div>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= e(abfahrt_t('LOX.T_HTHEMA')) ?></th><th><?= e(abfahrt_t('LOX.T_HNAME')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('LOX.T_HART')) ?></th></tr>
+<?php foreach ($abf_haken as $abf_hi => $abf_hz) { ?>
+<tr><td><?= (int) $abf_hi + 1 ?></td><td><span class="sm-mono"><?= e($abf_hz[0]) ?></span></td><td><span class="sm-mono"><?= e($abf_hz[1]) ?></span></td><td><?= e($abf_hz[2]) ?></td><td><?= e(abfahrt_t('LOX.ART_ZAHL')) ?></td></tr>
 <?php } ?>
-<?php foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
-<tr><td><span class="sm-mono"><?= e($abfcfg['mqtt_topic']) ?>/<?= e($abf_lz) ?></span></td>
-    <td><span class="sm-mono"><?= e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_lz)) ?></span></td>
-    <td><?= e(abfahrt_t($abf_lz_text)) ?></td>
-    <td><?= e(abfahrt_t('MQTT.RETAIN_NIE')) ?></td></tr>
+</table></div>
+<div class="sm-small"><?= sprintf(abfahrt_t('LOX.HAKEN_NACH'), e($abf_praefix)) ?></div>
+</details>
 <?php } ?>
-</table>
-<div class="sm-small"><?= abfahrt_t('MQTT.LZ_ERKLAERUNG') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.S2_THEMEN') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.S2_NEUSTART') ?></div>
 </div>
 
-<h3 class="sm-h3"><?= e(abfahrt_t('LOX.H_ALTERNATIVE')) ?></h3>
+<div class="sm-step"><b><?= e(abfahrt_t('LOX.S3_T')) ?></b><br><br>
+<?= abfahrt_t('LOX.S3_TEXT') ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= e(abfahrt_t('LOX.T_KOPIEREN')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('LOX.T_BEREICH')) ?></th><th><?= e(abfahrt_t('LOX.T_HART')) ?></th></tr>
+<?php foreach ($abf_namen as $abf_ni => $abf_nz) { ?>
+<tr><td><?= (int) $abf_ni + 1 ?></td><td><span class="sm-mono"><?= e($abf_nz[1]) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= e($abf_nz[1]) ?>"><?= e(abfahrt_t('LOX.KOPIEREN')) ?></button></td><td><?= e($abf_nz[2]) ?></td><td><?= e($abf_nz[4] . ' … ' . $abf_nz[5] . ($abf_nz[6] !== '' ? ' ' . $abf_nz[6] : '')) ?></td><td><?= e(abfahrt_t('LOX.ART_ZAHL')) ?></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-small"><?= abfahrt_t('LOX.S3_DIGITAL') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.S3_RECHTE') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.S3_MUSTER') ?></div>
+<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.FEHLER_CODES') ?></div>
+<div class="sm-alert sm-info"><?= abfahrt_t('TEXT.FEHLER_ERLAEUTERUNG') ?></div>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(abfahrt_t('LOX.KOPIERT'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (x) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('LOX.S4_T')) ?></b><br><br>
+<?= sprintf(abfahrt_tn('LOX.S4_TEXT'), e(abfahrt_mqtt_gateway_name('status/zaehler', $abf_praefix)),
+            e(abfahrt_mqtt_gateway_name('status/ok', $abf_praefix))) ?>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('LOX.S5_T')) ?></b><br><br>
+<?= abfahrt_tn('LOX.S5_TEXT') ?>
+<?php if ($abf_bliste === null) { ?>
+<div class="sm-alert sm-err"><?= e(abfahrt_t('LOX.S5_KEINE')) ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= e(abfahrt_t('BEFEHL.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('BEFEHL.T_TITEL')) ?></th><th><?= e(abfahrt_t('BEFEHL.T_THEMA')) ?></th><th><?= e(abfahrt_t('BEFEHL.T_LOXONE')) ?></th><th><?= e(abfahrt_t('BEFEHL.T_SPERRE')) ?></th><th><?= e(abfahrt_t('BEFEHL.T_QUITTUNG')) ?></th></tr>
+<?php foreach ($abf_bliste['befehle'] as $abf_bb) { ?>
+<tr><td><?= e(abfahrt_t($abf_bb['kachel'])) ?></td><td><?= e($abf_bb['titel']) ?></td><td><span class="sm-mono"><?= e($abf_bb['thema']) ?></span></td><td><span class="sm-mono"><?= e(isset($abf_bb['loxone']['ein']) ? $abf_bb['loxone']['ein'] : '') ?></span></td><td><?= (int) $abf_bb['sperre_s'] ?> s</td><td><?= e(abfahrt_t($abf_bb['quittung'] === 'uebergeben' ? 'BEFEHL.Q_UEBERGEBEN' : 'BEFEHL.Q_AUSGEFUEHRT')) ?></td></tr>
+<?php } ?>
+</table></div>
+<?php } ?>
+<div class="sm-small"><?= abfahrt_t('LOX.VORLAGE_MQTT_TEXT') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= e(abfahrt_t('LEGENDE.TECHNIK')) ?></span>
+</div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="download" value="xml_mqtt">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= e(abfahrt_t('LOX.K_VORLAGE_MQTT')) ?></button>
+</form>
+</div>
+<?php /* Nachzug Welle 13 (1.6.28): der Text nennt Anwesenheit und Bestaetigung mit Nummern {B..}/{F:..}. */ ?>
+<?= abfahrt_tn('SEITE.LOGIK_TEXT') ?>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_STATUS')) ?></b><br><br>
+<?= abfahrt_tn('SEITE.STATUS_TEXT') ?>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_AUDIO')) ?></b><br><br>
+<?= abfahrt_tn('SEITE.AUDIO_TEXT') ?>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('LOX.H_BAUSTEINE')) ?></b><br><br>
+<?php /* Welle Bild 13 (1.6.27; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
+         leicht uebernehmen koennen): die Seite "Abfahrtsassistent" aus dem LoxBerry-Plugins Musterprojekt
+         (Musterprojekt/baustein_listen.txt, wortgleich). Gruppe 2 / MQTT (1.6.30; Entwurf aa Abschnitte 4-7 und 9):
+         44 Nummern. 1-9 die Virtuellen Eingaenge aus abfahrt_mqtt_namen() (Name, wie ihn das Gateway vergibt; #6 ist
+         das Lebenszeichen statt ALTER), 10-44 = BAUSTEIN.B1 ... B35 (#27 = B18 ist abfahrt_status_ok, #40-#44 =
+         B31-B35 Test-Push und Startfenster neu); #14, #19 und #20 (B5, B10, B11) entfallen und bleiben als Zeile
+         stehen, damit die Nummern zum Musterprojekt passen. Verweise ueber {B..}/{F:..}/{N:..}/{P}
+         (abfahrt_nummern()). Bis 1.6.29: 39 Zeilen fuer den HTTP-Weg (Befehle der Importdatei ABFAHRT_<FELD>). */
+$abf_bausteine = 35;
+$abf_schritte = array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8');
+$abf_hinweise = array('LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5', 'LOX.SEITE1_N6', 'LOX.SEITE1_N7', 'LOX.SEITE1_N8'); ?>
+<?= abfahrt_tn('LOX.BAUSTEINE_TEXT') ?>
+<h4 class="sm-h4"><?= e(abfahrt_t('LOX.SEITE1_H')) ?></h4>
+<div class="sm-hinweis"><b><?= e(abfahrt_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($abf_schritte as $abf_x) { ?>
+<li><?= abfahrt_tn($abf_x) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th>#</th><th><?= e(abfahrt_t('LOX.T_BAUSTEIN')) ?></th><th><?= e(abfahrt_t('LOX.T_NAME')) ?></th>
+    <th><?= e(abfahrt_t('LOX.T_PARAMETER')) ?></th><th><?= e(abfahrt_t('LOX.T_VERBINDEN')) ?></th></tr>
+<?php
+$abf_i = 0;
+foreach ($abf_namen as $abf_nz) {
+    if ($abf_nz[7] === 'STATUS_OK') { continue; }     // #27 steht bei den Bausteinen (B18)
+    $abf_i++; ?>
+<tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.FELD_TYP') ?></td>
+    <td><span class="sm-mono"><?= e($abf_nz[1]) ?></span></td>
+    <td><?= abfahrt_tn('BAUSTEIN.F_' . $abf_nz[7]) ?></td>
+    <td>&mdash;</td></tr>
+<?php } ?>
+<?php for ($abf_b = 1; $abf_b <= $abf_bausteine; $abf_b++) { $abf_i++; ?>
+<tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_TYP') ?></td>
+    <td><span class="sm-mono"><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_NAME') ?></span></td>
+    <td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_PARAM') ?></td>
+    <td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_VERB') ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-warnung"><b><?= e(abfahrt_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($abf_hinweise as $abf_x) { ?>
+<li><?= abfahrt_tn($abf_x) ?></li>
+<?php } ?>
+</ul></div>
+<div class="sm-alert sm-info"><?= abfahrt_tn('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= e(abfahrt_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= e(abfahrt_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?= abfahrt_t('LOX.MUSTERPROJEKT') ?></div>
+</div>
+
+<div class="sm-step"><b><?= e(abfahrt_t('LOX.H_GEGENPROBE')) ?></b><br><br>
+<?= sprintf(abfahrt_t('LOX.GEGENPROBE'), '<span class="sm-mono">' . e(abfahrt_mqtt_gateway_name('status/zaehler', $abf_praefix)) . '</span>',
+            '<span class="sm-mono">' . e(abfahrt_mqtt_gateway_name('ABFAHRT_IN', $abf_praefix)) . '</span>') ?></div>
+
+<?php /* Gruppe 2 / MQTT (1.6.30): der Weg ueber HTTP fuer bestehende Anlagen - bis 1.6.29 der Hauptteil dieses
+   Reiters, Tabellen, Importdatei und Vorlage der Steuerbefehle unveraendert. Zugeklappt; alles bleibt im Text der
+   Seite (Suche, Druck). */ ?>
+<details class="sm-step"><summary><b><?= e(abfahrt_t('LOX.H_ALTERNATIVE')) ?></b></summary>
 <div class="sm-small"><?= abfahrt_t('LOX.ALTERNATIVE_TEXT') ?></div>
 
 <?php $abf_http_adresse = 'http://' . $host . '/plugins/' . e($plugindir) . '/termin.php'; ?>
@@ -1555,17 +1740,13 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <?= sprintf(abfahrt_t('SEITE.HTTP2_TEXT'), '<span class="sm-mono">' . e(abfahrt_suchtext('ABFAHRT_IN')) . '</span>',
             '<span class="sm-mono">;ABFAHRT_IN=</span>') ?>
 <?php /* Aus abfahrt_felder() und abfahrt_suchtext() - derselben Quelle, aus der
-         auch die Importvorlage entsteht. Bis 1.6.9 stand die Tabelle von Hand
-         da, trug sieben von neun Feldern (ALTER und ANKUNFT fehlten) und nahm
-         die Suchtexte aus der Sprachdatei. */ ?>
+         auch die Importvorlage entsteht. */ ?>
 <table class="sm-tbl">
 <tr><th><?= e(abfahrt_t('SEITE.T_BEFEHLSERKENNUNG')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (abfahrt_felder() as $abf_n => $abf_d) { ?>
 <tr><td><span class="sm-mono"><?= e(abfahrt_suchtext($abf_n)) ?></span></td><td><?= e(abfahrt_t($abf_d[3])) ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-alert sm-info"><?= abfahrt_t('SEITE.FEHLER_CODES') ?></div>
-<div class="sm-alert sm-info"><?= abfahrt_t('TEXT.FEHLER_ERLAEUTERUNG') ?></div>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('LOX.H_VORLAGE')) ?></h3>
 <div class="sm-small"><?= abfahrt_t('LOX.VORLAGE_TEXT') ?></div>
@@ -1598,77 +1779,10 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <tr><td><?= e(abfahrt_t('SEITE.T_MERKWORT')) ?></td><td><span class="sm-mono"><?= e($abf_token) ?></span></td></tr>
 </table>
 <div class="sm-alert sm-warn"><?= abfahrt_t('TEXT.MERKWORT_HINWEIS') ?></div>
-<?php /* Nachzug Welle 13 (1.6.28): der Text nennt Anwesenheit und Bestaetigung mit Nummern {B..}/{F:..}. */ ?>
-<?= abfahrt_tn('SEITE.LOGIK_TEXT') ?>
+<div class="sm-small"><?= abfahrt_t('LOX.HTTP_N4') ?></div>
+<div class="sm-small"><?= abfahrt_t('LOX.HTTP_GEGENPROBE') ?></div>
 </div>
-
-<div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_STATUS')) ?></b><br><br>
-<?= abfahrt_tn('SEITE.STATUS_TEXT') ?>
-</div>
-
-<div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_AUDIO')) ?></b><br><br>
-<?= abfahrt_t('SEITE.AUDIO_TEXT') ?>
-</div>
-
-<div class="sm-step"><b><?= e(abfahrt_t('LOX.H_BAUSTEINE')) ?></b><br><br>
-<?php /* Welle Bild 13 (1.6.27; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
-         leicht uebernehmen koennen; Entwurf Welle 13 ab, Entscheidungen 1-13 wie empfohlen): die Seite
-         "Abfahrtsassistent" aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit
-         leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt, 39 Nummern, wortgleich). Nummern wie
-         bisher: 1-9 die Felder (Befehle der Importdatei, daneben der Name des MQTT-Eingangs), 10-39 =
-         BAUSTEIN.B1 ... B30; #14, #19 und #20 (B5, B10, B11) entfallen und bleiben als Zeile stehen, damit
-         die Nummern zum Musterprojekt passen. Verweise ueber {B..}/{F:..} (abfahrt_nummern()). Bis 1.6.26:
-         23 Zeilen, Ausgang und Benachrichtigung in B12/B13 versteckt. */
-$abf_bausteine = 30;
-$abf_schritte = array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8');
-$abf_hinweise = array('LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5', 'LOX.SEITE1_N6', 'LOX.SEITE1_N7', 'LOX.SEITE1_N8'); ?>
-<?= abfahrt_t('LOX.BAUSTEINE_TEXT') ?>
-<h4 class="sm-h4"><?= e(abfahrt_t('LOX.SEITE1_H')) ?></h4>
-<div class="sm-hinweis"><b><?= e(abfahrt_t('LOX.SCHRITTE_TITEL')) ?></b>
-<ol class="sm-schritte">
-<?php foreach ($abf_schritte as $abf_x) { ?>
-<li><?= abfahrt_tn($abf_x) ?></li>
-<?php } ?>
-</ol></div>
-<div class="sm-breit">
-<table class="sm-tbl">
-<tr><th>#</th><th><?= e(abfahrt_t('LOX.T_BAUSTEIN')) ?></th><th><?= e(abfahrt_t('LOX.T_NAME')) ?></th>
-    <th><?= e(abfahrt_t('LOX.T_PARAMETER')) ?></th><th><?= e(abfahrt_t('LOX.T_VERBINDEN')) ?></th></tr>
-<?php
-$abf_i = 0;
-foreach (abfahrt_felder() as $abf_n => $abf_d) {
-    $abf_i++; ?>
-<tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.FELD_TYP') ?></td>
-    <td><span class="sm-mono"><?= e(abfahrt_befehl_titel($abf_n)) ?></span></td>
-    <td><?= abfahrt_tn('BAUSTEIN.F_' . $abf_n) ?> <?= empty($abf_d[5]) ? e(abfahrt_t('LOX.B_NUR_HTTP'))
-        : sprintf(abfahrt_t('LOX.B_MQTT'), '<span class="sm-mono">' . e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_n)) . '</span>') ?></td>
-    <td>&mdash;</td></tr>
-<?php } ?>
-<?php for ($abf_b = 1; $abf_b <= $abf_bausteine; $abf_b++) { $abf_i++; ?>
-<tr><td><?= $abf_i ?></td><td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_TYP') ?></td>
-    <td><span class="sm-mono"><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_NAME') ?></span></td>
-    <td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_PARAM') ?></td>
-    <td><?= abfahrt_tn('BAUSTEIN.B' . $abf_b . '_VERB') ?></td></tr>
-<?php } ?>
-</table>
-</div>
-<div class="sm-warnung"><b><?= e(abfahrt_t('LOX.HINWEISE_TITEL')) ?></b>
-<ul class="sm-schritte">
-<?php foreach ($abf_hinweise as $abf_x) { ?>
-<li><?= abfahrt_tn($abf_x) ?></li>
-<?php } ?>
-</ul></div>
-<div class="sm-alert sm-info"><?= abfahrt_tn('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
-<figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= e(abfahrt_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= e(abfahrt_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
-</figure>
-<div class="sm-small"><?= abfahrt_t('LOX.MUSTERPROJEKT') ?></div>
-</div>
-
-<div class="sm-step"><b><?= e(abfahrt_t('LOX.H_GEGENPROBE')) ?></b><br><br>
-<?= sprintf(abfahrt_t('LOX.GEGENPROBE'), '<span class="sm-mono">' . e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/status/zaehler')) . '</span>',
-            '<span class="sm-mono">' . e(str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/ABFAHRT_IN')) . '</span>') ?></div>
+</details>
 
 </div>
 
@@ -1712,6 +1826,18 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
     $abf_sk = ((int) $abf_selftest['stufe'] === 1) ? 'sm-alert sm-ok'
             : (((int) $abf_selftest['stufe'] === 0) ? 'sm-alert sm-err' : 'sm-alert sm-warn'); ?>
 <div class="<?= $abf_sk ?>"><?= e($abf_selftest['text']) ?></div>
+<?php } ?>
+
+<?php /* Gruppe 2 / MQTT (1.6.30; Entwurf gemeinsam 2.11): Lage der Befehlsbruecke (Erzeugnis wie der Waechter)
+   und - nur bei offenem Reiter Test - die Einrichtungspruefung befehlsbruecke.php --pruefen. */
+list($abf_bs, $abf_bt) = abfahrt_pruef_bruecke(); ?>
+<h3 class="sm-h3"><?= e(abfahrt_t('BEFEHL.H_TEST')) ?></h3>
+<div class="<?= $abf_bs === 'ok' ? 'sm-alert sm-ok' : ($abf_bs === 'fehl' ? 'sm-alert sm-err' : 'sm-alert sm-info') ?>"><?= e($abf_bt) ?></div>
+<?php if ($active_tab === 'tab-test') { $abf_bbz = abfahrt_bruecke_pruefzeilen(); ?>
+<div class="sm-small"><?= e(abfahrt_t('BEFEHL.H_PRUEFEN')) ?></div>
+<div class="sm-pre"><?= $abf_bbz ? implode('<br>', array_map('e', $abf_bbz)) : e(abfahrt_t('BEFEHL.P_FEHLT')) ?></div>
+<?php } else { ?>
+<div class="sm-small"><?= e(abfahrt_t('BEFEHL.PRUEFEN_ZU')) ?></div>
 <?php } ?>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('TEST.H_GEO')) ?></h3>

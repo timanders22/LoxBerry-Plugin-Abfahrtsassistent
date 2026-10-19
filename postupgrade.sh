@@ -46,11 +46,23 @@ hat_merkwort() {
 # Skripts. Bliebe sie liegen, hielte sich eine spaetere Neuinstallation fuer
 # eine Aktualisierung.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# Gruppe 2 / MQTT (1.6.30; Entwurf aa Abschnitt 3): die Befehlsbruecke nach dem Update wieder starten - erst
+# NACH dem Abraeumen der Marke (befehlsbruecke.sh lehnt den Start waehrend einer frischen Marke ab), also hier
+# in der trap. Sie startet nur, wenn die zurueckgespielte Konfiguration den Haken "Befehle ueber MQTT
+# annehmen" traegt (befehlsbruecke.php --soll); sonst holt es der Minutenlauf nach. Nie als root.
+abf_bruecke_start() {
+    BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+    if [ -f "$BBSH" ] && [ "$(id -u)" != "0" ]; then
+        timeout 40 bash "$BBSH" start 2>&1 | sed 's/^/<INFO> /'
+    fi
+}
 abf_marke_weg() {
     abf_rc=$?
     rm -f "$MARKE" 2>/dev/null
     if [ -e "$MARKE" ]; then
         echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - bitte von Hand loeschen, sonst haelt sich eine spaetere Neuinstallation fuer eine Aktualisierung."
+    else
+        abf_bruecke_start
     fi
     exit $abf_rc
 }

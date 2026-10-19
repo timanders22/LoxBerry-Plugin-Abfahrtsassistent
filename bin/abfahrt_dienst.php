@@ -415,6 +415,13 @@ $abf_lz_ziel = microtime(true) + (($modus === 'jetzt') ? 0 : mt_rand(5, 40));
  * nachfuehren - nur, wenn sie abweicht (abfahrt_abo_datei()). */
 abfahrt_abo_datei($abfcfg['mqtt_topic'], true);
 
+/* Gruppe 2 / MQTT (1.6.30; Entwurf aa E9; Bauvorschrift Gruppe 1, Nachtrag 19.10.2026: "Linien mit
+ * PHP-Minutentakt rufen bb_waechter()"): der Waechter der Befehlsbruecke - startet, haelt an, misst
+ * zustand.json und sendet <praefix>/status/befehle (nie retained). In JEDEM Lauf, vor der Verzweigung
+ * "faellig". Der Dienst haelt dabei seine Sperre; befehlsbruecke.sh schliesst geerbte Deskriptoren, der
+ * Dauerdienst erbt sie nicht (Bruecken-Bericht, Fall F12J). Ohne Bruecke (Archiv) geschieht nichts. */
+abfahrt_bruecke_waechter();
+
 /**
  * Wie oft wird ueberhaupt neu gerechnet?
  *

@@ -47,6 +47,16 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     exit 2
 fi
 
+# ---------- Gruppe 2 / MQTT (1.6.30): die Befehlsbruecke anhalten ----------
+# Erst jetzt, da die Upgrade-Marke liegt: der Waechter im Minutenlauf startet sie dann nicht neu, und
+# befehlsbruecke.sh start lehnt waehrend der Marke ab (Bruecken-Bericht Abschnitt 6). stop beendet Dienst
+# und mosquitto_sub und zaehlt argumentweise nach. Beim Update von 1.6.29 und frueher fehlt die Datei -
+# dann geschieht nichts.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop 2>&1 | sed 's/^/<INFO> /'
+fi
+
 # Eingerichtet heisst: lesbares JSON-Objekt mit nicht leerem Merkwort -
 # dieselbe Frage wie postinstall.sh, postupgrade.sh und abfahrt_config_heilen().
 hat_merkwort() {

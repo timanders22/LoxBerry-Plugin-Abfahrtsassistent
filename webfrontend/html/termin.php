@@ -38,7 +38,8 @@
  *
  *   ALTER steht nur in dieser Zeile, nicht ueber MQTT (seit 1.6.10): ueber
  *   MQTT war der Wert immer 0. Dort heisst die Ausfallerkennung
- *   abfahrt/status/ts.
+ *   abfahrt/status/zaehler (Lebenszeichen) und abfahrt/status/ok; status/ts ist nur ein
+ *   Zeitstempel, keine Grundlage fuer ein Alter in Loxone (Gruppe 2, 1.6.30).
  *
  * WARUM EINE ZAHL UND KEIN TEXT bei FEHLER: In Loxone laesst sich eine Zahl
  * auf einen Statusbaustein legen und dort in Klartext uebersetzen. Eine

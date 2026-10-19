@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.29 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,39 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.30
+
+**Werte und Befehle über MQTT – der Weg des Musterprojekts.** Bestehende Anlagen mit dem HTTP-Weg (Importdatei,
+Ausgang mit Merkwort) laufen unverändert weiter; nichts muss neu importiert werden. Wer auf MQTT umstellt, legt die
+Virtuellen Eingänge nach der Namenstabelle an und übernimmt die Seite neu aus dem Musterprojekt.
+
+* **Ansage über MQTT:** neuer Haken „Befehle über MQTT annehmen“ im Reiter MQTT (ab Werk aus). Loxone schickt
+  `publish abfahrt/befehl/ansage 1` an den UDP-Eingang des MQTT-Gateways; die gemeinsame Befehlsbrücke
+  (`bin/befehlsbruecke.php`) nimmt den Befehl an, prüft ihn (nur „1“, höchstens einmal je Minute, nie
+  zurückbehalten) und ruft dieselbe Funktion wie `termin_say.php` – Sperrzeiten, Haken und Termin werden wie
+  bisher geprüft. Quittung unter `abfahrt/befehl/ansage/quittung`, Lebenszeichen der Brücke
+  `abfahrt/status/befehle`. Über MQTT gibt es weder `force` noch einen eigenen Text. Der HTTP-Endpunkt antwortet
+  unverändert.
+* **Reiter „Einbindung in Loxone“ neu gegliedert:** MQTT einschalten – Gateway (V2: Hakenliste mit zehn
+  Datenpunkten) – Virtuelle Eingänge nach der **Namenstabelle** mit Kopierknopf (keine Importdatei für Werte) –
+  Ausfallerkennung über `abfahrt_status_zaehler` – Befehl mit neuer „Vorlage: MQTT-Befehle“ – Baustein-Liste –
+  Gegenprobe. Der Weg über HTTP steht zugeklappt unter „Bestehende Anlagen“.
+* **Baustein-Liste der Seite „Abfahrtsassistent“ auf MQTT umgestellt (44 statt 39 Zeilen)**, wortgleich mit dem
+  Musterprojekt: zehn Virtuelle Eingänge `abfahrt_…`; Ausfallerkennung über das Lebenszeichen (#28 „Lebenszeichen
+  fehlt“, Tmc 900 s; #15 „Daten veraltet“ an `abfahrt_status_ok`) statt über das Alter; Befehl
+  „Abfahrts-Assistent: Ansage jetzt sprechen“ am Ausgang „LoxBerry MQTT-Gateway“; neu Taste und Benachrichtigung
+  für einen Test-Push (#40, #41) und ein Startfenster von 5 Minuten nach einem Neustart des Miniservers (#42–#44),
+  in dem die Push-Nachricht zurückgehalten und danach gesendet wird, wenn die Abfahrt noch fällig ist.
+* **Textberichtigungen:** Loxone legt die Eingänge für Gateway-Werte nicht selbst an – man legt sie an (Schritt 3).
+  Die Formel „Loxone-Zeit + 1230768000 − status_ts“ ist gestrichen (die Zeit des Miniservers ist Ortszeit, das
+  Alter wäre um eine bis zwei Stunden falsch); den Ausfall erkennt eine Analogwertvalidierung an
+  `abfahrt_status_zaehler`.
+* **Aktualisierung und Deinstallation:** die Befehlsbrücke wird vor dem Update angehalten und danach wieder
+  gestartet (nur mit Haken); die Deinstallation hält sie an und entfernt ihre Zugangsdaten. Ein fremdes Plugin,
+  dessen Name mit „abfahrtsassistent“ beginnt, löst die Deinstallation dieses Plugins nicht mehr aus.
+* Werte, Themen, HTTP-Zeile und Vorlagen des HTTP-Wegs unverändert. Neu im Reiter Test: die Selbstprüfung
+  „Passt die Namenstabelle zum Sendecode?“ und die Zeile „Befehlsbrücke“.
 
 ## Neu in 1.6.29
 
@@ -816,6 +849,7 @@ API-Key und Adressen werden ausschließlich in der lokalen Konfiguration
 | `/plugins/abfahrtsassistent/termin.php?debug=1&token=…` | Diagnose — **rechnet neu**, alle anderen Aufrufe lesen nur ab |
 | `/plugins/abfahrtsassistent/termin_say.php?token=…` | Ansage auslösen; Antwort `OK: TEXTLAENGE=…` (die Länge, nicht der Text) bzw. die Fehlerzeile, im Audioserver-Modus `TEXT=...` |
 | `…/termin.php?selftest=1&token=…` bzw. `…/termin_say.php?selftest=1&token=…` | Merkwort prüfen, **ohne** dass etwas ausgelöst wird — Antwort `SELFTEST;OK=1;TOKEN=OK` |
+| MQTT `abfahrt/befehl/ansage` mit Wert `1` (seit 1.6.30) | Ansage auslösen über die Befehlsbrücke – nur mit dem Haken „Befehle über MQTT annehmen“; ohne `force` und ohne eigenen Text; Quittung `abfahrt/befehl/ansage/quittung` |
 
 **Die beiden auslösenden Aufrufe verlangen ein Merkwort.** Sie liegen im
 unangemeldeten Bereich, damit Loxone sie ohne Zugangsdaten erreicht — ohne
@@ -851,8 +885,8 @@ virtuellen Ausgang für die Ansage an; diese Datei trägt das Merkwort.
 
 **Musterprojekt:** Die Bausteine der Baustein-Liste stehen fertig verbunden auf der Seite
 „Abfahrtsassistent“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
-einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen (39 Nummern, gebaut für den
-HTTP-Weg mit der Importdatei; der Reiter *Einbindung in Loxone* führt Schritt für Schritt durch den
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen (44 Nummern, seit 1.6.30 gebaut für
+den MQTT-Weg mit Virtuellen Eingängen; der Reiter *Einbindung in Loxone* führt Schritt für Schritt durch den
 Nachbau).
 
 `FEHLER` ist eine Zahl für den Statusbaustein: 0 in Ordnung, 1 kein Kalender,

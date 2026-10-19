@@ -324,6 +324,10 @@ function abfahrt_vorgaben()
     // termin.php bleibt frei - den holt Loxone zyklisch ab, und er kostet
     // nichts.
     'aktionstoken' => '',
+    /* Gruppe 2 / MQTT (1.6.30): Befehle aus Loxone ueber MQTT annehmen (Befehlsbruecke,
+     * bin/befehlsbruecke.php; Befehl "ansage"). AB WERK AUS (Entwurf gemeinsam 2.11): jeder im Heimnetz kann
+     * ueber den UDP-Eingang des MQTT-Gateways senden. Wirkt nur mit mqtt_ein. */
+    'befehle_mqtt_ein' => 0,
 ];
 }
 
@@ -427,6 +431,7 @@ function abfahrt_config() {
     // Vorgaben fuer das, was fehlt oder abgewiesen wurde
     $abfcfg += $vorgaben;
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
+    $abfcfg['befehle_mqtt_ein'] = empty($abfcfg['befehle_mqtt_ein']) ? 0 : 1;
     $abfcfg['mqtt_topic'] = abfahrt_mqtt_praefix_norm($abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
     /* Vor jedem "+=" pruefen, ob wirklich ein Feld dasteht. Eine von Hand
@@ -2682,10 +2687,33 @@ function abfahrt_feld_retain($name) {
  *   {F:FEHLER}  -> Nummer des Feldes FEHLER      (Rang in abfahrt_felder())
  */
 function abfahrt_nummern($text) {
-    $felder = array_keys(abfahrt_felder());
+    /* Gruppe 2 / MQTT (1.6.30): die Zeilen 1-9 der Tabelle sind die Virtuellen Eingaenge aus abfahrt_mqtt_namen()
+     * (ohne status/ok, der steht als #27 bei den Bausteinen); {F:STATUS_ZAEHLER} ist #6, wo bis 1.6.29 ALTER stand.
+     * Neu {N:<Kennung>} = der Name, unter dem das Gateway den Wert vergibt, und {P} = das eingestellte Praefix - so
+     * folgen Tabelle und Kaesten dem Praefix (Vorbild Abfuhrkalender 1.4.25). */
+    static $merk = null;     // je Aufruf der Seite einmal: Praefix und Namen (die Tabelle ruft das je Zelle)
+    $text = (string) $text;
+    if (strpos($text, '{F:') === false && strpos($text, '{N:') === false && strpos($text, '{B') === false
+        && strpos($text, '{P}') === false) {
+        return $text;
+    }
+    if ($merk === null) {
+        $c = abfahrt_config();
+        $merk = array($c['mqtt_topic'], abfahrt_mqtt_namen($c['mqtt_topic']));
+    }
+    list($praefix, $namen) = $merk;
+    $text = str_replace('{P}', $praefix, $text);
+    $felder = array();
+    $name_von = array();
+    foreach ($namen as $n) {
+        $name_von[$n[7]] = $n[1];
+        if ($n[7] !== 'STATUS_OK') { $felder[] = $n[7]; }
+    }
     $anz = count($felder);
     $text = preg_replace_callback('/\{B(\d+)\}/',
-        function ($m) use ($anz) { return '#' . ($anz + (int) $m[1]); }, (string) $text);
+        function ($m) use ($anz) { return '#' . ($anz + (int) $m[1]); }, $text);
+    $text = preg_replace_callback('/\{N:([A-Z_]+)\}/',
+        function ($m) use ($name_von) { return isset($name_von[$m[1]]) ? $name_von[$m[1]] : $m[0]; }, $text);
     return preg_replace_callback('/\{F:([A-Z_]+)\}/',
         function ($m) use ($felder) {
             $i = array_search($m[1], $felder, true);
@@ -3740,8 +3768,9 @@ function abfahrt_mqtt_praefix_raeumen($praefix, $anlass)
  * Das Lebenszeichen: bei JEDEM Cron-Lauf, nie retained, am
  * Doppelt-senden-Filter vorbei (Hausstandard, Regeln/07).
  *
- *   <thema>/status/ts       Unix-Sekunden dieses Laufs. In Loxone:
- *                           Alter = (Loxone-Zeit + 1230768000) - ts
+ *   <thema>/status/ts       Unix-Sekunden dieses Laufs - nur ein Zeitstempel fuer die Fehlersuche.
+ *                           Gruppe 2 (1.6.30): KEINE Altersformel daraus in Loxone (die Zeit des
+ *                           Miniservers ist Ortszeit, 1-2 h falsch); Ausfall ueber status/zaehler.
  *   <thema>/status/zaehler  laeuft 0..999 um - bleibt er stehen, steht der Dienst
  *   <thema>/status/ok       1 = die letzte Berechnung ist hoechstens 11 Minuten alt
  *
@@ -3829,6 +3858,345 @@ function abfahrt_abo_datei($praefix, $schreiben = false)
         }
     }
     return array($pfad, $da);
+}
+
+/* ==================================================================
+ * Gruppe 2 / MQTT (1.6.30; Hausherr 18.10.2026: "Werte UND Befehle zwischen Plugin und Loxone gehen ueber MQTT";
+ * Entwurf Musterprojekt/entwurf_gruppe2_aa.txt, Entscheidungen E1-E14 wie empfohlen, ENTSCHEIDUNGEN_GRUPPE2_MQTT.md)
+ * ================================================================== */
+
+/**
+ * Der Name, unter dem das MQTT-Gateway ein Thema dieses Plugins an den Miniserver gibt - EINE Funktion fuer
+ * Namenstabelle, Hakenliste (Gateway V2), Baustein-Liste, Kaesten und Selbstpruefung (Regeln/07 "Themennamen aus
+ * EINER Funktion"; Vorbild awm_mqtt_gateway_name()). Beide Gateway-Fassungen machen "/" und "%" zu "_"
+ * (Regeln/07, Umbenennungsregel); Gross- und Kleinschreibung bleibt (abfahrt_OK). Ersetzt die Inline-Stellen der
+ * Oberflaeche bis 1.6.29.
+ */
+function abfahrt_mqtt_gateway_name($thema, $praefix = null)
+{
+    if ($praefix === null) {
+        $c = abfahrt_config();
+        $praefix = $c['mqtt_topic'];
+    }
+    return str_replace(array('/', '%'), '_', abfahrt_mqtt_praefix_norm($praefix) . '/' . $thema);
+}
+
+/**
+ * Die Namen, unter denen das MQTT-Gateway die Werte an den Miniserver gibt - EINE Liste fuer die Namenstabelle
+ * (Reiter "Einbindung in Loxone", Schritt 3), die Hakenliste (Gateway V2, E4), die Zeilen 1-9 und 27 der
+ * Baustein-Liste und die Selbstpruefung. Hausherr 19.10.2026 (Regeln/07 R2_078, LoxBerry-Anleitung widget_mqtt):
+ * fuer Werte ueber das Gateway gibt es KEINE Importvorlage - je Wert ein einfacher "Virtueller Eingang", Name exakt.
+ *
+ * Reihenfolge = abfahrt_felder(); an der Stelle von ALTER (geht nicht ueber MQTT, abfahrt_felder() [5] = 0) steht
+ * das Lebenszeichen status/zaehler (Platz 6, wie Abfuhrkalender ZAEHLER -> status/zaehler), status/ok kommt ans
+ * Ende (Seite "Abfahrtsassistent" #27). status/ts geht weiter hinaus, steht aber nicht in der Tabelle: die
+ * Musterseite braucht es nicht, und eine Altersformel mit status/ts waere um die Ortszeit falsch (E4).
+ * Platzhalter statt -1 (Entscheidung 3 Gruppe 2, aa E3): MINSTART und ABFAHRT_IN 9999 = kein Termin, ANKUNFT 1440 =
+ * unbekannt - die Bedeutung nennt es (Sprachschluessel BAUSTEIN.F_*, dieselben Saetze wie die Baustein-Liste).
+ * Rueckgabe: je Wert array(thema, Name in Loxone, Bedeutung, 'zahl', min, max, Einheit, Kennung).
+ */
+function abfahrt_mqtt_namen($praefix = null)
+{
+    if ($praefix === null) {
+        $c = abfahrt_config();
+        $praefix = $c['mqtt_topic'];
+    }
+    $aus = array();
+    foreach (abfahrt_felder() as $name => $d) {
+        if ($name === 'ALTER') {
+            $aus[] = array('status/zaehler', abfahrt_mqtt_gateway_name('status/zaehler', $praefix),
+                           abfahrt_t('BAUSTEIN.F_STATUS_ZAEHLER'), 'zahl', 0, 999, '', 'STATUS_ZAEHLER');
+            continue;
+        }
+        if (empty($d[5])) { continue; }
+        $aus[] = array($name, abfahrt_mqtt_gateway_name($name, $praefix), abfahrt_t('BAUSTEIN.F_' . $name), 'zahl',
+                       (int) $d[1], (int) $d[2], (string) $d[6], $name);
+    }
+    $aus[] = array('status/ok', abfahrt_mqtt_gateway_name('status/ok', $praefix), abfahrt_t('BAUSTEIN.B18_PARAM'), 'zahl',
+                   0, 1, '', 'STATUS_OK');
+    return $aus;
+}
+
+/** Die Hakenliste fuer Gateway V2 (E4): alle zehn Namen der Namenstabelle, ohne status/ts und status/befehle;
+ *  kein Noncached, kein Resetaftersend. Rueckgabe je Zeile array(Thema voll, Name in Loxone, Bedeutung, Art). */
+function abfahrt_mqtt_hakenliste($praefix = null)
+{
+    if ($praefix === null) {
+        $c = abfahrt_config();
+        $praefix = $c['mqtt_topic'];
+    }
+    $p = abfahrt_mqtt_praefix_norm($praefix);
+    $aus = array();
+    foreach (abfahrt_mqtt_namen($p) as $b) {
+        $aus[] = array($p . '/' . $b[0], $b[1], $b[2], $b[3]);
+    }
+    return $aus;
+}
+
+/**
+ * Die Abfahrts-Ansage sprechen - EINE Stelle fuer den HTTP-Endpunkt termin_say.php (Quelle 'http') und die
+ * Befehlsbruecke (bin/befehle_zuordnung.php, Befehl "ansage", Quelle 'mqtt'). Entwurf aa Abschnitt 3 (Vorbild
+ * awm_aktion(), Abfuhrkalender 1.4.25): der Rumpf von termin_say.php bis 1.6.29, in Reihenfolge, Protokoll und
+ * Antwort unveraendert - der Endpunkt gibt 'antwort' aus und setzt 'http', wenn es nicht 200 ist (Wirkungstest
+ * Quelle gegen Bau). Im Endpunkt bleiben Merkwort und Selbsttest; die Pruefung von ?text steht hier, weil sie bis
+ * 1.6.29 HINTER der Freigabe stand (ein Feld ?text[] bei gesperrter Ansage gab "SKIP", nicht 400).
+ * Ueber MQTT gibt es weder force noch eigenen Text (E8): die Bruecke ruft abfahrt_ansage_ausfuehren('mqtt').
+ *
+ *   $force     umgeht Sperrzeiten, Audio-Freigabe und die Termin-Pruefung (Testknopf, nur HTTP)
+ *   $text_roh  der rohe Wert von ?text (null = keiner)
+ *   $debug     haengt bei einem Fehlschlag der Gegenstelle Schema, Rechner und Port der Adresse an (nur HTTP)
+ *
+ * Rueckgabe array('ok' => bool, 'grund' => ASCII-Kennung fuer die Quittung "abgelehnt: <grund>", 'http' => int,
+ * 'antwort' => Antwort des Endpunkts). Gruende: GESPERRT (Haken/Sperrzeit), STAND_ALT, KEIN_TERMIN, TEXT_FORM,
+ * TEXT_LEER, TEXT_ABGEWIESEN, AUDIOSERVER (der Text kann ueber MQTT nicht zurueck), KEINE_IP, EINSTELLUNG, AUS
+ * (Ausgabeart "aus"), GEGENSEITE (die Sprachausgabe hat nicht gesprochen).
+ */
+function abfahrt_ansage_ausfuehren($quelle = 'http', $force = false, $text_roh = null, $debug = false, ?array $abfcfg = null)
+{
+    if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
+    $erg = function ($ok, $grund, $antwort, $http = 200) {
+        return array('ok' => (bool) $ok, 'grund' => (string) $grund, 'http' => (int) $http, 'antwort' => (string) $antwort);
+    };
+    $mqtt = ($quelle === 'mqtt') ? ' [MQTT]' : '';
+    $tts = $abfcfg['tts'];
+
+    // Freigabe pruefen (Test-Button nutzt ?force=1 und umgeht die Sperren)
+    if (!$force) {
+        $why = '';
+        if (!abfahrt_audio_allowed($abfcfg, $why)) {
+            abfahrt_log("Ansage unterdrueckt: $why" . $mqtt);
+            return $erg(false, 'GESPERRT', "SKIP: $why\n");
+        }
+    }
+
+    /* Ansagetext bauen. Ein Feld statt einer Zeichenkette (?text[]=a) wird ABGEWIESEN, nicht umgewandelt (bis
+     * 1.6.29 in termin_say.php, Begruendung dort). Der mitgegebene Text laeuft durch denselben Filter wie der
+     * automatische Titel. */
+    if ($text_roh !== null && !is_string($text_roh)) {
+        return $erg(false, 'TEXT_FORM', "FEHLER: Der Parameter text muss ein einzelner Text sein.\n", 400);
+    }
+    $eigener = ($text_roh !== null) ? abfahrt_tts_sauber($text_roh) : '';
+
+    /* Keine Ansage ohne gueltigen Termin (seit 1.6.10) und mit derselben Altersgrenze wie OK (C4, seit 1.6.16).
+     * Mit force oder eigenem Text bleibt die Ansage moeglich (Testknopf). */
+    $abf_stand = abfahrt_stand();
+    if (!$force && $eigener === '' && abfahrt_ok_wirksam($abf_stand) !== 1) {
+        if ((int) $abf_stand['ok'] === 1) {
+            abfahrt_log('Ansage unterdrueckt: der Stand ist ' . (time() - (int) $abf_stand['zeit'])
+                . ' s alt (Grenze ' . (3 * abfahrt_rechentakt($abf_stand)) . ' s) - rechnet der Dienst noch?' . $mqtt);
+            return $erg(false, 'STAND_ALT', "SKIP: Stand zu alt (OK=0)\n");
+        }
+        abfahrt_log('Ansage unterdrueckt: kein gueltiger Termin (OK=0, FEHLER=' . (int) $abf_stand['fehler'] . ')' . $mqtt);
+        return $erg(false, 'KEIN_TERMIN', "SKIP: kein gueltiger Termin (OK=0)\n");
+    }
+    $info = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true);
+    if (!is_array($info)) { $info = []; }
+    $text = ($eigener !== '') ? $eigener : abfahrt_ansagetext($info, $abfcfg);
+
+    /* Leerer oder abgewiesener Ansagetext (seit 1.6.22, Pruefung 02.10.2026, Nr. 11). */
+    list($abf_ts, $abf_tk) = ansage_text_pruefen($text, $tts['mode']);
+    if ($abf_ts === -1) {
+        abfahrt_log('Ansage entfaellt: leerer Ansagetext' . $mqtt);
+        return $erg(false, 'TEXT_LEER', "SKIP: leerer Ansagetext\n");
+    }
+    if ($abf_ts !== 1) {
+        abfahrt_log('Ansage entfaellt: Ansagetext abgewiesen (' . $abf_tk . ', ' . ansage_zeichen($text) . ' Zeichen)' . $mqtt);
+        return $erg(false, 'TEXT_ABGEWIESEN', 'FEHLER: Ansagetext abgewiesen (' . $abf_tk . ")\n");
+    }
+
+    if ($tts['mode'] === 'audioserver') {
+        // Kein HTTP-Push moeglich - Text fuer Loxone Config bereitstellen (ueber MQTT kann er nicht zurueck).
+        return $erg(false, 'AUDIOSERVER', "TEXT=" . $text . "\n"
+            . "HINWEIS: Original Loxone Audioserver hat keine HTTP-TTS-Schnittstelle.\n"
+            . "Die Ansage in Loxone Config ueber Textgenerator -> TTS-Eingang des Audioplayers ausloesen.\n");
+    }
+
+    /* Nr. 36 b, Stufe 2: alle uebrigen Ausgabearten spricht die gemeinsame Sprachausgabe (ansage_sprechen()). Ins
+     * Protokoll kommt nur ansage_kurz() (nie Text, Token oder die Adresse des Music Servers). Die Antwort bleibt in
+     * der Form bis 1.6.22: "OK: TEXTLAENGE=N" bzw. eine Zeile, die mit "FEHLER" beginnt. */
+    $abf_k = abfahrt_ansage_k();
+    $abf_r = ansage_sprechen($text, $tts, $abf_k);
+    abfahrt_log('Ansage: ' . ansage_kurz($abf_r) . ($force ? ' [Test/force]' : '') . $mqtt);
+    if ($abf_r['stand'] === 1) {
+        if ($abf_r['art'] === 'cc4lox') {
+            return $erg(true, '', sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_OK'), $abf_r['zeichen'],
+                'HTTP ' . (int) $abf_r['http'] . ', ' . ($abf_r['zeile'] !== '' ? $abf_r['zeile'] : '-')) . "\n");
+        }
+        return $erg(true, '', 'OK: TEXTLAENGE=' . $abf_r['zeichen'] . "\n");     // Nr. 40: die Laenge, nicht der Text
+    }
+    $abf_kid = explode('|', (string) $abf_r['kennung']);
+    if ($abf_kid[0] === 'KEINE_IP') {
+        $abf_lage = abfahrt_config_lage();
+        if (isset($abf_lage['abgewiesen']['tts'])) {
+            return $erg(false, 'EINSTELLUNG', "FEHLER: Einstellungen der Sprachausgabe abgewiesen (" . $abf_lage['abgewiesen']['tts']
+               . ") - Plugin-Oberflaeche oeffnen, Reiter Test.\n");
+        }
+        return $erg(false, 'KEINE_IP', "FEHLER: Keine Audio-Server-IP konfiguriert (Plugin-Oberflaeche oeffnen).\n");
+    }
+    $abf_grund = ansage_kennung_text($abf_r['kennung'], $abf_k);
+    if ($abf_r['art'] === 'alexang') {
+        return $erg(false, 'GEGENSEITE', sprintf(abfahrt_t('TEXT.ALEXA_ANTWORT_FEHL'), $abf_grund) . "\n");
+    }
+    if ($abf_r['art'] === 'cc4lox') {
+        return $erg(false, 'GEGENSEITE', sprintf(abfahrt_t('TEXT.GOOGLE_ANTWORT_FEHL'), $abf_grund) . "\n");
+    }
+    if ($abf_kid[0] === 'EINSTELLUNG') {
+        return $erg(false, 'EINSTELLUNG', 'FEHLER: Ansage nicht gesendet - ' . $abf_grund . "\n");
+    }
+    $antwort = 'FEHLER beim Aufruf des Audio-Servers: ' . $abf_grund . "\n";
+    /* k1: mit debug=1 nur Schema, Rechner und Port der Adresse - nie der Pfad (bis 1.6.21 die ganze Adresse). */
+    if ($debug) {
+        $abf_u = @parse_url((string) ansage_tts_url($text, $tts));
+        $antwort .= 'URL: ' . ((is_array($abf_u) && isset($abf_u['scheme'], $abf_u['host']))
+            ? $abf_u['scheme'] . '://' . $abf_u['host'] . (isset($abf_u['port']) ? ':' . (int) $abf_u['port'] : '')
+            : '-') . "\n";
+    }
+    return $erg(false, $abf_kid[0] === 'AUS' ? 'AUS' : 'GEGENSEITE', $antwort);
+}
+
+/**
+ * Die Einstellungen fuer die Befehlsbruecke (Zuordnung 'einstellungen', Entwurf gemeinsam 2.5): Praefix aus der EINEN
+ * Themenfunktion (abfahrt_mqtt_praefix_norm(), dieselbe Form wie beim Senden), annehmen = Haken "Befehle ueber MQTT
+ * annehmen" UND MQTT an (das Plugin hat keinen Schalter "Plugin aktiv"), kein eingreifender Befehl (die Linie hat
+ * keinen zweiten Haken, Entwurf aa Abschnitt 3).
+ */
+function abfahrt_befehle_einstellungen()
+{
+    $c = abfahrt_config();
+    $mqtt = !empty($c['mqtt_ein']);
+    return array('praefix' => abfahrt_mqtt_praefix_norm($c['mqtt_topic']),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => false, 'mqtt_ein' => $mqtt);
+}
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, sonst neben dem Arbeitsordner. */
+function abfahrt_bruecke_datei()
+{
+    $p = abfahrt_paths();
+    $kand = array();
+    if ($p['lbhome'] !== '') { $kand[] = $p['lbhome'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). Rueckgabe true, wenn sie da ist. */
+function abfahrt_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = abfahrt_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Waechter der Befehlsbruecke im Minutenlauf des Dienstes (bin/abfahrt_dienst.php; Bauvorschrift Gruppe 1,
+ * Nachtrag 19.10.2026: "Linien mit PHP-Minutentakt rufen bb_waechter()"; Entwurf aa E9). Startet, haelt an, misst
+ * zustand.json (nicht die PID), sendet <praefix>/status/befehle (nie retained). Ohne Bruecke (Archiv, Arbeitsordner)
+ * geschieht nichts. Rueckgabe array(status, text).
+ */
+function abfahrt_bruecke_waechter()
+{
+    if (!abfahrt_bruecke_laden()) { return array(null, 'keine Befehlsbruecke'); }
+    return bb_waechter();
+}
+
+/**
+ * Die Bruecke beim Speichern sofort schalten (Reiter MQTT; Bauart fer_bruecke_schalten(), FerienFeiertage 1.2.27):
+ * Haken und MQTT an -> befehlsbruecke.sh start (startet nur nach --soll, nie als root, nie waehrend eines Updates,
+ * nie doppelt); sonst, wenn sie laeuft -> stop; sonst nichts. Warum hier und nicht nur im Waechter: der Waechter
+ * startet nach einem Start hoechstens alle 600 s neu - nach dem (Wieder-)Einschalten liefe die Bruecke bis zu zehn
+ * Minuten nicht. Rueckgabe array(rc|null, 'start'|'stop'|'', Ausgabe).
+ */
+function abfahrt_bruecke_schalten(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    if (!abfahrt_bruecke_laden()) { return array(1, '', abfahrt_t('BEFEHL.P_FEHLT')); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, '', 'keine LoxBerry-Installation erkannt'); }
+    if (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) { return array(null, '', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function abfahrt_befehle_liste()
+{
+    if (!abfahrt_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "Abfahrts-Assistent MQTT-Befehle" (bb_vorlage(), Entwurf gemeinsam E3): eigener Ausgang an den
+ *  UDP-Eingang des Gateways, Befehl mit fester 1. $host = Name des LoxBerry (ohne Port). Rueckgabe array(name,
+ *  inhalt) oder null. */
+function abfahrt_befehle_vorlage($host = '')
+{
+    $l = abfahrt_befehle_liste();
+    if ($l === null) { return null; }
+    if ($host === '') { $host = gethostname() ?: 'loxberry'; }
+    $m = abfahrt_mqtt_zustand();
+    $port = !empty($m['udpport']) ? (int) $m['udpport'] : 11884;
+    return array('VQ_abfahrtsassistent_mqtt.xml', bb_vorlage($l, preg_replace('/:\d+\z/', '', $host), $port));
+}
+
+/**
+ * Zeile "Befehlsbruecke" im Reiter Test (Entwurf gemeinsam 2.11; Bauart awm_pruef_bruecke()): Rueckgabe
+ * array('ok'|'fehl'|'hinweis', Text). Gemessen wird das Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst
+ * argumentweise laeuft - wie der Waechter, nicht die PID.
+ */
+function abfahrt_pruef_bruecke()
+{
+    if (!abfahrt_bruecke_laden()) { return array('fehl', abfahrt_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array('fehl', sprintf(abfahrt_t('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array('fehl', sprintf(abfahrt_t('BEFEHL.P_DEFEKT'), $f[0])); }
+    $cfg = abfahrt_config();
+    if (empty($cfg['befehle_mqtt_ein'])) { return array('hinweis', abfahrt_t('BEFEHL.P_AUS')); }
+    if (empty($cfg['mqtt_ein'])) { return array('hinweis', abfahrt_t('BEFEHL.P_MQTT_AUS')); }
+    $zu = bb_zustand_lesen();
+    $laeuft = (bool) bb_dienste();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!$laeuft) { return array('fehl', abfahrt_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) {
+        return array('fehl', sprintf(abfahrt_t('BEFEHL.P_HAENGT'), (int) $alter));
+    }
+    if (empty($zu['abo'])) {
+        return array('fehl', sprintf(abfahrt_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = isset($zu['zaehler']) && is_array($zu['zaehler']) ? $zu['zaehler'] : array();
+    $t = sprintf(abfahrt_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0,
+                 isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(abfahrt_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . abfahrt_t('BEFEHL.P_VERWORFEN'); }
+    return array('ok', $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) fuer den Reiter Test; leer ohne Bruecke. */
+function abfahrt_bruecke_pruefzeilen()
+{
+    if (!abfahrt_bruecke_laden()) { return array(); }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
 }
 
 /* ==================================================================
@@ -4202,6 +4570,26 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
         $zeile(1, abfahrt_t('TEST.F_THEMEN'), sprintf(abfahrt_t('TEST.A_THEMEN_OK'),
             count(array_unique($abf_lis))));
     }
+
+    /* Gruppe 2 / MQTT (1.6.30; Entwurf aa 2.4, Vorbild B58 Abfuhrkalender): Ist jeder Name der Namenstabelle einer,
+     * unter dem das Gateway einen Wert dieses Plugins vergibt? Die Gegenseite wird hier ohne
+     * abfahrt_mqtt_gateway_name() gebildet - aus dem Sendecode (abfahrt_werte(), abfahrt_lebenszeichen_werte()) und
+     * der Umbenennungsregel des Gateways -, damit ein Fehler in der Namensfunktion nicht beide Seiten gleich trifft. */
+    $abf_gesendet = array();
+    foreach (abfahrt_werte(abfahrt_stand(), $abfcfg) as $abf_k => $abf_v) {
+        if (abfahrt_feld_mqtt($abf_k)) { $abf_gesendet[] = str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_k); }
+    }
+    foreach (array_keys(abfahrt_lebenszeichen_werte(0, 0)) as $abf_k) {
+        $abf_gesendet[] = str_replace(array('/', '%'), '_', $abfcfg['mqtt_topic'] . '/' . $abf_k);
+    }
+    $abf_nt = abfahrt_mqtt_namen($abfcfg['mqtt_topic']);
+    $abf_nt_ohne = array();
+    foreach ($abf_nt as $abf_n) {
+        if (!in_array($abf_n[1], $abf_gesendet, true)) { $abf_nt_ohne[] = $abf_n[1]; }
+    }
+    $zeile(($abf_nt && !$abf_nt_ohne) ? 1 : 0, abfahrt_t('TEST.F_NAMEN'),
+        ($abf_nt && !$abf_nt_ohne) ? sprintf(abfahrt_t('TEST.A_NAMEN_OK'), count($abf_nt))
+                                   : sprintf(abfahrt_t('TEST.A_NAMEN_FEHL'), abfahrt_e($abf_nt_ohne ? implode(', ', $abf_nt_ohne) : '-')));
 
     /* Trifft jeder Suchtext genau EINE Stelle der Antwortzeile? (Regeln/03)
      * Gemessen an der erzeugten Zeile, nicht am Quelltext: ohne das
@@ -4974,6 +5362,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'lookahead_hours': return $zahl($wert, 1, 48);
         case 'mqtt_vollsend_min': return $zahl($wert, 0, 1440);
         case 'mqtt_ein':
+        case 'befehle_mqtt_ein':
         case 'route_departat':
         case 'quiet_push':
         case 'ganztags_ein':  return $schalter($wert);
