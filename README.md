@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.30 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,27 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.31
+
+**Hausform der Pflegewelle 22 und Haus-Themen – nichts ändert sich ohne eigenes Zutun.** Bestehende Anlagen laufen
+nach dem Update unverändert weiter; alle neuen Haken stehen ab Werk aus, der HTTP-Weg bleibt bei bestehenden Anlagen an.
+
+* **Haus-Themen (Regeln Nr. 15, ab Werk aus):** „Nur ansagen, wenn jemand zu Hause ist“ (Quelle
+  `haus/anwesenheit/jemand`, BLE-Scanner NG) sperrt die Ansage, nie die Push-Nachricht; „Am Abholtag den Satz des
+  Abfuhrkalenders anhängen“ (Quelle `haus/abfuhr/*`, Abfuhrkalender ab 1.4.26, Platzhalter `{abfuhr}`); Anbieter
+  `haus/abfahrt/in_min` + `haus/abfahrt/zaehler` (Minuten bis zur Abfahrt, ohne Termintitel). Schweigt eine Quelle
+  länger als 120 s, gilt das bisherige Verhalten; der Reiter Test sagt es. Gelesen und gesendet wird im Minutentakt
+  mit einer kurzen Sitzung am Broker, ohne Dauerdienst.
+* **HTTP-Weg hinter einem Haken:** `termin.php` und `termin_say.php` antworten nur mit „HTTP-Weg für Loxone annehmen“
+  (Reiter Einbindung, „Bestehende Anlagen“) – nach dem Update an, bei einer Neuinstallation aus (403 `ERR=ENDPUNKT_AUS`).
+* **Sprachmodul 1.1.4 und Befehlsbrücke 1.0.1:** Sonos4Lox und SonoX wählbar (ungemessen; SonoX schickt den
+  Ansagetext an Google); Brücke prüft die LoxBerry-Wurzel.
+* **Gateway V2:** `status/ok` mit „Noncached“ in der Hakenliste; der Vollversand wirkt unter V2 nur für geänderte Werte.
+* **Berichtigt:** `cron.err` wird über 256 kB gekappt und der Dienst läuft auch, wenn sich die Datei nicht anlegen
+  lässt; Zurückspielen einer Sicherung schaltet die Befehlsbrücke sofort; die Sicherung trägt `Cache-Control: no-store`;
+  während eines Updates rechnet der Minutenlauf nicht; „Koordinaten verwerfen“ ist orange; englische Hilfe zu den
+  Abfragegrenzen; Hilfelink auf die eigene Wiki-Seite; mosquitto-clients in `dpkg/apt`.
 
 ## Neu in 1.6.30
 

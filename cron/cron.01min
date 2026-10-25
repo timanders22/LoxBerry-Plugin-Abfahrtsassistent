@@ -31,7 +31,20 @@
 # nach sechs Tagen Minutentakt unveraendert. Das Verzeichnis wird vorher
 # angelegt, falls es weggeraeumt wurde - sonst scheitert die Umlenkung, und
 # der Dienst liefe gar nicht erst an.
+#
+# Gruppe 18 (1.6.31, F3; Bauform Dashboard 0.9.38): cron.err wird ueber 256 kB auf
+# die letzten 300 Zeilen gekappt (Regeln/06, Docker NG 1.3.7). Scheitert touch
+# (Ordner weg oder schreibgeschuetzt), laeuft der Dienst trotzdem - ohne
+# Umlenkung nach cron.err; bis 1.6.30 lief er dann gar nicht, weil bash einen
+# Befehl nach einer gescheiterten Umlenkung nicht ausfuehrt.
+ERR="REPLACELBPLOGDIR/cron.err"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
-touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
-/usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
+if touch "$ERR" 2>/dev/null; then
+    if [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+        tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+    fi
+    /usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>>"$ERR"
+else
+    /usr/bin/php "REPLACELBPBINDIR/abfahrt_dienst.php" >/dev/null 2>&1
+fi
 exit 0

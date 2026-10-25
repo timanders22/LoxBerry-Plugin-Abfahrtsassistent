@@ -161,6 +161,40 @@ fi
 chmod 600 "$CF" 2>/dev/null
 [ -f "$BASE/config/plugins/$PFOLDER.backup.json" ] && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null
 
+# Gruppe 18 (1.6.31; Entscheidung ab 2, Entwurf G18 3.2): eine bestehende Anlage behaelt den HTTP-Weg termin.php und
+# termin_say.php (endpunkt_ein=1) - die Lese-Regel in abfahrt_config() gilt ohnehin, hier steht es ausdruecklich in
+# Konfiguration UND Zweitschrift. Nur bei eingerichteter Konfiguration (hat_merkwort) ohne den Schluessel; ueber eine
+# Nebendatei, Gegenprobe (alles gleich bis auf den Schluessel), mv, 0600. Scheitert es, gilt die Lese-Regel.
+abf_endpunkt_ein() {
+    [ -f "$1" ] || return 0
+    hat_merkwort "$1" || return 0
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        exit((is_array($d) && !array_key_exists("endpunkt_ein", $d)) ? 0 : 1);' "$1" 2>/dev/null || return 0
+    rm -f "$1.neu" 2>/dev/null
+    if php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        $d["endpunkt_ein"] = 1;
+        $js = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($js === false) { exit(1); }
+        umask(0077);
+        exit(@file_put_contents($argv[2], $js) === strlen($js) ? 0 : 1);' "$1" "$1.neu" 2>/dev/null \
+       && php -r '$a = json_decode((string) @file_get_contents($argv[1]), true);
+        $b = json_decode((string) @file_get_contents($argv[2]), true);
+        if (!is_array($a) || !is_array($b) || !isset($b["endpunkt_ein"]) || $b["endpunkt_ein"] !== 1) { exit(1); }
+        unset($b["endpunkt_ein"]);
+        exit($a === $b ? 0 : 1);' "$1" "$1.neu" 2>/dev/null \
+       && chmod 600 "$1.neu" 2>/dev/null && mv -f "$1.neu" "$1"; then
+        echo "<INFO> Konfiguration ergaenzt: endpunkt_ein=1 in $(basename "$1") (bestehende Anlage - termin.php und termin_say.php bleiben erreichbar; abschalten im Reiter Einbindung)"
+    else
+        rm -f "$1.neu" 2>/dev/null
+        echo "<WARNING> endpunkt_ein liess sich in $1 nicht eintragen - es gilt die Lese-Regel des Plugins (bestehende Anlage: an)."
+    fi
+}
+abf_endpunkt_ein "$CF"
+abf_endpunkt_ein "$BK"
+# Gruppe 18 (Entwurf G18 2.5): der Merker des Anbieters haus/abfahrt/in_min geht mit dem Update weg - der erste Lauf
+# danach sendet den Wert vollstaendig (Vollversand ohne Merker).
+rm -f "/tmp/$PFOLDER/haus_letzte.json" 2>/dev/null
+
 # I2: eine unbrauchbare Sicherung geht nach .alt (die Deinstallation raeumt
 # sie ab) - sie bleibt nicht als Update-Sicherung liegen.
 if [ "$ABF_UNBRAUCHBAR" = "1" ] && [ -d "$SICHER" ]; then

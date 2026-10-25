@@ -328,6 +328,14 @@ function abfahrt_vorgaben()
      * bin/befehlsbruecke.php; Befehl "ansage"). AB WERK AUS (Entwurf gemeinsam 2.11): jeder im Heimnetz kann
      * ueber den UDP-Eingang des MQTT-Gateways senden. Wirkt nur mit mqtt_ein. */
     'befehle_mqtt_ein' => 0,
+    /* Gruppe 18 (1.6.31; Entwurf G18 2.9/3.2): HTTP-Weg termin.php und termin_say.php annehmen - ab Werk 0 (Neuinstallation),
+     * eine bestehende Anlage bekommt beim Lesen 1 (abfahrt_config(), Lese-Regel) und beim Update ausdruecklich
+     * (postupgrade.sh). Haus-Themen (Regeln/07 Nr. 15), alle ab Werk aus: Anbieter haus/abfahrt/in_min, Abnehmer
+     * haus/anwesenheit/jemand ("nur ansagen, wenn jemand zu Hause ist") und haus/abfuhr/* (Satz am Abholtag). */
+    'endpunkt_ein' => 0,
+    'haus_abfahrt_ein' => 0,
+    'anwesenheit_ein' => 0,
+    'abfuhr_satz_ein' => 0,
 ];
 }
 
@@ -425,6 +433,12 @@ function abfahrt_config() {
             $abfcfg[$k] = $gut;
         }
     }
+    /* Gruppe 18 (1.6.31; Entwurf G18 3.2): Lese-Regel fuer endpunkt_ein - EINE Stelle. Eine eingerichtete Datei (Zustand
+     * 'ok') ohne gueltigen Schluessel ist eine bestehende Anlage: der HTTP-Weg bleibt an (1). Keine Datei oder der Rohling
+     * "{}" (Zustand 'leer'/'fehlt') = Neuinstallation: Vorgabe 0. Jedes Speichern schreibt den Wert in die Datei. */
+    if ($zustand === 'ok' && !array_key_exists('endpunkt_ein', $abfcfg) && !isset($abgewiesen['endpunkt_ein'])) {
+        $abfcfg['endpunkt_ein'] = 1;
+    }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($abfcfg)));
     abfahrt_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen,
                               'fehlend' => $fehlend));
@@ -432,6 +446,9 @@ function abfahrt_config() {
     $abfcfg += $vorgaben;
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
     $abfcfg['befehle_mqtt_ein'] = empty($abfcfg['befehle_mqtt_ein']) ? 0 : 1;
+    foreach (array('endpunkt_ein', 'haus_abfahrt_ein', 'anwesenheit_ein', 'abfuhr_satz_ein') as $abf_s) {     // Gruppe 18
+        $abfcfg[$abf_s] = empty($abfcfg[$abf_s]) ? 0 : 1;
+    }
     $abfcfg['mqtt_topic'] = abfahrt_mqtt_praefix_norm($abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
     /* Vor jedem "+=" pruefen, ob wirklich ein Feld dasteht. Eine von Hand
@@ -879,9 +896,14 @@ function abfahrt_webport() {
     return $port;
 }
 
-/** Die Ausgabearten, die dieses Plugin anbietet: wie bis 1.6.22 und dazu "aus" (ohne Sonos4Lox). */
+/** Die Ausgabearten, die dieses Plugin anbietet: wie bis 1.6.22 und dazu "aus", seit 1.6.31 (Gruppe 18, Pflegewelle 22)
+ *  mit Sonos4Lox und - ab Modul 1.1.4 - SonoX (ungemessen, kein Sonos im Haus; das Modul prueft Installation und
+ *  Zone). Die Fassungspruefung schuetzt vor einer zuerst geladenen aelteren Abschrift (ferien_lib.php des Plugins
+ *  Ferien und Feiertage traegt eine eigene); in dieser Linie gilt heute immer die eigene (1.1.4). */
 function abfahrt_ansage_modi() {
-    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    $m = array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
 }
 
 /**
@@ -895,7 +917,9 @@ function abfahrt_ansage_k() {
     return array('port' => abfahrt_webport(), 'kopf' => array('User-Agent: LoxBerry Abfahrts-Assistent'),
                  'ordner' => abfahrt_tmpdir(false),
                  't' => function ($s) { return abfahrt_t($s); },
-                 'werk' => 'musicserver');
+                 'werk' => 'musicserver',
+                 /* Gruppe 18 (1.6.31, F7): der https-Port fuer die einmalige Umleitung an 127.0.0.1 (ohne Wurzel 0, wie bisher). */
+                 'sslport' => ansage_sslport(abfahrt_paths()['general']));
 }
 
 /** Adresse eines oertlichen Plugin-Skripts, mit dem richtigen Port. */
@@ -1110,6 +1134,14 @@ function abfahrt_audio_allowed(array $abfcfg, &$why = '') {
     $info = '';
     if (abfahrt_in_quiet($abfcfg, $info)) {
         $why = $info;
+        return false;
+    }
+    /* Gruppe 18 (1.6.31; Entscheidung ab 3, E8): mit "Nur ansagen, wenn jemand zu Hause ist" sperrt eine FRISCHE 0 von
+     * haus/anwesenheit/jemand das Feld AUDIO und die Ansage (termin_say.php und Befehl "ansage" antworten SKIP, Grund
+     * GESPERRT). Die Push-Nachricht bleibt unberuehrt, der Testknopf (force) spricht immer. Schweigt die Quelle (Zaehler
+     * laenger als 120 s unveraendert, nie gesehen, Uhr zurueck, '-'), gilt das bisherige Verhalten. */
+    if (!empty($abfcfg['anwesenheit_ein']) && abfahrt_anwesenheit_lage($abfcfg) === 'weg') {
+        $why = 'niemand zu Hause (haus/anwesenheit)';
         return false;
     }
     return true;
@@ -2546,24 +2578,31 @@ function abfahrt_ansagetext(array $info, array $abfcfg = array()) {
      * einzeln gesaeubert, nicht der fertige Satz: sonst faellt die
      * Zeichenbegrenzung auf den ganzen Text statt auf die Einsetzung. */
     $vorlage = trim((string) ($abfcfg['ansage_vorlage'] ?? ''));
+    /* Gruppe 18 (1.6.31; V4, E9): am Abholtag der Satz des Abfuhrkalenders (haus/abfuhr/heute_satz, abfahrt_abfuhr_satz():
+     * nur gueltige Kennungen, nicht quittiert, Quelle frisch, bereinigt, hoechstens 200 Byte). Eigene Vorlage: Platzhalter
+     * {abfuhr} (leer ohne Satz); ohne {abfuhr} wird er angehaengt. */
+    list($abfuhr) = abfahrt_abfuhr_satz($abfcfg);
     if ($vorlage !== '') {
-        return abfahrt_tts_sauber(str_replace(
-            array('{titel}', '{ort}', '{fahrt}', '{abfahrt_in}', '{beginn}'),
+        $mit = (strpos($vorlage, '{abfuhr}') !== false);
+        $text = abfahrt_tts_sauber(str_replace(
+            array('{titel}', '{ort}', '{fahrt}', '{abfahrt_in}', '{beginn}', '{abfuhr}'),
             array($titel,
                   abfahrt_tts_sauber($info['ort'] ?? '', 120),
                   (string) (int) ceil((float) ($info['fahrt'] ?? 0)),
                   (string) (int) ($info['abfahrt_in'] ?? 0),
-                  abfahrt_tts_sauber($info['beginn'] ?? '', 40)),
-            $vorlage), 400);
+                  abfahrt_tts_sauber($info['beginn'] ?? '', 40),
+                  $abfuhr),
+            $vorlage), $mit ? 600 : 400);
+        return ($mit || $abfuhr === '') ? $text : trim($text . ' ' . $abfuhr);
     }
     if ($titel === '') {
-        return abfahrt_t('ANSAGETEXT.OHNE_TITEL');
+        return trim(abfahrt_t('ANSAGETEXT.OHNE_TITEL') . ' ' . $abfuhr);
     }
     $text = sprintf(abfahrt_t('ANSAGETEXT.MIT_TITEL'), $titel);
     if (!empty($info['fahrt'])) {
         $text .= ' ' . sprintf(abfahrt_t('ANSAGETEXT.FAHRZEIT'), (int) ceil((float) $info['fahrt']));
     }
-    return $text;
+    return $abfuhr === '' ? $text : $text . ' ' . $abfuhr;
 }
 
 /* ---------------- Ausgabe der Ansage (Nr. 36 b, Stufe 2) ----------------
@@ -3918,7 +3957,8 @@ function abfahrt_mqtt_namen($praefix = null)
 }
 
 /** Die Hakenliste fuer Gateway V2 (E4): alle zehn Namen der Namenstabelle, ohne status/ts und status/befehle;
- *  kein Noncached, kein Resetaftersend. Rueckgabe je Zeile array(Thema voll, Name in Loxone, Bedeutung, Art). */
+ *  Noncached nur status/ok (Hausform: ok-Themen, Gruppe 18 / 1.6.31, Entwurf G18 2.2); kein Resetaftersend.
+ *  Rueckgabe je Zeile array(Thema voll, Name in Loxone, Bedeutung, Art, Kennzeichen 'N' = Noncached oder ''). */
 function abfahrt_mqtt_hakenliste($praefix = null)
 {
     if ($praefix === null) {
@@ -3928,7 +3968,7 @@ function abfahrt_mqtt_hakenliste($praefix = null)
     $p = abfahrt_mqtt_praefix_norm($praefix);
     $aus = array();
     foreach (abfahrt_mqtt_namen($p) as $b) {
-        $aus[] = array($p . '/' . $b[0], $b[1], $b[2], $b[3]);
+        $aus[] = array($p . '/' . $b[0], $b[1], $b[2], $b[3], $b[0] === 'status/ok' ? 'N' : '');
     }
     return $aus;
 }
@@ -4197,6 +4237,486 @@ function abfahrt_bruecke_pruefzeilen()
     bb_pruefen();
     $aus = (string) ob_get_clean();
     return array_values(array_filter(explode("\n", $aus), 'strlen'));
+}
+
+/* ==================================================================
+ * Gruppe 18 (1.6.31; Entwurf Musterprojekt/entwurf_gruppe18_ab_aw.txt 2.3-2.6, Entscheidungen Gruppe 18 ab 3/4 und
+ * E3-E9): Haus-Themen nach Regeln/07 Nr. 15 ohne Dauerdienst.
+ *   Abnehmer haus/anwesenheit/jemand (Reiter Einstellungen "Nur ansagen, wenn jemand zu Hause ist", ab Werk aus) und
+ *   haus/abfuhr/* (Satz am Abholtag, ab Werk aus); Anbieter haus/abfahrt/in_min + haus/abfahrt/zaehler (ab Werk aus).
+ * Technik ("Haus-Sitzung", E3): je Minutenlauf hoechstens zwei kurze TCP-Sitzungen am Broker aus general.json - eine
+ * am Laufanfang zum Lesen (retained Werte + LIVE gesehener Zaehler, Fenster hoechstens 32 s), eine nach den Werten zum
+ * Senden der eigenen Haus-Themen. Kein mosquitto_sub, kein Kennwort in einer Befehlszeile, die Bruecke bleibt, wie sie
+ * ist. Eigene Haus-Themen gehen direkt an den Broker, NICHT ueber den UDP-Eingang des Gateways (F-E5: ein verlorenes
+ * Datagramm liesse einen retained Wert falsch stehen). Endpunkte und Oberflaeche lesen nur haus_quellen.json - keine
+ * Sitzung im Webserver. Ein Abnehmer schreibt nichts unter haus/ und raeumt nie fremde Themen ab.
+ * ================================================================== */
+
+/** Frist der Haus-Themen (Regeln/07 Nr. 15): ein Abnehmer verwendet die Werte nur, solange der Zaehler sich binnen
+ *  120 s aendert. */
+define('ABFAHRT_HAUS_FRIST', 120);
+
+/** Die acht Kennungen der Tonnenarten in der festen Reihenfolge des Anbieters (Abfuhrkalender awm_tonnenarten()). */
+function abfahrt_haus_tonnen()
+{
+    return array('rest', 'bio', 'papier', 'wert', 'glas', 'sperr', 'gruen', 'schad');
+}
+
+/**
+ * Eine kurze Sitzung am Broker (E3/F-E6): Abschrift von abfahrt_mqtt_behalten_liste() (dort gemessen, R7-R22; der
+ * Leser selbst bleibt unveraendert) mit Sende- und Fensterteil.
+ *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
+ *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung (>= 0x80 abgelehnt)
+ *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
+ *   $fenster Sekunden, hoechstens 32; ohne $warten endet das Lesen 1 s nach dem SUBACK (wie :3478-3481)
+ * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
+ * 'gesendet' => n). Das Kennwort steht nur im CONNECT-Paket. Client-ID 'abfhaus<pid>' (neben 'abfrueck<pid>').
+ */
+function abfahrt_haus_sitzung(array $senden, array $lesen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = abfahrt_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    $soll = array_slice(array_keys($soll), 0, 50);
+    $warte = array();
+    foreach ($warten as $t) {
+        if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
+    }
+    $fenster = max(0.0, min(32.0, (float) $fenster));
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    /* Ein PUBLISH merken: Wert und, ohne Retain-Bit, "live gesehen". */
+    $merke = function ($pk) use (&$aus, $soll) {
+        if (strlen($pk[1]) < 2) { return; }
+        $tl = unpack('n', substr($pk[1], 0, 2));
+        $t = substr($pk[1], 2, $tl[1]);
+        $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+        if (!in_array($t, $soll, true)) { return; }
+        $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+    };
+
+    $flags = 0x02;
+    $nutz = $zk('abfhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) === false) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $paket();
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) {
+        fclose($s);
+        $aus['lage'] = 'zeit';
+        return $aus;
+    }
+    if (ord($ack[1][1]) !== 0) {
+        fclose($s);
+        $aus['lage'] = 'abgelehnt';
+        return $aus;
+    }
+    $lage = 'ok';
+    $suback_zeit = microtime(true);
+    if ($soll) {
+        $sub = pack('n', 1);
+        foreach ($soll as $t) { $sub .= $zk($t) . chr(0); }
+        @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+        $lage = 'zeit';
+        $ende = microtime(true) + 3.0;
+        while (microtime(true) < $ende) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                $rc = (string) substr($pk[1], 2);
+                if (strlen($rc) !== count($soll)) { break; }
+                $lage = 'ok';
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { $lage = 'abgelehnt'; }
+                }
+                break;
+            } elseif ($art === 3) {
+                $merke($pk);
+            }
+        }
+        $suback_zeit = microtime(true);
+    }
+    if ($lage === 'ok') {
+        foreach ($senden as $t => $wr) {
+            $t = (string) $t;
+            $w = (string) (is_array($wr) ? $wr[0] : $wr);
+            $ret = is_array($wr) && !empty($wr[1]);
+            if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$ret)) { continue; }
+            $rumpf = $zk($t) . $w;
+            if (@fwrite($s, chr(0x30 | ($ret ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf) !== false) {
+                $aus['gesendet']++;
+            }
+        }
+    }
+    if ($lage === 'ok' && $soll) {
+        $offen = function () use (&$aus, $warte) {
+            foreach (array_keys($warte) as $t) { if (empty($aus['live'][$t])) { return true; } }
+            return false;
+        };
+        $ende = $warte ? $suback_zeit + max(1.0, $fenster) : $suback_zeit + 1.0;
+        while (microtime(true) < $ende && ($offen() || !$warte)) {
+            $pk = $paket();
+            if ($pk === null) { if (feof($s)) { break; } continue; }
+            if (($pk[0] >> 4) === 3) { $merke($pk); }
+        }
+    }
+    @fwrite($s, chr(0xE0) . chr(0));
+    fclose($s);
+    $aus['lage'] = $lage;
+    return $aus;
+}
+
+/** Die Ablage der gelesenen Haus-Quellen (Zwischenordner, 0600) - Dienst schreibt, Endpunkte und Oberflaeche lesen. */
+function abfahrt_haus_quellen_datei()
+{
+    return abfahrt_tmpdir(false) . '/haus_quellen.json';
+}
+
+/** Die gelesenen Haus-Quellen: array('anwesenheit' => array('werte', 'zaehler', 'seit'), 'abfuhr' => ..., 'sitzung'). */
+function abfahrt_haus_quellen()
+{
+    $f = abfahrt_haus_quellen_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/** Welche Themen liest der Abnehmer je Quelle? Nur die eingeschalteten. */
+function abfahrt_haus_lesethemen(array $abfcfg)
+{
+    $aus = array();
+    if (!empty($abfcfg['anwesenheit_ein'])) {
+        $aus['anwesenheit'] = array('haus/anwesenheit/jemand', 'haus/anwesenheit/zaehler');
+    }
+    if (!empty($abfcfg['abfuhr_satz_ein'])) {
+        $aus['abfuhr'] = array('haus/abfuhr/heute', 'haus/abfuhr/heute_satz', 'haus/abfuhr/quittiert',
+                               'haus/abfuhr/zaehler');
+    }
+    return $aus;
+}
+
+/**
+ * Das Ergebnis einer Lesesitzung in den Stand einarbeiten (Entwurf 2.3, Probe probe_haus.txt B1-B6). Je Quelle: die
+ * Werte (retained gelesen; ein bestaetigtes Abo ohne retained Wert heisst ''), der zuletzt LIVE gesehene Zaehler und
+ * 'seit' = Zeitpunkt der letzten Aenderung des Zaehlers. Ein live gesehener, aber unveraenderter Zaehler verlaengert
+ * nichts (Anbieter klemmt).
+ */
+function abfahrt_haus_merken(array $alt, array $erg, array $lesethemen, $jetzt)
+{
+    $neu = $alt;
+    foreach ($lesethemen as $q => $themen) {
+        $e = (isset($alt[$q]) && is_array($alt[$q])) ? $alt[$q] : array();
+        $e += array('werte' => array(), 'zaehler' => null, 'seit' => 0);
+        foreach ($themen as $t) {
+            $k = substr($t, strlen('haus/' . $q . '/'));
+            $da = array_key_exists($t, $erg['werte']);
+            if ($k === 'zaehler') {
+                if ($da && !empty($erg['live'][$t]) && (string) $erg['werte'][$t] !== (string) $e['zaehler']) {
+                    $e['zaehler'] = (string) $erg['werte'][$t];
+                    $e['seit'] = (int) $jetzt;
+                }
+            } elseif ($da) {
+                $e['werte'][$k] = (string) $erg['werte'][$t];
+            } elseif ($erg['lage'] === 'ok') {
+                $e['werte'][$k] = '';
+            }
+        }
+        $neu[$q] = $e;
+    }
+    return $neu;
+}
+
+/** Ist die Quelle frisch? 0 < jetzt - seit <= 120 und seit nicht in der Zukunft (Uhr zurueck = nicht frisch). */
+function abfahrt_haus_frisch(array $c, $q, $jetzt)
+{
+    $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+    return $seit > 0 && $seit <= (int) $jetzt && (int) $jetzt - $seit <= ABFAHRT_HAUS_FRIST;
+}
+
+/** Lage der Anwesenheit: aus | da | weg | schweigt (Entwurf 2.6). */
+function abfahrt_anwesenheit_lage(array $abfcfg, $c = null, $jetzt = null)
+{
+    if (empty($abfcfg['anwesenheit_ein'])) { return 'aus'; }
+    if ($c === null) { $c = abfahrt_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!abfahrt_haus_frisch($c, 'anwesenheit', $jetzt)) { return 'schweigt'; }
+    $w = isset($c['anwesenheit']['werte']['jemand']) ? (string) $c['anwesenheit']['werte']['jemand'] : '';
+    return $w === '1' ? 'da' : ($w === '0' ? 'weg' : 'schweigt');
+}
+
+/**
+ * Satz am Abholtag (V4, F-E9): array(Satz, Lage) mit Lage aus | schweigt | keine | ungueltig | quittiert | unbrauchbar |
+ * angehaengt. Nur gueltige Kennungen, nicht quittiert, Quelle frisch; der Satz ohne Steuerzeichen, gueltiges UTF-8,
+ * hoechstens 200 Byte, nicht '-', dann durch abfahrt_tts_sauber($s, 200). Der Satz kommt von einem fremden Plugin ueber
+ * den Broker und wird im Haus gesprochen - die Kennungspruefung ist der Riegel gegen "irgendein Text".
+ */
+function abfahrt_abfuhr_satz(array $abfcfg, $c = null, $jetzt = null)
+{
+    if (empty($abfcfg['abfuhr_satz_ein'])) { return array('', 'aus'); }
+    if ($c === null) { $c = abfahrt_haus_quellen(); }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!abfahrt_haus_frisch($c, 'abfuhr', $jetzt)) { return array('', 'schweigt'); }
+    $w = (isset($c['abfuhr']['werte']) && is_array($c['abfuhr']['werte']) ? $c['abfuhr']['werte'] : array())
+       + array('heute' => '', 'heute_satz' => '', 'quittiert' => '');
+    if ((string) $w['heute'] === 'keine') { return array('', 'keine'); }
+    $art = '(' . implode('|', abfahrt_haus_tonnen()) . ')';
+    if (!preg_match('/^' . $art . '(,' . $art . '){0,7}\z/', (string) $w['heute'])) { return array('', 'ungueltig'); }
+    if ((string) $w['quittiert'] === '1') { return array('', 'quittiert'); }
+    $s = (string) $w['heute_satz'];
+    if ($s === '' || strlen($s) > 200 || !preg_match('//u', $s)) { return array('', 'unbrauchbar'); }
+    $s = trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', $s));
+    if ($s === '' || $s === '-') { return array('', 'unbrauchbar'); }
+    $s = abfahrt_tts_sauber($s, 200);
+    return $s === '' ? array('', 'unbrauchbar') : array($s, 'angehaengt');
+}
+
+/**
+ * Abnehmerteil im Minutenlauf (bin/abfahrt_dienst.php, am ANFANG des Laufs; F-E4): nur mit anwesenheit_ein oder
+ * abfuhr_satz_ein. Gewartet wird nur auf die Zaehler, die nicht binnen der letzten 45 s live gesehen wurden; das Fenster
+ * endet spaetestens 32 s nach dem SUBACK und vor Sekunde 55; ein Lauf, der erst nach Sekunde 50 hierher kommt, liest
+ * nicht. Beide Haken aus: haus_quellen.json weg. Rueckgabe das Sitzungsergebnis oder null.
+ */
+function abfahrt_haus_abnehmer(array $abfcfg)
+{
+    $themen = abfahrt_haus_lesethemen($abfcfg);
+    $datei = abfahrt_haus_quellen_datei();
+    if (!$themen) {
+        if (is_file($datei)) { @unlink($datei); }
+        return null;
+    }
+    $sek = (int) date('s');
+    if ($sek > 50) { return null; }
+    $c = abfahrt_haus_quellen();
+    $jetzt = time();
+    $lesen = array();
+    $warten = array();
+    foreach ($themen as $q => $liste) {
+        foreach ($liste as $t) { $lesen[] = $t; }
+        $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+        if (!($seit > 0 && $seit <= $jetzt && $jetzt - $seit <= 45)) { $warten[] = 'haus/' . $q . '/zaehler'; }
+    }
+    $erg = abfahrt_haus_sitzung(array(), $lesen, $warten, min(32, 55 - $sek));
+    $c = abfahrt_haus_merken($c, $erg, $themen, time());
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
+    foreach (array_keys(abfahrt_haus_lesethemen(array('anwesenheit_ein' => 1, 'abfuhr_satz_ein' => 1))) as $q) {
+        if (!isset($themen[$q])) { unset($c[$q]); }
+    }
+    if (isset($themen['anwesenheit'])) {
+        $lage = abfahrt_anwesenheit_lage($abfcfg, $c, time());
+        if (!isset($c['lage_anwesenheit']) || $c['lage_anwesenheit'] !== $lage) {
+            abfahrt_log('Haus-Thema haus/anwesenheit: ' . $lage . ($lage === 'weg' ? ' - die Ansage ist gesperrt (Push unberuehrt)'
+                : ($lage === 'schweigt' ? ' - die Ansage verhaelt sich wie ohne Anwesenheit' : '')));
+            $c['lage_anwesenheit'] = $lage;
+        }
+    }
+    if ($erg['lage'] !== 'ok') {
+        abfahrt_log_gedrosselt('haus_abnehmer', 'Haus-Themen lesen: Sitzung am Broker gescheitert (' . $erg['lage']
+            . ') - der naechste Lauf versucht es erneut.', 3600);
+    }
+    $js = json_encode($c, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                          | (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0));
+    if ($js !== false) {
+        abfahrt_tmpdir();
+        abfahrt_cache_schreiben($datei, $js);
+    }
+    return $erg;
+}
+
+/** haus/abfahrt/in_min (V1, F-E7): max(0, ABFAHRT_IN) bei gueltigem Termin (abfahrt_ok_wirksam() = 1), sonst -1;
+ *  Obergrenze 9998 (nie der Platzhalter 9999), nie Titel, Ort oder Beginn. */
+function abfahrt_haus_in_min(array $st)
+{
+    $st += array('abfahrt_in' => 9999);
+    if (abfahrt_ok_wirksam($st) !== 1) { return -1; }
+    return max(0, min(9998, (int) $st['abfahrt_in']));
+}
+
+/**
+ * Anbieterteil im Minutenlauf (NACH abfahrt_dienst_mqtt()): nur mit haus_abfahrt_ein UND mqtt_ein. in_min retained bei
+ * Aenderung, dazu Vollversand ohne Merker, nach dem Einschalten (Speichern loescht den Merker) und alle 30 Minuten;
+ * haus/abfahrt/zaehler 0...999 in jeder Sitzung, nie retained. Der Merker haus_letzte.json entsteht nur nach einer
+ * Sitzung mit Lage 'ok'. Rueckgabe das Sitzungsergebnis oder null.
+ */
+function abfahrt_haus_anbieter(array $st, array $abfcfg)
+{
+    if (empty($abfcfg['haus_abfahrt_ein']) || empty($abfcfg['mqtt_ein'])) { return null; }
+    $tmp = abfahrt_tmpdir();
+    $wert = abfahrt_haus_in_min($st);
+    $mf = $tmp . '/haus_letzte.json';
+    $m = is_file($mf) ? json_decode((string) @file_get_contents($mf), true) : null;
+    $voll = !is_array($m) || !isset($m['voll']) || (int) $m['voll'] > time() || time() - (int) $m['voll'] >= 1800;
+    $zf = $tmp . '/haus_zaehler.txt';
+    $n = is_file($zf) ? (int) trim((string) @file_get_contents($zf)) : -1;
+    $n = ($n + 1) % 1000;
+    abfahrt_cache_schreiben($zf, (string) $n);
+    $senden = array('haus/abfahrt/zaehler' => array((string) $n, false));
+    if ($voll || !isset($m['in_min']) || (string) $m['in_min'] !== (string) $wert) {
+        $senden['haus/abfahrt/in_min'] = array((string) $wert, true);
+    }
+    $erg = abfahrt_haus_sitzung($senden, array(), array(), 0);
+    if ($erg['lage'] === 'ok') {
+        abfahrt_cache_schreiben($mf, json_encode(array('in_min' => $wert,
+            'voll' => $voll ? time() : (int) $m['voll'], 'zeit' => time())));
+    } else {
+        abfahrt_log_gedrosselt('haus_anbieter', 'Haus-Thema haus/abfahrt: Sitzung am Broker gescheitert (' . $erg['lage']
+            . ') - naechster Versuch im naechsten Lauf.', 3600);
+    }
+    abfahrt_cache_schreiben($tmp . '/haus_anbieter.json', json_encode(array('zeit' => time(), 'lage' => $erg['lage'],
+        'in_min' => $wert, 'gesendet' => (int) $erg['gesendet'])));
+    return $erg;
+}
+
+/**
+ * haus/abfahrt/in_min abraeumen (Haken aus, MQTT aus, Zurueckspielen mit Haken aus, Deinstallation; F-E16): leere
+ * retained Nutzlast ueber die Haus-Sitzung, danach Ruecklesen ueber abfahrt_mqtt_behalten_liste(), hoechstens $runden
+ * Runden. Nur das eigene Thema, nie haus/#. Rueckgabe: nichts | geleert | rest | nicht_nachgelesen | kein_broker.
+ */
+function abfahrt_haus_abraeumen($runden = 3)
+{
+    $t = 'haus/abfahrt/in_min';
+    $f = abfahrt_mqtt_behalten_liste(array($t));
+    if ($f['lage'] === 'ok' && !$f['belegt']) { return 'nichts'; }
+    $zustand = 'kein_broker';
+    for ($r = 1; $r <= max(1, (int) $runden); $r++) {
+        $e = abfahrt_haus_sitzung(array($t => array('', true)), array(), array(), 0);
+        if ($e['lage'] !== 'ok') { $zustand = 'kein_broker'; continue; }
+        usleep(300000);
+        $f = abfahrt_mqtt_behalten_liste(array($t));
+        if ($f['lage'] !== 'ok') { $zustand = 'nicht_nachgelesen'; continue; }
+        if (!$f['belegt']) { return 'geleert'; }
+        $zustand = 'rest';
+    }
+    return $zustand;
+}
+
+/** Der Satz zum Abraeumen fuer Oberflaeche und Protokoll. */
+function abfahrt_haus_abraeumen_text($zustand)
+{
+    $k = array('nichts' => 'HAUS.M_RAEUMEN_NICHTS', 'geleert' => 'HAUS.M_RAEUMEN_GELEERT', 'rest' => 'HAUS.M_RAEUMEN_REST',
+               'nicht_nachgelesen' => 'HAUS.M_RAEUMEN_UNKLAR', 'kein_broker' => 'HAUS.M_RAEUMEN_KEIN_BROKER');
+    return abfahrt_t(isset($k[$zustand]) ? $k[$zustand] : 'HAUS.M_RAEUMEN_UNKLAR');
+}
+
+/** Ein Alter fuer die Zeilen des Reiters Test. */
+function abfahrt_haus_alter($sek)
+{
+    $sek = max(0, (int) $sek);
+    return $sek < 90 ? $sek . ' s' : ($sek < 5400 ? (int) round($sek / 60) . ' min' : (int) round($sek / 3600) . ' h');
+}
+
+/** Zeilen fuer den Reiter Test (abfahrt_pruefungen()): array(Stand 1/-1/0, Frage, Antwort maskiert). 1 = frisch,
+ *  -1 = aus bzw. Quelle schweigt (Rueckfall auf das bisherige Verhalten). */
+function abfahrt_haus_pruefzeilen(array $abfcfg)
+{
+    $z = array();
+    $c = abfahrt_haus_quellen();
+    $jetzt = time();
+    $schweigt = function ($q) use ($c, $jetzt) {
+        $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+        return $seit > 0 ? sprintf(abfahrt_t('HAUS.A_SCHWEIGT'), abfahrt_haus_alter($jetzt - $seit))
+                         : abfahrt_t('HAUS.A_NIE');
+    };
+    $lage = abfahrt_anwesenheit_lage($abfcfg, $c, $jetzt);
+    $txt = array('aus' => abfahrt_t('HAUS.A_AUS'), 'da' => abfahrt_t('HAUS.A_DA'), 'weg' => abfahrt_t('HAUS.A_WEG'));
+    $z[] = array($lage === 'da' || $lage === 'weg' ? 1 : -1, abfahrt_t('HAUS.F_ANWESENHEIT'),
+                 abfahrt_e(isset($txt[$lage]) ? $txt[$lage] : $schweigt('anwesenheit')));
+    list($satz, $al) = abfahrt_abfuhr_satz($abfcfg, $c, $jetzt);
+    $atxt = array('aus' => abfahrt_t('HAUS.A_AUS'), 'keine' => abfahrt_t('HAUS.A_ABFUHR_KEINE'),
+                  'ungueltig' => abfahrt_t('HAUS.A_ABFUHR_UNGUELTIG'), 'quittiert' => abfahrt_t('HAUS.A_ABFUHR_QUITTIERT'),
+                  'unbrauchbar' => abfahrt_t('HAUS.A_ABFUHR_UNGUELTIG'),
+                  'angehaengt' => sprintf(abfahrt_t('HAUS.A_ABFUHR_SATZ'), $satz));
+    $z[] = array(in_array($al, array('aus', 'schweigt'), true) ? -1 : 1, abfahrt_t('HAUS.F_ABFUHR'),
+                 abfahrt_e($al === 'schweigt' ? $schweigt('abfuhr') . ' ' . abfahrt_t('HAUS.A_ABFUHR_OHNE') : $atxt[$al]));
+    if (empty($abfcfg['haus_abfahrt_ein'])) {
+        $z[] = array(-1, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(abfahrt_t('HAUS.A_AUS')));
+    } elseif (empty($abfcfg['mqtt_ein'])) {
+        $z[] = array(0, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(abfahrt_t('HAUS.A_ANBIETER_MQTT_AUS')));
+    } else {
+        $a = json_decode((string) @file_get_contents(abfahrt_tmpdir(false) . '/haus_anbieter.json'), true);
+        $m = json_decode((string) @file_get_contents(abfahrt_tmpdir(false) . '/haus_letzte.json'), true);
+        if (!is_array($a) || !isset($a['lage'])) {
+            $z[] = array(-1, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(abfahrt_t('HAUS.A_ANBIETER_NIE')));
+        } else {
+            $ok = ($a['lage'] === 'ok' && $jetzt - (int) $a['zeit'] <= 150);
+            $z[] = array($ok ? 1 : 0, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(sprintf(abfahrt_t('HAUS.A_ANBIETER'),
+                (string) $a['in_min'], is_array($m) && isset($m['zeit']) ? date('H:i:s', (int) $m['zeit']) : '-',
+                abfahrt_t('HAUS.LAGE_' . strtoupper((string) $a['lage'])), abfahrt_haus_alter($jetzt - (int) $a['zeit']))));
+        }
+    }
+    return $z;
 }
 
 /* ==================================================================
@@ -4590,6 +5110,24 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
     $zeile(($abf_nt && !$abf_nt_ohne) ? 1 : 0, abfahrt_t('TEST.F_NAMEN'),
         ($abf_nt && !$abf_nt_ohne) ? sprintf(abfahrt_t('TEST.A_NAMEN_OK'), count($abf_nt))
                                    : sprintf(abfahrt_t('TEST.A_NAMEN_FEHL'), abfahrt_e($abf_nt_ohne ? implode(', ', $abf_nt_ohne) : '-')));
+    /* Gruppe 18 (1.6.31; Entwurf G18 2.2): Hakenliste gegen Namenstabelle in beiden Richtungen, und genau status/ok traegt
+     * "Noncached". */
+    $abf_hl = abfahrt_mqtt_hakenliste($abfcfg['mqtt_topic']);
+    $abf_hn = array();
+    $abf_hnc = array();
+    foreach ($abf_hl as $abf_h) {
+        $abf_hn[] = $abf_h[1];
+        if ($abf_h[4] === 'N') { $abf_hnc[] = $abf_h[0]; }
+    }
+    $abf_ntn = array();
+    foreach ($abf_nt as $abf_n) { $abf_ntn[] = $abf_n[1]; }
+    $abf_hok = !array_diff($abf_hn, $abf_ntn) && !array_diff($abf_ntn, $abf_hn)
+               && $abf_hnc === array($abfcfg['mqtt_topic'] . '/status/ok');
+    $zeile($abf_hok ? 1 : 0, abfahrt_t('HAUS.F_HAKEN'),
+        $abf_hok ? sprintf(abfahrt_t('HAUS.A_HAKEN_OK'), count($abf_hl), abfahrt_e($abfcfg['mqtt_topic'] . '/status/ok'))
+                 : sprintf(abfahrt_t('HAUS.A_HAKEN_FEHL'), abfahrt_e(implode(', ', $abf_hnc) ?: '-')));
+    /* Gruppe 18 (1.6.31; Entwurf G18 2.5/2.6): Haus-Themen - Anwesenheit, Abfuhr, Anbieter haus/abfahrt. */
+    foreach (abfahrt_haus_pruefzeilen($abfcfg) as $abf_hz) { $zeile($abf_hz[0], $abf_hz[1], $abf_hz[2]); }
 
     /* Trifft jeder Suchtext genau EINE Stelle der Antwortzeile? (Regeln/03)
      * Gemessen an der erzeugten Zeile, nicht am Quelltext: ohne das
@@ -5119,7 +5657,9 @@ function abfahrt_config_heilen() {
         if ($fehlend && isset($roh['aktionstoken']) && $roh['aktionstoken'] !== '') {
             $voll = $roh;
             foreach (abfahrt_vorgaben() as $k => $v) {
-                if (!array_key_exists($k, $voll)) { $voll[$k] = $v; }
+                /* Gruppe 18 (1.6.31; eigener Fund beim Bau): eine eingerichtete Datei ohne endpunkt_ein ist eine bestehende
+                 * Anlage - hier gilt die Lese-Regel (1), nicht die Vorgabe der Neuinstallation (0). */
+                if (!array_key_exists($k, $voll)) { $voll[$k] = ($k === 'endpunkt_ein') ? 1 : $v; }
             }
             if (abfahrt_config_speichern($voll)) {
                 $meldungen[] = sprintf(abfahrt_t('MELDUNG.CFG_VERVOLLSTAENDIGT'),
@@ -5365,7 +5905,11 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'befehle_mqtt_ein':
         case 'route_departat':
         case 'quiet_push':
-        case 'ganztags_ein':  return $schalter($wert);
+        case 'ganztags_ein':
+        case 'endpunkt_ein':          // Gruppe 18 (1.6.31; 2.9: ohne die Zeilen fiele ein gespeicherter Haken beim Laden
+        case 'haus_abfahrt_ein':      // als UNBEKANNT auf die Vorgabe)
+        case 'anwesenheit_ein':
+        case 'abfuhr_satz_ein': return $schalter($wert);
         case 'api_key':       return $text($wert, 200);
         case 'home_address':  return $text($wert, 300);
         case 'ansage_vorlage': return $text($wert, 500);
@@ -5598,6 +6142,23 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         $z = $zahl($uw, -1, 100);
                         if ($z === null) { $grund = 'UNTER|tts.sonos_laut|' . $grund; return null; }
                         $aus['sonos_laut'] = $z;
+                        break;
+                    /* Gruppe 18 (1.6.31; N1, Pflegewelle 22): die Schluessel des Moduls fuer SonoX (seit 1.1.4) - dieselben
+                     * Regeln wie ansage_wert_pruefen() im Modul, aber in der Linie, damit eine fremde Ladefolge nichts
+                     * verschiebt. Ohne sie fiele der ganze Block nach dem ersten Speichern beim Laden auf die Vorgaben
+                     * (TTS_EINTRAG|sonox_raum; Entwurf G18 probe_n1_ep_ab.txt F2). */
+                    case 'sonox_raum':
+                        if (!ansage_geraet_ok($uw) || preg_match('/^\.+\z/', (string) $uw)) { $grund = 'TTS_SONOX_RAUM'; return null; }
+                        $aus['sonox_raum'] = $uw;
+                        break;
+                    case 'sonox_laut':
+                        $z = $zahl($uw, -1, 100);
+                        if ($z === null) { $grund = 'UNTER|tts.sonox_laut|' . $grund; return null; }
+                        $aus['sonox_laut'] = $z;
+                        break;
+                    case 'sonox_sprache':
+                        if (!is_string($uw) || !preg_match('/^[a-z]{2}(-[a-z]{2})?\z/', $uw)) { $grund = 'TTS_SONOX_SPRACHE'; return null; }
+                        $aus['sonox_sprache'] = $uw;
                         break;
                     default:
                         $grund = 'TTS_EINTRAG|' . $teil($uk); return null;

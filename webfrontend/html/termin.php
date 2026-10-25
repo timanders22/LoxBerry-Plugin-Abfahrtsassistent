@@ -83,6 +83,15 @@ abfahrt_nur_lesen(true);
 
 $abfcfg = abfahrt_config();
 
+/* Gruppe 18 (1.6.31; Entscheidung ab 2, Entwurf G18 3.2/F-E10): der HTTP-Weg fuer bestehende Anlagen nur mit
+ * endpunkt_ein = 1 (Bestand nach dem Update 1, Neuinstallation 0; Reiter Einbindung). Vor dem Merkwort, ohne Zugriff
+ * auf den Stand, ohne Protokoll je Aufruf (Loxone fragt zyklisch). */
+if ((int) $abfcfg['endpunkt_ein'] !== 1) {
+    http_response_code(403);
+    echo (abfahrt_schalter('selftest') ? 'SELFTEST' : 'TERMIN') . ";OK=0;ERR=ENDPUNKT_AUS\n";
+    exit;
+}
+
 /* ?debug=1 rechnet neu und fragt dabei den Kartendienst - das kostet
  * Kontingent, bei TomTom ein Tageslimit, bei Google Geld. Diese Datei liegt
  * im unangemeldeten Bereich, damit Loxone sie ohne Zugangsdaten erreicht.

@@ -131,7 +131,10 @@ function abf_umleiten($data_dir, $tab, array $inhalt) {
  * sein Feld zeigt dann den gespeicherten Wert (und bleibt markiert). */
 function abf_eingabe_felder($formular) {
     if ($formular === 'mqtt') {
-        return array('mqtt_ein', 'befehle_mqtt_ein', 'mqtt_topic', 'mqtt_vollsend_min');
+        return array('mqtt_ein', 'befehle_mqtt_ein', 'mqtt_topic', 'mqtt_vollsend_min', 'haus_abfahrt_ein');     // + Gruppe 18
+    }
+    if ($formular === 'endpunkt') {     // Gruppe 18 (1.6.31): HTTP-Weg termin.php/termin_say.php
+        return array('endpunkt_ein');
     }
     if ($formular === 'settings') {
         return array('cal_name', 'cal_loeschen', 'provider', 'api_key_loeschen', 'home_address',
@@ -141,6 +144,8 @@ function abf_eingabe_felder($formular) {
                      'tts_alexa_geraet', 'tts_alexa_laut', 'tts_alexa_token_loeschen',
                      'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen',
                      'tts_sonos_zone', 'tts_sonos_laut', 'ansage_vorlage',     // Nr. 36 b: Felder des Formularblocks
+                     'tts_sonox_raum', 'tts_sonox_laut', 'tts_sonox_sprache',     // Gruppe 18 (1.6.31): SonoX (Modul 1.1.4)
+                     'anwesenheit_ein', 'abfuhr_satz_ein',                        // Gruppe 18: Haus-Themen (Abnehmer)
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
     return array();
@@ -520,6 +525,7 @@ if ($abf_post && isset($_POST['abfahrt_sichern'])) {
     $abfahrt_js = abfahrt_sicherung_bauen(abfahrt_config());
     if ($abfahrt_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');     // Gruppe 18 (1.6.31, F4): die Datei traegt Merkwort und Kartendienst-Schluessel
         header('Content-Disposition: attachment; filename="abfahrtsassistent_einstellungen_'
                . date('Ymd_His') . '.json"');
         echo $abfahrt_js;
@@ -626,6 +632,52 @@ function abf_feld(array &$ziel, array $alt, $schluessel, $wert, array &$hinweise
     return true;
 }
 
+/* Gruppe 18 (1.6.31; Entwurf G18 2.5, F-E16): den Anbieter haus/abfahrt nachziehen, wenn sich Haken oder MQTT
+ * aendern. Eingeschaltet: Merker weg, der naechste Lauf sendet vollstaendig. Ausgeschaltet (oder ein frueherer
+ * Abraeumversuch blieb offen, Merker _haus_frueher): haus/abfahrt/in_min abraeumen und ruecklesen; bleibt es offen, steht
+ * _haus_frueher = 1 in der Konfiguration (die Deinstallation raeumt dann noch einmal), sonst wird er entfernt. */
+function abf_haus_nachziehen(array $alt, array $neu, array &$hw)
+{
+    $war = !empty($alt['haus_abfahrt_ein']) && !empty($alt['mqtt_ein']);
+    $ist = !empty($neu['haus_abfahrt_ein']) && !empty($neu['mqtt_ein']);
+    $tmp = abfahrt_tmpdir(false);
+    if ($ist && !$war) {
+        if (is_file($tmp . '/haus_letzte.json')) { @unlink($tmp . '/haus_letzte.json'); }
+        abfahrt_log('Haus-Thema haus/abfahrt: eingeschaltet - der naechste Minutenlauf sendet vollstaendig.');
+        return;
+    }
+    if ($ist || (!$war && empty($alt['_haus_frueher']) && empty($neu['_haus_frueher']))) { return; }
+    foreach (array('haus_letzte.json', 'haus_anbieter.json') as $f) {
+        if (is_file($tmp . '/' . $f)) { @unlink($tmp . '/' . $f); }
+    }
+    $z = abfahrt_haus_abraeumen();
+    $hw[] = abfahrt_haus_abraeumen_text($z);
+    abfahrt_log('Haus-Thema haus/abfahrt: ausgeschaltet, Abraeumen: ' . $z . '.');
+    $frueher = !in_array($z, array('nichts', 'geleert'), true);
+    $c = abfahrt_config();
+    if (!empty($c['_haus_frueher']) !== $frueher) {
+        if ($frueher) { $c['_haus_frueher'] = 1; } else { unset($c['_haus_frueher']); }
+        abfahrt_config_speichern($c);
+    }
+}
+
+// ---------- Speichern: HTTP-Weg (Gruppe 18, Entwurf G18 3.2) ----------
+/* Eigenes kleines Formular im Reiter Einbindung, Abschnitt "Bestehende Anlagen": der Haken endpunkt_ein schaltet
+ * termin.php und termin_say.php (403 ERR=ENDPUNKT_AUS bei 0). Handler wie save_mqtt (Formularmerkmal, X-2). */
+if ($abf_post && isset($_POST['save_endpunkt'])) {
+    $abf_alt = abfahrt_config();
+    $abf_neu = $abf_alt;
+    $abf_neu['endpunkt_ein'] = empty($_POST['endpunkt_ein']) ? 0 : 1;
+    if (!abfahrt_config_speichern($abf_neu)) {
+        abf_umleiten($data_dir, 'tab-loxone', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file)));
+    }
+    if ((int) $abf_neu['endpunkt_ein'] !== (int) $abf_alt['endpunkt_ein']) {
+        abfahrt_log('HTTP-Weg termin.php/termin_say.php ' . ($abf_neu['endpunkt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+    }
+    abf_umleiten($data_dir, 'tab-loxone', array('gespeichert' => 1,
+        'hinweise' => array(abfahrt_t($abf_neu['endpunkt_ein'] ? 'LOX.EP_M_EIN' : 'LOX.EP_M_AUS'))));
+}
+
 // ---------- Speichern: nur die MQTT-Werte ----------
 // Bewusst ein eigener Zweig. Der grosse Speichervorgang unten baut die
 // Konfiguration von Grund auf neu; wuerde das MQTT-Formular dieselbe Taste
@@ -638,6 +690,7 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     /* Gruppe 2 / MQTT (1.6.30): "Befehle ueber MQTT annehmen" (ab Werk aus) - im MQTT-Formular, damit beide
      * Haken zusammen gespeichert werden; die Befehlsbruecke schaltet unten sofort (abfahrt_bruecke_schalten()). */
     $abf_neu['befehle_mqtt_ein'] = empty($_POST['befehle_mqtt_ein']) ? 0 : 1;
+    $abf_neu['haus_abfahrt_ein'] = empty($_POST['haus_abfahrt_ein']) ? 0 : 1;     // Gruppe 18 (V1): ab Werk aus
     abf_feld($abf_neu, $abf_alt, 'mqtt_vollsend_min', isset($_POST['mqtt_vollsend_min']) ? trim((string) $_POST['mqtt_vollsend_min']) : '', $abf_hw);
     $abf_t = isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']) ? trim($_POST['mqtt_topic']) : '';
     if ($abf_t === '') {
@@ -695,6 +748,7 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
     } elseif (!empty($abf_neu['befehle_mqtt_ein']) && empty($abf_neu['mqtt_ein'])) {
         $abf_hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
     }
+    abf_haus_nachziehen($abf_alt, $abf_neu, $abf_hw);     // Gruppe 18 (2.5)
     abf_umleiten($data_dir, 'tab-mqtt', array('gespeichert' => 1, 'hinweise' => $abf_hw));
 }
 
@@ -788,7 +842,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     } elseif ($abf_key !== '') {
         abf_feld($abfneu, $abf_alt, 'api_key', $abf_key, $abf_hw);
     }
-    foreach (array('route_departat', 'quiet_push', 'ganztags_ein') as $abf_k) {
+    foreach (array('route_departat', 'quiet_push', 'ganztags_ein', 'anwesenheit_ein', 'abfuhr_satz_ein') as $abf_k) {     // + Gruppe 18
         $abfneu[$abf_k] = isset($_POST[$abf_k]) ? 1 : 0;
     }
     $abfneu['notify'] = array(
@@ -872,6 +926,11 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         abf_umleiten($data_dir, 'tab-settings', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file), 'hinweise' => $abf_hw));
     }
     $abf_erg = array('gespeichert' => 1, 'hinweise' => $abf_hw);
+    /* Gruppe 18 (Entwurf G18 2.3): ein abgeschalteter Abnehmer-Haken loescht nur haus_quellen.json - nie ein Thema. */
+    if ((!empty($abf_alt['anwesenheit_ein']) && empty($abfneu['anwesenheit_ein']))
+        || (!empty($abf_alt['abfuhr_satz_ein']) && empty($abfneu['abfuhr_satz_ein']))) {
+        if (is_file(abfahrt_haus_quellen_datei())) { @unlink(abfahrt_haus_quellen_datei()); }
+    }
 
     // ---------- Kalender neu einlesen ----------
     if (isset($_POST['refresh']) && is_string($_POST['refresh'])) {
@@ -962,6 +1021,24 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
                 if ($abf_r !== '') { $abf_hw[] = $abf_r; }
             }
             abfahrt_abo_datei($abf_nach['mqtt_topic'], true);
+            /* Gruppe 18 (1.6.31; F5): die Befehlsbruecke sofort schalten wie im MQTT-Formular - bis 1.6.30 startete erst
+             * der Waechter im Minutenlauf (bis zu 10 min mit der Bremse). */
+            if ((int) $abf_nach['befehle_mqtt_ein'] !== (int) $abf_vorher['befehle_mqtt_ein']) {
+                abfahrt_log('Befehle ueber MQTT ' . ($abf_nach['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . ' (Sicherung).');
+            }
+            list($abf_brc, $abf_bart, $abf_baus) = abfahrt_bruecke_schalten($abf_nach);
+            if ($abf_bart === 'start' && $abf_brc === 0) {
+                $abf_hw[] = abfahrt_t('BEFEHL.M_EIN');
+            } elseif ($abf_bart === 'start') {
+                $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $abf_baus);
+            } elseif ($abf_bart === 'stop' && $abf_brc === 0) {
+                $abf_hw[] = abfahrt_t('BEFEHL.M_AUS');
+            } elseif ($abf_bart === 'stop') {
+                $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $abf_baus);
+            } elseif (!empty($abf_nach['befehle_mqtt_ein']) && empty($abf_nach['mqtt_ein'])) {
+                $abf_hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
+            }
+            abf_haus_nachziehen($abf_vorher, $abf_nach, $abf_hw);     // Gruppe 18 (2.5)
         } else {
             $abf_hw[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
         }
@@ -1040,7 +1117,7 @@ $abf_abo_klasse = ((int) ($abf_mz['fassung'] ?? 0) === 1) ? ($abf_abo_da ? 'sm-h
                 : (((int) ($abf_mz['fassung'] ?? 0) >= 2) ? 'sm-hinweis' : 'sm-warnung');
 
 if ($use_frame) {
-    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/', 'help.html');
+    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/plugins/abfahrtsassistent/start', 'help.html');     // Gruppe 18 (E13)
 }
 
 ?>
@@ -1390,6 +1467,15 @@ echo ansage_formular_html($abfcfg['tts'], array(
 <label><?= e(abfahrt_t('TEXT.L_ANSAGE_VORLAGE')) ?></label>
 <input data-role="none" type="text" name="ansage_vorlage" value="<?= e(abf_w('ansage_vorlage', $abfcfg['ansage_vorlage'])) ?>"<?= abf_m('ansage_vorlage') ?>>
 <div class="sm-small"><?= abfahrt_t('TEXT.ANSAGE_HINWEIS') ?></div>
+<?php /* Gruppe 18 (1.6.31; Entscheidung ab 3/4, Entwurf G18 2.6): Abnehmer der Haus-Themen, beide ab Werk aus. */ ?>
+<h3 class="sm-h3"><?= e(abfahrt_t('HAUS.H_ABNEHMER')) ?></h3>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="anwesenheit_ein" value="1"<?= abf_h('anwesenheit_ein', !empty($abfcfg['anwesenheit_ein'])) ? ' checked' : '' ?><?= abf_m('anwesenheit_ein') ?>> <?= e(abfahrt_t('HAUS.L_ANWESENHEIT')) ?>
+</label>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="abfuhr_satz_ein" value="1"<?= abf_h('abfuhr_satz_ein', !empty($abfcfg['abfuhr_satz_ein'])) ? ' checked' : '' ?><?= abf_m('abfuhr_satz_ein') ?>> <?= e(abfahrt_t('HAUS.L_ABFUHR')) ?>
+</label>
+<div class="sm-small"><?= abfahrt_t('HAUS.HINWEIS_ABNEHMER') ?></div>
 
 <h2><?= e(abfahrt_t('SEITE.H_BENACHRICHTIGUNGEN')) ?></h2>
 <div style="margin-bottom:10px;">
@@ -1527,9 +1613,15 @@ foreach (abfahrt_lebenszeichen_themen() as $abf_lz => $abf_lz_text) { ?>
 <div class="sm-row"><label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= abf_h('befehle_mqtt_ein', !empty($abfcfg['befehle_mqtt_ein'])) ? ' checked' : '' ?><?= abf_m('befehle_mqtt_ein') ?>> <?= e(abfahrt_t('BEFEHL.L_ANNEHMEN')) ?></label></div>
 <div class="sm-small"><?= abfahrt_t('BEFEHL.H_ANNEHMEN') ?></div>
 <div class="sm-small"><?= sprintf(abfahrt_t('BEFEHL.H_THEMEN'), e($abfcfg['mqtt_topic'])) ?></div>
+<?php /* Gruppe 18 (1.6.31; V1, Entwurf G18 2.5): Anbieter haus/abfahrt/in_min, ab Werk aus. */ ?>
+<div class="sm-row"><label><input data-role="none" type="checkbox" name="haus_abfahrt_ein" value="1"<?= abf_h('haus_abfahrt_ein', !empty($abfcfg['haus_abfahrt_ein'])) ? ' checked' : '' ?><?= abf_m('haus_abfahrt_ein') ?>> <?= e(abfahrt_t('HAUS.L_ANBIETER')) ?></label></div>
+<div class="sm-small"><?= abfahrt_t('HAUS.HINWEIS_ANBIETER') ?></div>
 <div class="sm-row"><label><?= e(abfahrt_t('TEXT.L_MQTT_VOLLSEND')) ?></label>
 <input data-role="none" type="number" name="mqtt_vollsend_min" value="<?= e(abf_w('mqtt_vollsend_min', $abfcfg['mqtt_vollsend_min'])) ?>"<?= abf_m('mqtt_vollsend_min') ?> min="0" max="1440"></div>
 <div class="sm-small"><?= abfahrt_t('TEXT.MQTT_VOLLSEND_HINWEIS') ?></div>
+<?php if ((int) ($abf_mz['fassung'] ?? 0) >= 2) {     /* Gruppe 18 (E3): unter V2 nur geaenderte Werte */ ?>
+<div class="sm-small"><?= abfahrt_t('MQTT.VOLLSEND_V2') ?></div>
+<?php } ?>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= e(abfahrt_t('LEGENDE.AKTION')) ?></span></div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= e(abfahrt_t('SEITE.K_SPEICHERN')) ?></button>
@@ -1572,11 +1664,12 @@ $abf_bliste = abfahrt_befehle_liste(); ?>
 <details open><summary><?= e(sprintf(abfahrt_t('LOX.HAKEN_AUF'), count($abf_haken))) ?></summary>
 <div class="sm-small"><?= sprintf(abfahrt_t('LOX.HAKEN_VOR'), e($abf_praefix)) ?></div>
 <div class="sm-breit"><table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th><?= e(abfahrt_t('LOX.T_HTHEMA')) ?></th><th><?= e(abfahrt_t('LOX.T_HNAME')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('LOX.T_HART')) ?></th></tr>
+<tr><th style="width:34px;">#</th><th><?= e(abfahrt_t('LOX.T_HTHEMA')) ?></th><th><?= e(abfahrt_t('LOX.T_HNAME')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('LOX.T_HART')) ?></th><th><?= e(abfahrt_t('LOX.T_HNONCACHED')) ?></th></tr>
 <?php foreach ($abf_haken as $abf_hi => $abf_hz) { ?>
-<tr><td><?= (int) $abf_hi + 1 ?></td><td><span class="sm-mono"><?= e($abf_hz[0]) ?></span></td><td><span class="sm-mono"><?= e($abf_hz[1]) ?></span></td><td><?= e($abf_hz[2]) ?></td><td><?= e(abfahrt_t('LOX.ART_ZAHL')) ?></td></tr>
+<tr><td><?= (int) $abf_hi + 1 ?></td><td><span class="sm-mono"><?= e($abf_hz[0]) ?></span></td><td><span class="sm-mono"><?= e($abf_hz[1]) ?></span></td><td><?= e($abf_hz[2]) ?></td><td><?= e(abfahrt_t('LOX.ART_ZAHL')) ?></td><td><?= $abf_hz[4] === 'N' ? '&#10004;' : '' ?></td></tr>
 <?php } ?>
 </table></div>
+<div class="sm-small"><?= abfahrt_t('LOX.HAKEN_NONCACHED') ?></div>
 <div class="sm-small"><?= sprintf(abfahrt_t('LOX.HAKEN_NACH'), e($abf_praefix)) ?></div>
 </details>
 <?php } ?>
@@ -1723,6 +1816,20 @@ foreach ($abf_namen as $abf_nz) {
    Seite (Suche, Druck). */ ?>
 <details class="sm-step"><summary><b><?= e(abfahrt_t('LOX.H_ALTERNATIVE')) ?></b></summary>
 <div class="sm-small"><?= abfahrt_t('LOX.ALTERNATIVE_TEXT') ?></div>
+<?php /* Gruppe 18 (1.6.31; Entscheidung ab 2, Entwurf G18 3.2): Haken endpunkt_ein mit eigenem Formular (Speichern
+   orange); Adressen, Tabellen und Vorlagen erscheinen nur bei 1. */ ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_endpunkt" value="1">
+<input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<div class="sm-row"><label><input data-role="none" type="checkbox" name="endpunkt_ein" value="1"<?= abf_h('endpunkt_ein', !empty($abfcfg['endpunkt_ein'])) ? ' checked' : '' ?><?= abf_m('endpunkt_ein') ?>> <?= e(abfahrt_t('LOX.EP_L')) ?></label></div>
+<div class="sm-small"><?= abfahrt_t('LOX.EP_HINWEIS') ?></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= e(abfahrt_t('LEGENDE.AKTION')) ?></span></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= e(abfahrt_t('SEITE.K_SPEICHERN')) ?></button>
+</div>
+</form>
+<?php if ((int) $abfcfg['endpunkt_ein'] === 1) { ?>
 
 <?php $abf_http_adresse = 'http://' . $host . '/plugins/' . e($plugindir) . '/termin.php'; ?>
 <div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_HTTP1')) ?></b><br><br>
@@ -1782,6 +1889,9 @@ foreach ($abf_namen as $abf_nz) {
 <div class="sm-small"><?= abfahrt_t('LOX.HTTP_N4') ?></div>
 <div class="sm-small"><?= abfahrt_t('LOX.HTTP_GEGENPROBE') ?></div>
 </div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= e(abfahrt_t('LOX.EP_ERST')) ?></div>
+<?php } ?>
 </details>
 
 </div>
@@ -1818,7 +1928,7 @@ $abf_klasse = $abf_zahl[0] ? 'sm-alert sm-err' : ($abf_zahl[-1] ? 'sm-alert sm-w
 <?php /* Die Legende fuehrt genau die Farben, die im Reiter vorkommen. */ ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= e(abfahrt_t('LEGENDE.LESEN')) ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= e(abfahrt_t('LEGENDE.TECHNIK')) ?></span>
+<?php if ((int) $abfcfg['endpunkt_ein'] === 1) { ?><span><i class="sm-punkt sm-b-technik"></i> <?= e(abfahrt_t('LEGENDE.TECHNIK')) ?></span><?php } ?>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= e(abfahrt_t('LEGENDE.AKTION')) ?></span>
 </div>
 
@@ -1881,22 +1991,23 @@ list($abf_bs, $abf_bt) = abfahrt_pruef_bruecke(); ?>
 <?php } ?>
 
 <h3 class="sm-h3"><?= e(abfahrt_t('SEITE.H_TECHNIK')) ?></h3>
+<?php if ((int) $abfcfg['endpunkt_ein'] !== 1) { ?>
+<div class="sm-small" style="color:#546e7a;"><?= e(abfahrt_t('LOX.EP_TEST_AUS')) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
+<?php /* Gruppe 18 (1.6.31; Entwurf G18 3.2): Debug-Verweis und Selbsttest rufen termin.php - nur mit endpunkt_ein = 1. */
+if ((int) $abfcfg['endpunkt_ein'] === 1) { ?>
 <a class="sm-btn sm-b-technik" href="/plugins/<?= e($plugindir) ?>/termin.php?debug=1&amp;token=<?= e($abf_token) ?>" target="_blank" rel="noopener noreferrer"><?= e(abfahrt_t('SEITE.K_DEBUG')) ?></a>
 <form action="index.php" method="post" style="margin:0;">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="selftest" value="1"><?= e(abfahrt_t('TEST.K_SELFTEST')) ?></button>
 </form>
+<?php } ?>
 <form action="index.php" method="post" style="margin:0;">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="kal_diagnose" value="1"><?= e(abfahrt_t('TEST.K_KALENDER')) ?></button>
-</form>
-<form action="index.php" method="post" style="margin:0;">
-    <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="geo_verwerfen" value="1"><?= e(abfahrt_t('TEST.K_GEO_VERWERFEN')) ?></button>
 </form>
 </div>
 
@@ -1913,6 +2024,14 @@ list($abf_bs, $abf_bt) = abfahrt_pruef_bruecke(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= e(abfahrt_t('TTS.K_TESTANSAGE')) ?></button>
+</form>
+<?php /* Gruppe 18 (1.6.31; E17/N9, Regeln/04 "Loeschen ... orange"): "Koordinaten verwerfen" loescht die
+   Koordinaten-Zwischenspeicher und kostet beim naechsten Lauf neue Abfragen beim Kartendienst - bis 1.6.30 grau in der
+   technischen Reihe. */ ?>
+<form action="index.php" method="post" style="margin:0;">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="geo_verwerfen" value="1"><?= e(abfahrt_t('TEST.K_GEO_VERWERFEN')) ?></button>
 </form>
 <?php /* Nr. 27b: der Text als JSON-Zeichenkette. Bis 1.6.21 in einfachen
          Anfuehrungszeichen - ein Apostroph in der Uebersetzung zerbrach den

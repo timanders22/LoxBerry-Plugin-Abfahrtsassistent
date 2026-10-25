@@ -192,6 +192,16 @@ function abfahrt_selbsttest(array $abfcfg)
         }
     }
 
+    /* Gruppe 18 (1.6.31; Entwurf G18 2.5): Haus-Themen - nur Hinweise, ohne Kennwort und ohne Wert. */
+    $abf_ht = array();
+    if (!empty($abfcfg['haus_abfahrt_ein'])) { $abf_ht[] = abfahrt_t('HAUS.SELBST_ANBIETER'); }
+    if (!empty($abfcfg['anwesenheit_ein']) || !empty($abfcfg['abfuhr_satz_ein'])) { $abf_ht[] = abfahrt_t('HAUS.SELBST_ABNEHMER'); }
+    if ($abf_ht) {
+        $zeilen[] = '[INFO] ' . implode('; ', $abf_ht);
+        $abf_hs = abfahrt_haus_sitzung(array(), array(), array(), 0);
+        $zeilen[] = '[INFO] ' . abfahrt_t($abf_hs['lage'] === 'ok' ? 'HAUS.SELBST_BROKER_JA' : 'HAUS.SELBST_BROKER_NEIN');
+    }
+
     echo implode("\n", $zeilen) . "\n";
     return $fehler ? 1 : 0;
 }
@@ -225,9 +235,13 @@ function abfahrt_dienst_mqtt(array $st, array $abfcfg)
      * seine virtuellen Eingaenge leer - und weil hier nur bei Aenderung gesendet
      * wird, bleiben sie es, bis sich zufaellig ein Wert bewegt. Seit 1.6.13
      * geht nichts mehr zurueckbehalten hinaus (Regeln/07, Abschnitt 3, siehe
-     * abfahrt_felder()), und der Vollversand ist der Weg, auf dem ein neu
-     * gestarteter Miniserver seine Werte wiederbekommt. Er heilt zusaetzlich
-     * jedes Datagramm, das der UDP-Eingang des Gateways verworfen hat.
+     * abfahrt_felder()). Unter Gateway V1 ist der Vollversand der Weg, auf dem
+     * ein neu gestarteter Miniserver seine Werte wiederbekommt, und er heilt
+     * verworfene Datagramme. BERICHTIGT 1.6.31 (Gruppe 18, E3): unter V2 (Haus
+     * seit 19.10.2026) verwirft die Dedup des Gateways einen unveraenderten
+     * Wert; dort holt der Miniserver seine Werte ueber "reconnect" an das
+     * Gateway (Musterprojekt: Seite "LoxBerry MQTT-Gateway"), status/ok ist
+     * Noncached. Der Vollversand bleibt fuer V1 und schadet unter V2 nicht.
      *
      * DIE ZEITMARKE IST EINE EIGENE DATEI (seit 1.6.10): die Aenderungszeit von
      * mqtt_letzte.json wird bei JEDEM Versand fortgeschrieben, und bei
@@ -319,7 +333,21 @@ if (!in_array($modus, array('takt', 'jetzt', 'zeile', '--selbsttest', '--mqtt-le
  * MQTT-Themen der Linie leeren (abfahrt_mqtt_leeren()). Keine Rechnung, keine
  * Sperre, keine Datei. */
 if ($modus === '--mqtt-leeren') {
-    exit(abfahrt_mqtt_leeren());
+    $abf_rc = abfahrt_mqtt_leeren();
+    /* Gruppe 18 (1.6.31; Entwurf G18 2.5, F-E16): haus/abfahrt/in_min mit Ruecklesen - nur, wenn diese Installation
+     * Anbieter ist oder war (haus_abfahrt_ein bzw. Merker _haus_frueher), nie die Themen einer zweiten Installation. */
+    $abf_hc = abfahrt_config();
+    if (!empty($abf_hc['haus_abfahrt_ein']) || !empty($abf_hc['_haus_frueher'])) {
+        $abf_hz = abfahrt_haus_abraeumen();
+        $abf_hzt = array('nichts' => "<OK> Haus-Thema: der Broker bestaetigt, haus/abfahrt/in_min steht nicht zurueckbehalten - nichts zu leeren.\n",
+                         'geleert' => "<OK> Haus-Thema haus/abfahrt/in_min geleert, der Broker bestaetigt es.\n",
+                         'rest' => "<WARNING> Haus-Thema haus/abfahrt/in_min steht noch im Broker. Von Hand: mosquitto_pub -r -n -t haus/abfahrt/in_min\n",
+                         'nicht_nachgelesen' => "<INFO> Haus-Thema haus/abfahrt/in_min geleert, der Broker liess sich nicht befragen - nicht nachgelesen.\n",
+                         'kein_broker' => "<WARNING> Haus-Thema haus/abfahrt/in_min: der Broker war nicht erreichbar - nicht geleert.\n");
+        echo $abf_hzt[$abf_hz];
+        if ($abf_hz === 'rest' || $abf_hz === 'kein_broker') { $abf_rc = max($abf_rc, 1); }
+    }
+    exit($abf_rc);
 }
 $abfcfg = abfahrt_config();
 
@@ -339,6 +367,17 @@ if ($modus === 'zeile') {
  * Gateway, aus einem fremden Baum schrieb er dort hinein (in WSL gemessen,
  * Pruefung-Abfahrtsassistent-1.6.13, Faelle B6, H2, C8). */
 abfahrt_keine_wurzel_abbruch('abfahrt_dienst.php');
+
+/* Gruppe 18 (1.6.31; F12): waehrend eines Updates (frische Marke von preupgrade.sh) still enden - ohne Ausgabe, ohne
+ * Datei. Dieselbe Regel wie bb_marke_liegt() der Bruecke: nur Ziffern, nicht aus der Zukunft, juenger als 3600 s;
+ * unlesbar oder aus der Zukunft gilt nicht. Kostet ein bis zwei Lebenszeichen in der Luecke. */
+$abf_marke = abfahrt_paths()['lbhome'] . '/data/plugins/' . abfahrt_paths()['plugin'] . '.upgrade_laeuft';
+if (is_file($abf_marke)) {
+    $abf_mz = trim((string) @file_get_contents($abf_marke));
+    if (preg_match('/^[0-9]{1,12}\z/', $abf_mz) && (int) $abf_mz <= time() && time() - (int) $abf_mz < 3600) {
+        exit(0);
+    }
+}
 
 /* Nur ein Lauf gleichzeitig - sonst fragen zwei Laeufe denselben
    Kartendienst und verbrauchen zwei Kontingente fuer eine Antwort. Seit
@@ -422,6 +461,11 @@ abfahrt_abo_datei($abfcfg['mqtt_topic'], true);
  * Dauerdienst erbt sie nicht (Bruecken-Bericht, Fall F12J). Ohne Bruecke (Archiv) geschieht nichts. */
 abfahrt_bruecke_waechter();
 
+/* Gruppe 18 (1.6.31; Entwurf G18 2.3/2.6, F-E4): Abnehmerteil der Haus-Sitzung am ANFANG des Laufs, vor der Rechnung -
+ * nur mit "Nur ansagen, wenn jemand zu Hause ist" oder "Satz des Abfuhrkalenders" (abfahrt_haus_abnehmer()). Fenster
+ * hoechstens 32 s; das Lebenszeichen geht danach wie bisher (ist sein Ziel schon vorbei, sofort). */
+abfahrt_haus_abnehmer($abfcfg);
+
 /**
  * Wie oft wird ueberhaupt neu gerechnet?
  *
@@ -452,6 +496,7 @@ if (!$faellig) {
     /* M2: auch ohne Rechnung die Werte aus dem Stand bilden und Aenderungen
      * senden (ohne Netz); danach das Lebenszeichen. */
     abfahrt_dienst_mqtt($stand, $abfcfg);
+    abfahrt_haus_anbieter($stand, $abfcfg);     // Gruppe 18: haus/abfahrt/in_min (V1), nur mit Haken und MQTT
     abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
     abfahrt_sperre_frei($fh);
     exit(0);
@@ -489,6 +534,7 @@ if ($abf_sig !== $abf_vorher) {
 
 /* Die Werte an MQTT (abfahrt_dienst_mqtt(), M2), danach das Lebenszeichen (M7). */
 abfahrt_dienst_mqtt($st, $abfcfg);
+abfahrt_haus_anbieter($st, $abfcfg);     // Gruppe 18: haus/abfahrt/in_min (V1), nur mit Haken und MQTT
 abfahrt_dienst_lebenszeichen($abfcfg, $abf_lz_ziel);
 
 abfahrt_sperre_frei($fh);
