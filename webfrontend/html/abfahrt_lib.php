@@ -2854,7 +2854,9 @@ function abfahrt_sperrdatei() {
 
 function abfahrt_sperre(&$grund = '') {
     $grund = '';
-    $fh = @fopen(abfahrt_sperrdatei(), 'c');
+    /* Gruppe 24 (1.6.32): 'e' = close-on-exec - ein vom Lauf gestartetes Kind (Leser der Haus-Themen) erbt die
+     * Sperre nicht (Gedaechtnis sperre-vererbt-sich-an-kinder). */
+    $fh = @fopen(abfahrt_sperrdatei(), 'ce');
     if ($fh === false) { $grund = 'oeffnen'; return false; }
     if (!flock($fh, LOCK_EX | LOCK_NB)) {
         fclose($fh);
@@ -4268,7 +4270,8 @@ function abfahrt_haus_tonnen()
  *   $senden  Thema => array(Wert, retain) - PUBLISH QoS 0; eine leere Nutzlast nur mit retain (Abraeumen)
  *   $lesen   genaue Themen (kein # und kein +); SUBSCRIBE QoS 0, SUBACK mit Rueckgabebyte-Pruefung (>= 0x80 abgelehnt)
  *   $warten  Themen, die LIVE (Retain-Bit 0) gesehen sein muessen, bevor das Fenster endet
- *   $fenster Sekunden, hoechstens 32; ohne $warten endet das Lesen 1 s nach dem SUBACK (wie :3478-3481)
+ *   $fenster Sekunden, hoechstens 66 (Gruppe 24: der abgekoppelte Leser wartet eine ganze Sendeperiode von 60 s
+ *            ab); ohne $warten endet das Lesen 1 s nach dem SUBACK (wie :3478-3481)
  * Rueckgabe array('lage' => ok|kein_broker|abgelehnt|zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
  * 'gesendet' => n). Das Kennwort steht nur im CONNECT-Paket. Client-ID 'abfhaus<pid>' (neben 'abfrueck<pid>').
  */
@@ -4304,7 +4307,7 @@ function abfahrt_haus_sitzung(array $senden, array $lesen, array $warten, $fenst
     foreach ($warten as $t) {
         if (in_array((string) $t, $soll, true)) { $warte[(string) $t] = true; }
     }
-    $fenster = max(0.0, min(32.0, (float) $fenster));
+    $fenster = max(0.0, min(66.0, (float) $fenster));
 
     $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
     if (!$s) { return $aus; }
@@ -4544,12 +4547,14 @@ function abfahrt_abfuhr_satz(array $abfcfg, $c = null, $jetzt = null)
 }
 
 /**
- * Abnehmerteil im Minutenlauf (bin/abfahrt_dienst.php, am ANFANG des Laufs; F-E4): nur mit anwesenheit_ein oder
- * abfuhr_satz_ein. Gewartet wird nur auf die Zaehler, die nicht binnen der letzten 45 s live gesehen wurden; das Fenster
- * endet spaetestens 32 s nach dem SUBACK und vor Sekunde 55; ein Lauf, der erst nach Sekunde 50 hierher kommt, liest
- * nicht. Beide Haken aus: haus_quellen.json weg. Rueckgabe das Sitzungsergebnis oder null.
+ * Abnehmerteil (F-E4): nur mit anwesenheit_ein oder abfuhr_satz_ein. Seit 1.6.32 (Gruppe 24) ruft ihn der abgekoppelte
+ * Leser mit $fenster = 65 (abfahrt_haus_leser_lauf()): er wartet JEDEN Zaehler einmal live ab (auch einen eben
+ * gesehenen - sonst liesse ein Lesen direkt nach dem Senden die Quelle bis zu 120 s altern). Ohne $fenster (Form bis
+ * 1.6.31): gewartet nur auf Zaehler, die nicht binnen 45 s live gesehen wurden, Fenster hoechstens 32 s und vor
+ * Sekunde 55, nach Sekunde 50 kein Lesen. Beide Haken aus: haus_quellen.json weg. Rueckgabe das Sitzungsergebnis
+ * oder null.
  */
-function abfahrt_haus_abnehmer(array $abfcfg)
+function abfahrt_haus_abnehmer(array $abfcfg, $fenster = null)
 {
     $themen = abfahrt_haus_lesethemen($abfcfg);
     $datei = abfahrt_haus_quellen_datei();
@@ -4558,7 +4563,7 @@ function abfahrt_haus_abnehmer(array $abfcfg)
         return null;
     }
     $sek = (int) date('s');
-    if ($sek > 50) { return null; }
+    if ($fenster === null && $sek > 50) { return null; }
     $c = abfahrt_haus_quellen();
     $jetzt = time();
     $lesen = array();
@@ -4566,11 +4571,25 @@ function abfahrt_haus_abnehmer(array $abfcfg)
     foreach ($themen as $q => $liste) {
         foreach ($liste as $t) { $lesen[] = $t; }
         $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
-        if (!($seit > 0 && $seit <= $jetzt && $jetzt - $seit <= 45)) { $warten[] = 'haus/' . $q . '/zaehler'; }
+        if ($fenster !== null || !($seit > 0 && $seit <= $jetzt && $jetzt - $seit <= 45)) {
+            $warten[] = 'haus/' . $q . '/zaehler';
+        }
     }
-    $erg = abfahrt_haus_sitzung(array(), $lesen, $warten, min(32, 55 - $sek));
+    $erg = abfahrt_haus_sitzung(array(), $lesen, $warten, $fenster !== null ? (float) $fenster : min(32, 55 - $sek));
+    if ($fenster !== null) {
+        /* Gruppe 24: der Leser war bis zu 65 s am Broker. Ein inzwischen abgeschalteter Haken gilt (die Oberflaeche
+         * hat haus_quellen.json dabei geloescht) - die Ablage wird dann nicht mit dem alten Stand wieder angelegt. */
+        $abfcfg = abfahrt_config();
+        $neu = abfahrt_haus_lesethemen($abfcfg);
+        if (!$neu) {
+            if (is_file($datei)) { @unlink($datei); }
+            return null;
+        }
+        if (array_keys($neu) !== array_keys($themen)) { $c = abfahrt_haus_quellen(); }
+        $themen = array_intersect_key($themen, $neu);
+    }
     $c = abfahrt_haus_merken($c, $erg, $themen, time());
-    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage']);
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage'], 'gewartet' => count($warten));
     foreach (array_keys(abfahrt_haus_lesethemen(array('anwesenheit_ein' => 1, 'abfuhr_satz_ein' => 1))) as $q) {
         if (!isset($themen[$q])) { unset($c[$q]); }
     }
@@ -4593,6 +4612,62 @@ function abfahrt_haus_abnehmer(array $abfcfg)
         abfahrt_cache_schreiben($datei, $js);
     }
     return $erg;
+}
+
+/** Gruppe 24 (1.6.32): die Sperre des abgekoppelten Lesers (abfahrt_dienst.php --haus-lesen). */
+function abfahrt_haus_leser_sperre()
+{
+    return abfahrt_tmpdir() . '/haus_lesen.lock';
+}
+
+/**
+ * Gruppe 24 (1.6.32; Geraetemessung 25.10.2026, Vorbild Marstek 1.1.27): haus/abfuhr/zaehler kommt am Geraet fest in
+ * Sekunde 02-03 jeder Minute (nicht retained); das 32-s-Fenster im Minutenlauf (Sekunde ~03-35) verpasste ihn
+ * systematisch, die Quelle galt nach 120 s als "schweigt". Der Minutenlauf liest deshalb NICHT mehr selbst, sondern
+ * startet hoechstens einen abgekoppelten Leser (bin/abfahrt_dienst.php --haus-lesen, eigene Sperre haus_lesen.lock)
+ * und wartet nie darauf. Der Leser wartet bis zu 65 s am Broker, bis jeder gewartete Zaehler einmal live kam (eine
+ * ganze Sendeperiode von 60 s, gleich bei welcher Phase), und schreibt haus_quellen.json; der Minutenlauf und die
+ * Oberflaeche nehmen den letzten Stand. Frist 120 s bleibt, fuer haus/anwesenheit und haus/abfuhr. Beide Haken aus:
+ * haus_quellen.json weg, kein Leser.
+ * Der Kindprozess erbt keine Deskriptoren: die Schale schliesst vor dem exec jede Nummer ueber 2 (dienst.lock wuerde
+ * sonst vererbt und hielte den naechsten Minutenlauf an - Gedaechtnis sperre-vererbt-sich-an-kinder); dienst.lock ist
+ * zudem mit 'e' (close-on-exec) geoeffnet. Rueckgabe: aus | laeuft | gestartet | kein_start.
+ */
+function abfahrt_haus_abnehmer_starten(array $abfcfg, $skript)
+{
+    if (!abfahrt_haus_lesethemen($abfcfg)) {
+        $datei = abfahrt_haus_quellen_datei();
+        if (is_file($datei)) { @unlink($datei); }
+        return 'aus';
+    }
+    $fh = @fopen(abfahrt_haus_leser_sperre(), 'ce');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return 'laeuft';
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY)) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $voll = 'bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &';
+    @exec($voll, $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Gruppe 24 (1.6.32): der abgekoppelte Leser selbst (--haus-lesen): eigene Sperre (close-on-exec), sonst still
+ *  beenden. Rueckgabe laeuft | aus | Lage der Sitzung. */
+function abfahrt_haus_leser_lauf($fenster = 65)
+{
+    $fh = @fopen(abfahrt_haus_leser_sperre(), 'ce');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) {
+        return 'laeuft';
+    }
+    $erg = abfahrt_haus_abnehmer(abfahrt_config(), $fenster);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg === null ? 'aus' : $erg['lage'];
 }
 
 /** haus/abfahrt/in_min (V1, F-E7): max(0, ABFAHRT_IN) bei gueltigem Termin (abfahrt_ok_wirksam() = 1), sonst -1;
@@ -4700,6 +4775,18 @@ function abfahrt_haus_pruefzeilen(array $abfcfg)
                   'angehaengt' => sprintf(abfahrt_t('HAUS.A_ABFUHR_SATZ'), $satz));
     $z[] = array(in_array($al, array('aus', 'schweigt'), true) ? -1 : 1, abfahrt_t('HAUS.F_ABFUHR'),
                  abfahrt_e($al === 'schweigt' ? $schweigt('abfuhr') . ' ' . abfahrt_t('HAUS.A_ABFUHR_OHNE') : $atxt[$al]));
+    /* Gruppe 24 (1.6.32): der abgekoppelte Leser - letzte Lesung und ihre Lage (nur mit einem Abnehmer-Haken). */
+    if (abfahrt_haus_lesethemen($abfcfg)) {
+        $s = (isset($c['sitzung']) && is_array($c['sitzung'])) ? $c['sitzung'] : array();
+        if (!isset($s['zeit'], $s['lage'])) {
+            $z[] = array(0, abfahrt_t('HAUS.F_LESER'), abfahrt_e(abfahrt_t('HAUS.A_LESER_NIE')));
+        } else {
+            $alt = $jetzt - (int) $s['zeit'];
+            $z[] = array($s['lage'] === 'ok' && $alt >= 0 && $alt <= 150 ? 1 : 0, abfahrt_t('HAUS.F_LESER'),
+                         abfahrt_e(sprintf(abfahrt_t('HAUS.A_LESER'), abfahrt_haus_alter(max(0, $alt)),
+                                           abfahrt_t('HAUS.LAGE_' . strtoupper((string) $s['lage'])))));
+        }
+    }
     if (empty($abfcfg['haus_abfahrt_ein'])) {
         $z[] = array(-1, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(abfahrt_t('HAUS.A_AUS')));
     } elseif (empty($abfcfg['mqtt_ein'])) {

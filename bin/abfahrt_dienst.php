@@ -25,6 +25,8 @@
  *   abfahrt_dienst.php --selbsttest Einrichtung pruefen, ohne Netz
  *   abfahrt_dienst.php --mqtt-leeren zurueckbehaltene MQTT-Themen leeren
  *                                   (aus der Deinstallation)
+ *   abfahrt_dienst.php --haus-lesen der abgekoppelte Leser der Haus-Themen
+ *                                   (startet der Minutenlauf selbst, 1.6.32)
  * Jeder andere Aufruf endet mit einer Zeile auf stderr und Rueckgabe 2.
  */
 
@@ -322,10 +324,10 @@ $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
  * "--mqtt-leren", ein "--help") als voller Rechen- und Sendelauf und endete
  * mit 0 (Pruefung 02.10.2026, Nr. 26). Der Cron ruft ohne Argument -
  * "cron=01min" bekommt das Cron-Skript, nicht dieser Dienst. */
-if (!in_array($modus, array('takt', 'jetzt', 'zeile', '--selbsttest', '--mqtt-leeren'), true)) {
+if (!in_array($modus, array('takt', 'jetzt', 'zeile', '--selbsttest', '--mqtt-leeren', '--haus-lesen'), true)) {
     fwrite(STDERR, 'Abfahrts-Assistent: unbekannter Aufruf "'
         . substr(preg_replace('/[^\x20-\x7E]/', '?', $modus), 0, 40)
-        . '" - erlaubt: ohne Argument, jetzt, zeile, --selbsttest, --mqtt-leeren.' . "\n");
+        . '" - erlaubt: ohne Argument, jetzt, zeile, --selbsttest, --mqtt-leeren, --haus-lesen.' . "\n");
     exit(2);
 }
 
@@ -377,6 +379,14 @@ if (is_file($abf_marke)) {
     if (preg_match('/^[0-9]{1,12}\z/', $abf_mz) && (int) $abf_mz <= time() && time() - (int) $abf_mz < 3600) {
         exit(0);
     }
+}
+
+/* Gruppe 24 (1.6.32): --haus-lesen - der abgekoppelte Leser der Haus-Themen (abfahrt_haus_leser_lauf()), vom
+ * Minutenlauf gestartet (abfahrt_haus_abnehmer_starten()). Eigene Sperre haus_lesen.lock statt dienst.lock, bis 65 s
+ * am Broker, schreibt haus_quellen.json. Waehrend einer Aktualisierung (Marke oben) liest er nicht. */
+if ($modus === '--haus-lesen') {
+    abfahrt_haus_leser_lauf(65);
+    exit(0);
 }
 
 /* Nur ein Lauf gleichzeitig - sonst fragen zwei Laeufe denselben
@@ -461,10 +471,12 @@ abfahrt_abo_datei($abfcfg['mqtt_topic'], true);
  * Dauerdienst erbt sie nicht (Bruecken-Bericht, Fall F12J). Ohne Bruecke (Archiv) geschieht nichts. */
 abfahrt_bruecke_waechter();
 
-/* Gruppe 18 (1.6.31; Entwurf G18 2.3/2.6, F-E4): Abnehmerteil der Haus-Sitzung am ANFANG des Laufs, vor der Rechnung -
- * nur mit "Nur ansagen, wenn jemand zu Hause ist" oder "Satz des Abfuhrkalenders" (abfahrt_haus_abnehmer()). Fenster
- * hoechstens 32 s; das Lebenszeichen geht danach wie bisher (ist sein Ziel schon vorbei, sofort). */
-abfahrt_haus_abnehmer($abfcfg);
+/* Gruppe 18 (1.6.31; Entwurf G18 2.3/2.6, F-E4): Abnehmerteil der Haus-Sitzung - nur mit "Nur ansagen, wenn jemand
+ * zu Hause ist" oder "Satz des Abfuhrkalenders". Gruppe 24 (1.6.32, Geraetemessung 25.10.2026): dieser Lauf liest
+ * nicht mehr selbst (das 32-s-Fenster verpasste den Zaehler in fester Phase), sondern startet hoechstens EINEN
+ * abgekoppelten Leser (--haus-lesen, bis 65 s, eigene Sperre), wartet nie darauf und nimmt den letzten Stand aus
+ * haus_quellen.json. */
+abfahrt_haus_abnehmer_starten($abfcfg, __FILE__);
 
 /**
  * Wie oft wird ueberhaupt neu gerechnet?

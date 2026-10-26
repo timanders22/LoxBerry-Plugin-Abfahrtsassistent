@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.31 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.32 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,14 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.32
+
+* **Haus-Themen zuverlässig gelesen:** Am Gerät kam `haus/abfuhr/zaehler` fest in Sekunde 2–3 jeder Minute, die
+  kurze Lesesitzung des Minutenlaufs (etwa Sekunde 3 bis 35) sah ihn deshalb fast nie – nach zwei Minuten galt der
+  Abfuhrkalender als „schweigt“, und der Satz am Abholtag fehlte. Jetzt startet der Minutenlauf höchstens einen
+  abgekoppelten Leser (eigene Sperre, bis 65 s am Broker, bis jeder Zähler einmal live kam) und wartet nie auf ihn.
+  Gilt für `haus/abfuhr` und `haus/anwesenheit`; die Frist von 120 s bleibt. Der Reiter Test zeigt die letzte Lesung.
 
 ## Neu in 1.6.31
 
