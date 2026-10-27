@@ -19,7 +19,8 @@ ini_set('display_errors', '0');
 // Die Zeitzone setzt abfahrt_zeitzone_setzen() weiter unten (nach abfahrt_lbhome()).
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
  * Seit 1.6.23 Stufe 2: Sprechen, Formular, Zeile im Reiter Test und Testansage kommen aus
- * dem Modul (Fassung 1.1.1; bis 1.6.22 die Zwischenfassung 1.0.3). Liegt neben dieser
+ * dem Modul (Fassung 1.1.1; bis 1.6.22 die Zwischenfassung 1.0.3; seit 1.6.31 1.1.4, seit 1.6.33 1.2.0 mit
+ * weiteren Ausgabezielen, abfahrt_mit_zielen()). Liegt neben dieser
  * Datei. Bindet diese Bibliothek spaeter ferien_lib.php des Plugins Ferien und Feiertage
  * ein und traegt jenes eine eigene Abschrift, gilt die hier zuerst geladene; die Datei
  * schuetzt sich selbst gegen doppeltes Laden. */
@@ -904,6 +905,14 @@ function abfahrt_ansage_modi() {
     $m = array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
     if (version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
     return $m;
+}
+
+/** Seit 1.6.33 (Sprachmodul 1.2.0, Opt-in E-E12): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn
+ *  die geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess (ferien_lib.php des Plugins Ferien und
+ *  Feiertage), gilt die zuerst geladene (N11). Heute laedt diese Linie ihre eigene zuerst (require_once oben). */
+function abfahrt_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
 }
 
 /**
@@ -6247,6 +6256,25 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         if (!is_string($uw) || !preg_match('/^[a-z]{2}(-[a-z]{2})?\z/', $uw)) { $grund = 'TTS_SONOX_SPRACHE'; return null; }
                         $aus['sonox_sprache'] = $uw;
                         break;
+                    /* 1.6.33 (Sprachmodul 1.2.0, Bauform C, N1): die weiteren Ausgabeziele - geprueft vom Modul mit der
+                     * Modusliste dieser Linie (Liste, hoechstens 5, je Ziel Art/Ort/Lautstaerke/Sprache/Ein, keine Doppel).
+                     * Ohne diesen Fall fiele der ganze Block nach dem ersten Speichern beim Laden auf die Vorgaben
+                     * (TTS_EINTRAG|ziele, Ziel 1 waere weg). Ist zuerst eine aeltere Abschrift geladen (N11), kann sie die
+                     * Liste nicht pruefen: dann bleibt eine Liste aus Feldern unveraendert liegen (die aeltere spricht nur
+                     * Ziel 1), statt Ziel 1 mitzureissen. */
+                    case 'ziele':
+                        if (abfahrt_mit_zielen()) {
+                            $g = '';
+                            $zl = ansage_ziele_pruefen($uw, $g, abfahrt_ansage_modi());
+                            if ($zl === null) { $grund = 'UNTER|tts.ziele|' . $g; return null; }
+                            $aus['ziele'] = $zl;
+                        } elseif (is_array($uw) && array_values($uw) === $uw && count($uw) <= 5) {
+                            foreach ($uw as $abf_z) { if (!is_array($abf_z)) { $grund = 'TTS_EINTRAG|ziele'; return null; } }
+                            $aus['ziele'] = $uw;
+                        } else {
+                            $grund = 'TTS_EINTRAG|ziele'; return null;
+                        }
+                        break;
                     default:
                         $grund = 'TTS_EINTRAG|' . $teil($uk); return null;
                 }
@@ -6360,6 +6388,14 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
         $neu['tts']['google_token'] = (isset($jetzt['tts']['google_token']) && is_string($jetzt['tts']['google_token']))
             ? $jetzt['tts']['google_token'] : '';     // Ansage-3
     }
+    /* 1.6.33 (Sprachmodul 1.2.0, E-E11 Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei aus 1.6.32
+     * oder frueher), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis "fehlten ... behalten ihren Wert".
+     * Eine Sicherung MIT leerer Liste heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $abf_spaete = array();
+    if (isset($gesehen['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($neu['tts'], $abf_spaete) = ansage_sicherung_spaet($neu['tts'],
+            (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null);
+    }
 
     /* Ein leeres Merkwort in einer Sicherungsdatei heisst "kein Merkwort
      * gesichert" - es ist kein unzulaessiger Wert, aber es darf auch nicht
@@ -6375,6 +6411,7 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
     foreach (array_keys($vorgaben) as $k) {
         if (!isset($gesehen[$k])) { $fehlend[] = $k; }
     }
+    foreach ($abf_spaete as $abf_sn) { $fehlend[] = $abf_sn; }     // 1.6.33: tts.ziele (Spaetliste)
 
     if ($mangel) {
         return array(null, $mangel, $anzahl);

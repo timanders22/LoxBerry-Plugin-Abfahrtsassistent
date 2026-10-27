@@ -145,6 +145,8 @@ function abf_eingabe_felder($formular) {
                      'tts_google_geraet', 'tts_google_laut', 'tts_google_token_loeschen',
                      'tts_sonos_zone', 'tts_sonos_laut', 'ansage_vorlage',     // Nr. 36 b: Felder des Formularblocks
                      'tts_sonox_raum', 'tts_sonox_laut', 'tts_sonox_sprache',     // Gruppe 18 (1.6.31): SonoX (Modul 1.1.4)
+                     'tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache',     // 1.6.33: Tabelle der weiteren
+                     'tts_ziel_ein', 'tts_ziel_loeschen',                                    // Ziele (Modul 1.2.0)
                      'anwesenheit_ein', 'abfuhr_satz_ein',                        // Gruppe 18: Haus-Themen (Abnehmer)
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
@@ -569,10 +571,19 @@ if ($abf_post && isset($_POST['selftest'])) {
  * Ergebnis (nie Token oder Text). Sperrzeiten und Haken gelten hier nicht (wie bisher
  * "Ansage jetzt ausloesen" mit force=1, das bis 1.6.22 ein Verweis mit dem Merkwort war:
  * F5 sprach erneut, Entwurf B6). Endet wie jeder Handler mit der Umleitung. */
-if ($abf_post && isset($_POST['ansage_test'])) {
+/* 1.6.33 (Sprachmodul 1.2.0, E-E10): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht nur
+ * dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($abf_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $abf_tk = abfahrt_ansage_k();
-    $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk);
-    abfahrt_log('Testansage: ' . ansage_kurz($abf_tr));
+    $abf_tnur = (isset($_POST['ansage_test_ziel']) && abfahrt_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $abf_tnur === 0) {
+        $abf_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($abf_tnur >= 1) {
+        $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk, $abf_tnur);
+    } else {
+        $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk);
+    }
+    abfahrt_log('Testansage' . ($abf_tnur >= 1 ? ' an Ziel ' . $abf_tnur : '') . ': ' . ansage_kurz($abf_tr));
     if ($abf_tr['stand'] === 1) {
         $abf_ate = array('stufe' => 1, 'text' => abfahrt_t('TTS.M_TEST_OK'));
     } elseif ($abf_tr['kennung'] === 'AUS') {
@@ -858,8 +869,9 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
      * Beanstandung prueft abf_feld() den Block noch einmal mit der Pruefung der Linie. */
     $abf_tmangel = array();
     $abf_tbean = array();
+    $abf_thinw = array();     // 1.6.33 (Nachbesserung 27.10.): Hinweise des Moduls, die das Speichern nicht verhindern
     $abf_tts_neu = ansage_formular_lesen($_POST, $abf_alt['tts'], $abf_tmangel, $abf_tbean,
-        array('modi' => abfahrt_ansage_modi()), abfahrt_ansage_k());
+        array('modi' => abfahrt_ansage_modi(), 'ziele' => abfahrt_mit_zielen()), abfahrt_ansage_k(), $abf_thinw);     // + 1.6.33
     foreach ($abf_tmangel as $abf_tm) { $abf_hw[] = $abf_tm['text']; }
     foreach ($abf_tbean as $abf_tb) { abf_bean($abf_tb); }
     if (!$abf_tmangel) {
@@ -925,6 +937,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     if (!abfahrt_config_speichern($abfneu)) {
         abf_umleiten($data_dir, 'tab-settings', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file), 'hinweise' => $abf_hw));
     }
+    foreach ($abf_thinw as $abf_th) { $abf_hw[] = $abf_th['text']; }     // 1.6.33 (Nachbesserung): nach dem Speichern
     $abf_erg = array('gespeichert' => 1, 'hinweise' => $abf_hw);
     /* Gruppe 18 (Entwurf G18 2.3): ein abgeschalteter Abnehmer-Haken loescht nur haus_quellen.json - nie ein Thema. */
     if ((!empty($abf_alt['anwesenheit_ein']) && empty($abfneu['anwesenheit_ein']))
@@ -1444,7 +1457,10 @@ echo ansage_formular_html($abfcfg['tts'], array(
     'w' => function ($n, $g) { return abf_w($n, $g); },
     'm' => function ($n) { return abf_m($n); },
     'c' => function ($n, $g) { return abf_h($n, $g); },
-    'modi' => abfahrt_ansage_modi()), abfahrt_ansage_k()); ?>
+    'modi' => abfahrt_ansage_modi(),
+    /* 1.6.33 (Sprachmodul 1.2.0): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => abfahrt_mit_zielen(),
+    'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k()); ?>
 <div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
 <div class="sm-feld">
 <?php if ($abf_ms4h !== null) { ?>
@@ -2024,6 +2040,9 @@ if ((int) $abfcfg['endpunkt_ein'] === 1) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= e(abfahrt_t('TTS.K_TESTANSAGE')) ?></button>
+<?php /* 1.6.33 (Sprachmodul 1.2.0, E-E10): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))"; ohne
+   weitere Ziele nichts. */
+if (abfahrt_mit_zielen()) { echo ansage_testknoepfe_html($abfcfg['tts'], abfahrt_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 <?php /* Gruppe 18 (1.6.31; E17/N9, Regeln/04 "Loeschen ... orange"): "Koordinaten verwerfen" loescht die
    Koordinaten-Zwischenspeicher und kostet beim naechsten Lauf neue Abfragen beim Kartendienst - bis 1.6.30 grau in der
