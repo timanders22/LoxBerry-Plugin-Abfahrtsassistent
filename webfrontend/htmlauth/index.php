@@ -571,8 +571,8 @@ if ($abf_post && isset($_POST['selftest'])) {
  * Ergebnis (nie Token oder Text). Sperrzeiten und Haken gelten hier nicht (wie bisher
  * "Ansage jetzt ausloesen" mit force=1, das bis 1.6.22 ein Verweis mit dem Merkwort war:
  * F5 sprach erneut, Entwurf B6). Endet wie jeder Handler mit der Umleitung. */
-/* 1.6.33 (Sprachmodul 1.2.0, E-E10): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht nur
- * dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
 if ($abf_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $abf_tk = abfahrt_ansage_k();
     $abf_tnur = (isset($_POST['ansage_test_ziel']) && abfahrt_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -869,9 +869,9 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
      * Beanstandung prueft abf_feld() den Block noch einmal mit der Pruefung der Linie. */
     $abf_tmangel = array();
     $abf_tbean = array();
-    $abf_thinw = array();     // 1.6.33 (Nachbesserung 27.10.): Hinweise des Moduls, die das Speichern nicht verhindern
+    $abf_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $abf_tts_neu = ansage_formular_lesen($_POST, $abf_alt['tts'], $abf_tmangel, $abf_tbean,
-        array('modi' => abfahrt_ansage_modi(), 'ziele' => abfahrt_mit_zielen()), abfahrt_ansage_k(), $abf_thinw);     // + 1.6.33
+        array('modi' => abfahrt_ansage_modi(), 'ziele' => abfahrt_mit_zielen()), abfahrt_ansage_k(), $abf_thinw);
     foreach ($abf_tmangel as $abf_tm) { $abf_hw[] = $abf_tm['text']; }
     foreach ($abf_tbean as $abf_tb) { abf_bean($abf_tb); }
     if (!$abf_tmangel) {
@@ -937,7 +937,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     if (!abfahrt_config_speichern($abfneu)) {
         abf_umleiten($data_dir, 'tab-settings', array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file), 'hinweise' => $abf_hw));
     }
-    foreach ($abf_thinw as $abf_th) { $abf_hw[] = $abf_th['text']; }     // 1.6.33 (Nachbesserung): nach dem Speichern
+    foreach ($abf_thinw as $abf_th) { $abf_hw[] = $abf_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
     $abf_erg = array('gespeichert' => 1, 'hinweise' => $abf_hw);
     /* Gruppe 18 (Entwurf G18 2.3): ein abgeschalteter Abnehmer-Haken loescht nur haus_quellen.json - nie ein Thema. */
     if ((!empty($abf_alt['anwesenheit_ein']) && empty($abfneu['anwesenheit_ein']))
@@ -1458,7 +1458,7 @@ echo ansage_formular_html($abfcfg['tts'], array(
     'm' => function ($n) { return abf_m($n); },
     'c' => function ($n, $g) { return abf_h($n, $g); },
     'modi' => abfahrt_ansage_modi(),
-    /* 1.6.33 (Sprachmodul 1.2.0): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => abfahrt_mit_zielen(),
     'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k()); ?>
 <div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
@@ -2040,8 +2040,8 @@ if ((int) $abfcfg['endpunkt_ein'] === 1) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= e(abfahrt_t('TTS.K_TESTANSAGE')) ?></button>
-<?php /* 1.6.33 (Sprachmodul 1.2.0, E-E10): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))"; ohne
-   weitere Ziele nichts. */
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
 if (abfahrt_mit_zielen()) { echo ansage_testknoepfe_html($abfcfg['tts'], abfahrt_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 <?php /* Gruppe 18 (1.6.31; E17/N9, Regeln/04 "Loeschen ... orange"): "Koordinaten verwerfen" loescht die

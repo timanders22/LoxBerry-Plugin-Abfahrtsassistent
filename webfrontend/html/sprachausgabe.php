@@ -210,6 +210,19 @@
  *   - ansage_transport() nimmt seine curl-Optionen aus ansage_curl_optionen() (dieselben
  *     Optionen wie bisher; ansage_viele_curl() teilt sie).
  *   - Wer Ziele anbietet, prueft version_compare(ANSAGE_FASSUNG, '1.2.0', '>=').
+ *
+ * 1.2.1 (29.10.2026; Befund Nachtwelle N9, vb_n9_*_bericht.md "Offen 1"), nur ergaenzend:
+ *   - $k['frist'] (wahlfrei, ganze Sekunden >= 1) gilt in JEDEM Weg: ansage_anfrage() kappt
+ *     jede Einzelfrist damit (ansage_frist()). Bis 1.2.0 wirkte sie nur in
+ *     ansage_sprechen_ziele(), also erst ab zwei eingeschalteten Zielen; mit EINEM Ziel
+ *     blieben 10 s bzw. 30 s (Sonos4Lox/SonoX), und eine Linie mit kuerzerer Prozessgrenze
+ *     (APC-UPS, Bewaesserung: 20 s - 5 = 15 s) wurde vom eigenen Dienst abgebrochen.
+ *   - Die Kennungen ALEXA/GOOGLE_KEINE_ANTWORT, SONOS_ZEIT_UNKLAR und SONOX_ZEIT_UNKLAR nennen
+ *     die wirklich gewartete (gekappte) Frist; 1.2.0 nannte im Mehrziel-Weg 30 s, auch wenn
+ *     nach $k['frist'] Sekunden abgebrochen war.
+ *   - Ohne $k['frist'] ist jeder Weg byte- und verhaltensgleich mit 1.2.0.
+ *   - Wer sich auf die Frist mit einem Ziel verlaesst, prueft
+ *     version_compare(ANSAGE_FASSUNG, '1.2.1', '>=').
  */
 
 /* Kein Endpunkt (Regeln/03): die Datei liegt meist im unangemeldeten Baum
@@ -228,7 +241,7 @@ if (PHP_SAPI !== 'cli') {
 
 if (!defined('ANSAGE_FASSUNG')) {
 
-define('ANSAGE_FASSUNG', '1.2.0');
+define('ANSAGE_FASSUNG', '1.2.1');
 
 /** Hoechstlaenge eines Ansagetexts in Zeichen (Schnittstelle Alexa-NG/Chromecast: 1-1000). */
 define('ANSAGE_TEXT_MAX', 1000);
@@ -1194,6 +1207,18 @@ function ansage_tts_url($text, array $tts)
  * ================================================================== */
 
 /**
+ * Seit 1.2.1: eine Frist in Sekunden, hoechstens $k['frist'] (wahlfrei; fehlt der Schluessel
+ * oder ist er kleiner als 1, bleibt $tmo). Dieselbe Regel wie im Mehrziel-Weg von 1.2.0, jetzt
+ * fuer jede Anfrage (ansage_anfrage()) und fuer die Zahl in den Zeit-Kennungen.
+ */
+function ansage_frist($tmo, array $k)
+{
+    $tmo = (int) $tmo;
+    if (isset($k['frist']) && (int) $k['frist'] >= 1) { $tmo = min($tmo, (int) $k['frist']); }
+    return $tmo;
+}
+
+/**
  * Eine Anfrage beschreiben. Der Transport fuehrt genau das aus; der
  * Selbsttest prueft an der Beschreibung, dass Weiterleitung und Proxy aus und
  * die Zeitgrenzen kurz sind - das waere an einer echten Verbindung nicht zu
@@ -1208,7 +1233,7 @@ function ansage_anfrage($methode, $url, $felder, $tmo, array $k)
         $koerper = http_build_query(is_array($felder) ? $felder : array(), '', '&');
         $kopf[] = 'Content-Type: application/x-www-form-urlencoded';
     }
-    $tmo = max(1, (int) $tmo);
+    $tmo = ansage_frist(max(1, (int) $tmo), $k);      // seit 1.2.1: $k['frist'] auch mit einem Ziel
     return array(
         'methode' => $methode,
         'url' => (string) $url,
@@ -1499,7 +1524,7 @@ function ansage_ng_rufen($url, array $felder, $tmo, array $k, $praefix = '')
     }
     $erste = (string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste);
     return array('code' => $a['code'], 'zeile' => ansage_kuerzen($erste, 200), 'roh' => ansage_kuerzen($erste, 1000),
-                 'grund_id' => $gid, 'tmo' => (int) $tmo);
+                 'grund_id' => $gid, 'tmo' => ansage_frist($tmo, $k));      // seit 1.2.1 gekappt wie die Anfrage
 }
 
 /**
@@ -1683,7 +1708,7 @@ function ansage_sprechen($text, array $tts, array $k = array(), array $opt = arr
                                               null, ANSAGE_TMO_SONOS, $k), $k);
         $r['http'] = $a['code'];
         if ($a['code'] <= 0 && $a['errno'] === 28) {
-            $r['kennung'] = 'SONOS_ZEIT_UNKLAR|' . $basis . '|' . ANSAGE_TMO_SONOS;
+            $r['kennung'] = 'SONOS_ZEIT_UNKLAR|' . $basis . '|' . ansage_frist(ANSAGE_TMO_SONOS, $k);
         } elseif ($a['code'] === 404) {
             $r['kennung'] = 'SONOS_FEHLT|' . $basis . '|404';
         } else {
@@ -1724,7 +1749,7 @@ function ansage_sprechen($text, array $tts, array $k = array(), array $opt = arr
              . ansage_sonox_segment($sprache) . ($laut >= 1 ? '/' . $laut : '');
         $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, ANSAGE_TMO_SONOX, $k), $k);
         $r['http'] = $a['code'];
-        $r['kennung'] = ansage_sonox_grund($a, $basis, ANSAGE_TMO_SONOX);
+        $r['kennung'] = ansage_sonox_grund($a, $basis, ansage_frist(ANSAGE_TMO_SONOX, $k));
         $r['stand'] = $r['kennung'] === '' ? 1 : 0;
         return ansage_letzte_merken($r, $k);
     }
@@ -3920,6 +3945,49 @@ function ansage_selbsttest()
     $hz120 = ansage_http_zerlegen("HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\nabc");
     $pruef('120 zerlegen rumpf abgebrochen', array($hz120['code'], $hz120['errno']), array(0, -1));
 
+    // --- 1.2.1: $k['frist'] gilt in jedem Weg (bis 1.2.0 nur ab zwei eingeschalteten Zielen) ---
+    $kf121 = array('frist' => 15) + $k;
+    $antworten = array(array('code' => 200, 'rumpf' => ''));
+    $log = array();
+    $r = ansage_sprechen($TEXT, $sx, $kf121);
+    $pruef('121 sonos ein ziel frist', array($r['stand'], count($log), $log[0]['tmo'], $log[0]['verbinden']), array(1, 1, 15, 3));
+    $antworten = array(array('code' => 0, 'rumpf' => '', 'errno' => 28));
+    $pruef('121 sonos zeit unklar nennt frist', ansage_sprechen($TEXT, $sx, $kf121)['kennung'],
+           'SONOS_ZEIT_UNKLAR|' . $sonos_url . '|15');
+    $antworten = array(array('code' => 0, 'rumpf' => '', 'errno' => 28));
+    $log = array();
+    $r = ansage_sprechen($SX_TEXT, $ox, $kf121);
+    $pruef('121 sonox ein ziel frist', array($log[0]['tmo'], $r['kennung']), array(15, 'SONOX_ZEIT_UNKLAR|' . $ox_basis . '|15'));
+    $antworten = array();
+    $log = array();
+    $r = ansage_sprechen($TEXT, $ax, array('frist' => 2) + $k);
+    $kt121 = explode('|', $r['kennung']);
+    $pruef('121 alexa frist 2', array($log[0]['tmo'], $log[0]['verbinden'], $kt121[0], isset($kt121[2]) ? $kt121[2] : '-'),
+           array(2, 2, 'ALEXA_KEINE_ANTWORT', '2'));
+    $antworten = array(array('code' => 200, 'rumpf' => ''));
+    $log = array();
+    ansage_sprechen($TEXT, array('mode' => 'musicserver', 'ip' => '192.168.1.20', 'port' => 7091, 'zones' => '1') + $tts,
+                    array('frist' => 4) + $k);
+    $pruef('121 musicserver frist 4', array(count($log), $log[0]['tmo'], $log[0]['verbinden']), array(1, 4, 3));
+    $antworten = array(array('code' => 200, 'rumpf' => ''));
+    $log = array();
+    ansage_sprechen($TEXT, $sx, array('frist' => 60) + $k);
+    $pruef('121 frist nur kappen', $log[0]['tmo'], ANSAGE_TMO_SONOS);
+    foreach (array('0' => 0, 'leer' => '', 'minus' => -5, 'text' => 'x') as $n121 => $f121) {
+        $antworten = array(array('code' => 200, 'rumpf' => ''));
+        $log = array();
+        ansage_sprechen($TEXT, $sx, array('frist' => $f121) + $k);
+        $pruef('121 frist ' . $n121 . ' wie 1.2.0', $log[0]['tmo'], ANSAGE_TMO_SONOS);
+    }
+    // Ziele vorhanden, aber nur Ziel 1 eingeschaltet: Einzelweg - die Frist gilt auch hier
+    $antworten = array(array('code' => 200, 'rumpf' => ''));
+    $log = array();
+    $r = ansage_sprechen($TEXT, $sx + array('ziele' => array(array('art' => 'alexang', 'wo' => 'Kueche', 'laut' => -1, 'sprache' => '',
+                                                                       'ein' => 0))), $kf121);
+    $pruef('121 ziele aus frist', array(count($log), $log[0]['tmo'], isset($r['ziele'])), array(1, 15, false));
+    $pruef('121 frist hilfe', array(ansage_frist(30, array()), ansage_frist(30, array('frist' => 15)), ansage_frist(10, array('frist' => 15)),
+                                    ansage_frist(30, array('frist' => '7'))), array(30, 15, 10, 7));
+
     // --- Sprachschluessel: eindeutig ---
     $sl = ansage_sprachschluessel();
     $pruef('sprachschluessel eindeutig', count($sl), count(array_unique($sl)));
@@ -4182,7 +4250,8 @@ function ansage_wiedergabe(array &$antworten, array &$offen, $i)
  *   1. Aufzeichnen: ansage_sprechen() je Ziel mit dem Wiedergabe-Transport (ohne Ordner):
  *      jede Anfrage, die ein Ziel senden will, wird vermerkt - nichts geht hinaus.
  *   2. Senden: alle vermerkten Anfragen zugleich (ansage_transport_viele()), jede mit ihrer
- *      eigenen Frist (10 s, Sonos4Lox/SonoX 30 s), hoechstens $k['frist'] (wahlfrei).
+ *      eigenen Frist (10 s, Sonos4Lox/SonoX 30 s), hoechstens $k['frist'] (wahlfrei; seit 1.2.1
+ *      kappt ansage_anfrage() schon beim Aufzeichnen - dieselbe Zahl, die Zeile unten bleibt).
  *   3. Leitet der LoxBerry auf https um, folgt eine zweite Runde fuer genau diese Ziele in
  *      ihrer Restzeit (wie ansage_ausfuehren()).
  *   4. Endlauf mit dem Ordner der Linie: ansage_sprechen() je Ziel aus den eingeholten

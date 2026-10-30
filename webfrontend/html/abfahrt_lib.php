@@ -20,7 +20,8 @@ ini_set('display_errors', '0');
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
  * Seit 1.6.23 Stufe 2: Sprechen, Formular, Zeile im Reiter Test und Testansage kommen aus
  * dem Modul (Fassung 1.1.1; bis 1.6.22 die Zwischenfassung 1.0.3; seit 1.6.31 1.1.4, seit 1.6.33 1.2.0 mit
- * weiteren Ausgabezielen, abfahrt_mit_zielen()). Liegt neben dieser
+ * weiteren Ausgabezielen, abfahrt_mit_zielen(); seit 1.6.34 Stamm 1.2.1, Welle Mehrfach-Ziele, zusammen mit
+ * Abfuhrkalender 1.4.27 und Ferien und Feiertage 1.2.29). Liegt neben dieser
  * Datei. Bindet diese Bibliothek spaeter ferien_lib.php des Plugins Ferien und Feiertage
  * ein und traegt jenes eine eigene Abschrift, gilt die hier zuerst geladene; die Datei
  * schuetzt sich selbst gegen doppeltes Laden. */
@@ -907,9 +908,8 @@ function abfahrt_ansage_modi() {
     return $m;
 }
 
-/** Seit 1.6.33 (Sprachmodul 1.2.0, Opt-in E-E12): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn
- *  die geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess (ferien_lib.php des Plugins Ferien und
- *  Feiertage), gilt die zuerst geladene (N11). Heute laedt diese Linie ihre eigene zuerst (require_once oben). */
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
 function abfahrt_mit_zielen() {
     return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
         && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
@@ -3985,6 +3985,113 @@ function abfahrt_mqtt_hakenliste($praefix = null)
 }
 
 /**
+ * Nachtwelle N5 (1.6.34): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten; ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function abfahrt_mqtt_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/** Nachtwelle N5 (1.6.34): eine Themenliste fuer die Pruefzeile kuerzen - hoechstens $n Eintraege, dann "... (+k)";
+ *  leer "-". */
+function abfahrt_mqtt_v2_kurz(array $l, $n = 8)
+{
+    if (!$l) { return '-'; }
+    return implode(', ', array_slice($l, 0, $n)) . (count($l) > $n ? ' … (+' . (count($l) - $n) . ')' : '');
+}
+
+/**
+ * Nachtwelle N5 (1.6.34): Soll gegen Ist (Rein). Soll ist die Hakenliste abfahrt_mqtt_hakenliste() - dieselbe Liste, die der Reiter "Einbindung in Loxone", Schritt 2 zeigt,
+ * mit den Textthemen, die dort stehen (sie haben einen Texteingang; ohne Haken kaemen sie unter V2 nie an). Fehlt ein
+ * Thema in den Abos, steht es in fehlt[]; braucht es "Noncached" und hat es nicht, steht es in ohne_nc[].
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026). Je Eintrag $soll:
+ * array(thema voll, noncached bool).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function abfahrt_mqtt_v2_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $n = 0;
+    $nc = 0;
+    foreach ($soll as $e) {
+        $n++;
+        if ($e[1]) { $nc++; }
+        if (!array_key_exists($e[0], $abo)) { $fehlt[] = $e[0]; continue; }
+        $da++;
+        if ($e[1] && !$abo[$e[0]]) { $ohne[] = $e[0]; }
+        elseif (!$e[1] && $abo[$e[0]]) { $zuviel[] = $e[0]; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, $n, $nc, $zuviel);
+}
+
+/** Nachtwelle N5 (1.6.34): die Hakenliste (abfahrt_mqtt_hakenliste(), EINE Quelle mit dem Reiter Einbindung) als Soll-
+ *  Liste des V2-Abgleichs: array(thema voll, noncached). */
+function abfahrt_mqtt_v2_soll($praefix = null)
+{
+    $aus = array();
+    foreach (abfahrt_mqtt_hakenliste($praefix) as $h) {
+        $aus[] = array($h[0], $h[4] === 'N');
+    }
+    return $aus;
+}
+
+/**
+ * Nachtwelle N5 (1.6.34): Zeile "MQTT-Gateway V2: Datenpunkte angehakt?" der Selbstpruefung (Reiter Test). Liest nur
+ * config/system/general.json (abfahrt_mqtt_zustand()) und config/system/subscriptions.json daneben. Rueckgabe
+ * array(1|0|-1, Text) wie die Zeilen von abfahrt_pruefungen(): -1 = trifft nicht zu (Gateway V1, MQTT im Plugin aus)
+ * oder nicht feststellbar. Der Text ist schon HTML-sicher (die Tabelle gibt ihn roh aus).
+ */
+function abfahrt_mqtt_v2_haken_lage(?array $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $m = abfahrt_mqtt_zustand();
+    $g = abfahrt_paths()['general'];
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    if ($f === 0 || $g === '') { return array(-1, abfahrt_e(abfahrt_t('TEST.A_V2_UNKLAR'))); }
+    if ($f < 2) { return array(-1, abfahrt_e(abfahrt_t('TEST.A_V2_V1'))); }
+    if (empty($cfg['mqtt_ein'])) { return array(-1, abfahrt_e(abfahrt_t('TEST.A_V2_MQTT_AUS'))); }
+    $roh = @file_get_contents(dirname($g) . '/subscriptions.json');
+    $abo = is_string($roh) ? abfahrt_mqtt_v2_abos(json_decode($roh, true)) : null;
+    if ($abo === null) {
+        return array(-1, abfahrt_e(sprintf(abfahrt_t('TEST.A_V2_UNKLAR_DATEI'), 'config/system/subscriptions.json')));
+    }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = abfahrt_mqtt_v2_abgleich(abfahrt_mqtt_v2_soll($cfg['mqtt_topic']), $abo);
+    if ($soll === 0) { return array(-1, abfahrt_e(abfahrt_t('TEST.A_V2_LEER'))); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array(1, abfahrt_e(sprintf(abfahrt_t('TEST.A_V2_OK'), $soll, $nc))); }
+    return array(0, abfahrt_e(sprintf(abfahrt_t('TEST.A_V2_FEHLT'), $da, $soll, abfahrt_mqtt_v2_kurz($fehlt),
+                                      abfahrt_mqtt_v2_kurz($ohne))
+        . ($zuviel ? ' ' . sprintf(abfahrt_t('TEST.A_V2_NC_ZUVIEL'), abfahrt_mqtt_v2_kurz($zuviel)) : '')));
+}
+
+/**
  * Die Abfahrts-Ansage sprechen - EINE Stelle fuer den HTTP-Endpunkt termin_say.php (Quelle 'http') und die
  * Befehlsbruecke (bin/befehle_zuordnung.php, Befehl "ansage", Quelle 'mqtt'). Entwurf aa Abschnitt 3 (Vorbild
  * awm_aktion(), Abfuhrkalender 1.4.25): der Rumpf von termin_say.php bis 1.6.29, in Reihenfolge, Protokoll und
@@ -5222,6 +5329,10 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
     $zeile($abf_hok ? 1 : 0, abfahrt_t('HAUS.F_HAKEN'),
         $abf_hok ? sprintf(abfahrt_t('HAUS.A_HAKEN_OK'), count($abf_hl), abfahrt_e($abfcfg['mqtt_topic'] . '/status/ok'))
                  : sprintf(abfahrt_t('HAUS.A_HAKEN_FEHL'), abfahrt_e(implode(', ', $abf_hnc) ?: '-')));
+    /* Nachtwelle N5 (1.6.34): stehen unter MQTT-Gateway V2 die Haken der Hakenliste (Reiter Einbindung, Schritt 2)
+     * in config/system/subscriptions.json - und "Noncached" bei status/ok? Unter V1 trifft es nicht zu. */
+    list($abf_v2s, $abf_v2t) = abfahrt_mqtt_v2_haken_lage($abfcfg);
+    $zeile($abf_v2s, abfahrt_t('TEST.F_V2'), $abf_v2t);
     /* Gruppe 18 (1.6.31; Entwurf G18 2.5/2.6): Haus-Themen - Anwesenheit, Abfuhr, Anbieter haus/abfahrt. */
     foreach (abfahrt_haus_pruefzeilen($abfcfg) as $abf_hz) { $zeile($abf_hz[0], $abf_hz[1], $abf_hz[2]); }
 
@@ -6388,9 +6499,9 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
         $neu['tts']['google_token'] = (isset($jetzt['tts']['google_token']) && is_string($jetzt['tts']['google_token']))
             ? $jetzt['tts']['google_token'] : '';     // Ansage-3
     }
-    /* 1.6.33 (Sprachmodul 1.2.0, E-E11 Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei aus 1.6.32
-     * oder frueher), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis "fehlten ... behalten ihren Wert".
-     * Eine Sicherung MIT leerer Liste heisst "keine weiteren Ziele" und wird so uebernommen. */
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
     $abf_spaete = array();
     if (isset($gesehen['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
         list($neu['tts'], $abf_spaete) = ansage_sicherung_spaet($neu['tts'],
@@ -6411,7 +6522,7 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
     foreach (array_keys($vorgaben) as $k) {
         if (!isset($gesehen[$k])) { $fehlend[] = $k; }
     }
-    foreach ($abf_spaete as $abf_sn) { $fehlend[] = $abf_sn; }     // 1.6.33: tts.ziele (Spaetliste)
+    foreach ($abf_spaete as $abf_sn) { $fehlend[] = $abf_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
 
     if ($mangel) {
         return array(null, $mangel, $anzahl);

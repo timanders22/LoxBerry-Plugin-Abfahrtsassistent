@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.33 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.34 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,24 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.34
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Rechnung, MQTT-Werten oder Ansagen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung): Die Vorlage „Abfahrts-Assistent MQTT-Befehle“
+  (`VQ_abfahrtsassistent_mqtt.xml`, Reiter Einbindung in Loxone) kommt jetzt mit Windows-Zeilenenden (CRLF) wie die
+  Ausfuhren der Loxone Config. Titel, Adresse und Befehle sind unverändert, ein Neuimport ist nicht nötig.
+* **Selbstprüfung „MQTT-Gateway V2: Datenpunkte angehakt?“** (Reiter Test): Läuft das Gateway in Fassung 2, sieht das
+  Plugin in `config/system/subscriptions.json` nach, ob alle Datenpunkte der Hakenliste (Reiter Einbindung in Loxone,
+  Schritt 2) angehakt sind und `status/ok` „Noncached“ trägt; was fehlt, steht mit Namen da. Unter Fassung 1 trifft
+  die Zeile nicht zu.
+* Die Sprachausgabe trug schon die Stammfassung 1.2.0 (seit 1.6.33, mehrere Lautsprecher gleichzeitig) – unverändert.
+* **Sprachmodul 1.2.1** (gemeinsame Stammfassung, Welle Mehrfach-Ziele): Eine Frist, die ein Plugin für seine Ansagen
+  setzt, gilt jetzt in jedem Sprechweg; dieses Plugin setzt keine, seine Ansagen bleiben, wie sie sind. Die Tabelle der
+  weiteren Ausgabeziele (seit 1.6.33) ist unverändert. Abfahrts-Assistent 1.6.34, Abfuhrkalender 1.4.27 und Ferien und
+  Feiertage 1.2.29 laden einander in denselben Prozess (Ferien-Bibliothek) und gehen deshalb zusammen auf 1.2.1 –
+  bitte alle drei einspielen.
 
 ## Neu in 1.6.33
 
