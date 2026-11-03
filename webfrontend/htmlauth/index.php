@@ -579,9 +579,9 @@ if ($abf_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel
     if (isset($_POST['ansage_test_ziel']) && $abf_tnur === 0) {
         $abf_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($abf_tnur >= 1) {
-        $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk, $abf_tnur);
+        $abf_tr = ansage_testansage(abfahrt_ansage_vor_ort($abfcfg), $abf_tk, $abf_tnur);
     } else {
-        $abf_tr = ansage_testansage($abfcfg['tts'], $abf_tk);
+        $abf_tr = ansage_testansage(abfahrt_ansage_vor_ort($abfcfg), $abf_tk);
     }
     abfahrt_log('Testansage' . ($abf_tnur >= 1 ? ' an Ziel ' . $abf_tnur : '') . ': ' . ansage_kurz($abf_tr));
     if ($abf_tr['stand'] === 1) {
@@ -871,7 +871,7 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     $abf_tbean = array();
     $abf_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $abf_tts_neu = ansage_formular_lesen($_POST, $abf_alt['tts'], $abf_tmangel, $abf_tbean,
-        array('modi' => abfahrt_ansage_modi(), 'ziele' => abfahrt_mit_zielen()), abfahrt_ansage_k(), $abf_thinw);
+        array('modi' => abfahrt_ansage_modi(), 'ziele' => abfahrt_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), abfahrt_ansage_k(), $abf_thinw);
     foreach ($abf_tmangel as $abf_tm) { $abf_hw[] = $abf_tm['text']; }
     foreach ($abf_tbean as $abf_tb) { abf_bean($abf_tb); }
     if (!$abf_tmangel) {
@@ -2044,6 +2044,7 @@ if ((int) $abfcfg['endpunkt_ein'] === 1) { ?>
    ohne weitere Ziele nichts. */
 if (abfahrt_mit_zielen()) { echo ansage_testknoepfe_html($abfcfg['tts'], abfahrt_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
+<?= abfahrt_ansage_lage_html() ?>
 <?php /* Gruppe 18 (1.6.31; E17/N9, Regeln/04 "Loeschen ... orange"): "Koordinaten verwerfen" loescht die
    Koordinaten-Zwischenspeicher und kostet beim naechsten Lauf neue Abfragen beim Kartendienst - bis 1.6.30 grau in der
    technischen Reihe. */ ?>

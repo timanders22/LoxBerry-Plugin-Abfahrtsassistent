@@ -484,6 +484,7 @@ function abfahrt_config() {
      * Zonen "1" ohne "~25" (eine ausdrueckliche Lautstaerke an der Zone haette Vorrang
      * vor dem Lautstaerkefeld). Die Sprechtoken sind Geheimnisse: nie in der Seite, nicht
      * in der Sicherung. Vervollstaendigt, nicht ersetzt. */
+    if (!$abfcfg['tts']) { $abfcfg['tts'] = ansage_werk_block(); }     // 1.6.35: nie gesetzt = ab Werk EIN; ein gespeicherter bleibt
     list($abfcfg['tts']) = ansage_vervollstaendigen($abfcfg['tts'], 'musicserver');
     return $abfcfg;
 }
@@ -910,6 +911,185 @@ function abfahrt_ansage_modi() {
 
 /** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
  *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.6.35, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('ABFAHRT_ANSAGE_HOECHSTALTER')) { define('ABFAHRT_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function abfahrt_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    /* Die feinere Ruhezeit je Wochentag (quiet) bleibt die geltende; die Nachtruhe des Stamms gilt hier nicht. */
+    $r['nachtruhe'] = 0;
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function abfahrt_ansage_warte($fn)
+{
+    $d = abfahrt_tmpdir();
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function abfahrt_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    abfahrt_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; abfahrt_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function abfahrt_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(abfahrt_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), abfahrt_ansage_k());
+    if (!$g) { return false; }
+    $cfg = abfahrt_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!abfahrt_config_speichern($cfg)) { return false; }
+    abfahrt_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function abfahrt_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    return ansage_token_fuer_lauf(abfahrt_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), abfahrt_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function abfahrt_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $t = abfahrt_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(abfahrt_ansage_vor_ort($cfg), abfahrt_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function abfahrt_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $k = abfahrt_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(abfahrt_tts($cfg), abfahrt_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function abfahrt_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function abfahrt_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = abfahrt_config();
+    $k = abfahrt_ansage_k();
+    $t = $tts === null ? abfahrt_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, abfahrt_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function abfahrt_ansage_senden($jetzt = null)
+{
+    $d = abfahrt_tmpdir();
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = abfahrt_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= ABFAHRT_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = abfahrt_config();
+        abfahrt_ansage_token_pflegen($conf);
+        $conf = abfahrt_config();
+        $a = ansage_regel_sprechen($frisch, abfahrt_tts($conf), abfahrt_ansage_regeln($conf), abfahrt_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { abfahrt_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            abfahrt_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/** Der Block tts (1.6.35: fuer die Bausteine aus dem Stamm). */
+function abfahrt_tts($c = null)
+{
+    if ($c === null) { $c = abfahrt_config(); }
+    return $c['tts'];
+}
+
 function abfahrt_mit_zielen() {
     return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
         && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
@@ -3451,7 +3631,10 @@ function abfahrt_mqtt_behalten_liste(array $themen)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.6.34 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -4173,7 +4356,17 @@ function abfahrt_ansage_ausfuehren($quelle = 'http', $force = false, $text_roh =
      * Protokoll kommt nur ansage_kurz() (nie Text, Token oder die Adresse des Music Servers). Die Antwort bleibt in
      * der Form bis 1.6.22: "OK: TEXTLAENGE=N" bzw. eine Zeile, die mit "FEHLER" beginnt. */
     $abf_k = abfahrt_ansage_k();
-    $abf_r = ansage_sprechen($text, $tts, $abf_k);
+    /* 1.6.35: der Schalter "Ansagen aus" (haus/ansage/ruhe) und die Ziele aus dem Stamm; ein Test (force) spricht immer. */
+    abfahrt_ansage_token_pflegen($abfcfg);
+    if ($force) {
+        $abf_r = ansage_sprechen($text, abfahrt_ansage_vor_ort($abfcfg), $abf_k);
+    } else {
+        $abf_r = abfahrt_ansage_direkt($text, array('schluessel' => 'abfahrt'), $tts);
+        if ($abf_r['kennung'] === 'SCHALTER') {
+            abfahrt_log('Ansage entfaellt: Schalter Ansagen aus' . $mqtt);
+            return $erg(false, 'SCHALTER', "SKIP: Schalter Ansagen aus\n");
+        }
+    }
     abfahrt_log('Ansage: ' . ansage_kurz($abf_r) . ($force ? ' [Test/force]' : '') . $mqtt);
     if ($abf_r['stand'] === 1) {
         if ($abf_r['art'] === 'cc4lox') {
@@ -4439,9 +4632,13 @@ function abfahrt_haus_sitzung(array $senden, array $lesen, array $warten, $fenst
         } while ($n > 0);
         return $o;
     };
-    $lies = function ($n) use ($s) {
+    /* bis 1.6.34 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser ueber sein Fenster hinaus fest.
+     * Schweigt der Broker ganz, greift schon stream_set_timeout(). */
+    $lies_bis = microtime(true) + (float) $fenster + 5.0;
+    $lies = function ($n) use ($s, $lies_bis) {
         $d = '';
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -6001,6 +6198,7 @@ function abfahrt_sicherung_bauen(array $cfg, $pruefen = true)
      * geltende (abfahrt_sicherung_lesen()). */
     if (isset($cfg['tts']) && is_array($cfg['tts'])) {
         $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
+        unset($cfg['ansage_token_herkunft']);     // 1.6.35
     }
     /* X-3 (Welle 2, 30.09.2026): Wuerde das eigene Zurueckspielen diese Datei
      * abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert wird sie
@@ -6453,6 +6651,7 @@ function abfahrt_sicherung_lesen($roh, &$namen = null)
         if (is_string($k) && $k !== '' && $k[0] === '_') {
             continue;
         }
+        if ($k === 'ansage_token_herkunft') { continue; }     // 1.6.35: nie aus einer Datei
         if (!array_key_exists($k, $vorgaben)) {
             $mangel[] = sprintf(abfahrt_t('TEXT.SICH_FREMD'), (string) $k);
             $namen[] = (string) $k;
