@@ -510,6 +510,7 @@ if ($abf_post && isset($_POST['download'])) {
         $v = (is_string($_POST['download']) && $_POST['download'] === 'xml_out')
            ? abfahrt_vorlage_ausgang($host) : abfahrt_vorlage($host);
     }
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $v[0] . '"');
     header('Content-Length: ' . strlen($v[1]));
@@ -526,6 +527,7 @@ if ($abf_post && isset($_POST['download'])) {
 if ($abf_post && isset($_POST['abfahrt_sichern'])) {
     $abfahrt_js = abfahrt_sicherung_bauen(abfahrt_config());
     if ($abfahrt_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');     // Gruppe 18 (1.6.31, F4): die Datei traegt Merkwort und Kartendienst-Schluessel
         header('Content-Disposition: attachment; filename="abfahrtsassistent_einstellungen_'
