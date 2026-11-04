@@ -312,6 +312,9 @@ function abfahrt_vorgaben()
     'quiet_push' => 0,
     // Eigener Ansagetext mit {titel} {ort} {fahrt} {abfahrt_in} {beginn}.
     'ansage_vorlage' => '',
+    // Die Tafel des Plugins Dashboard: 1 = auch dort ansagen (nie gesetzt = an), leer = alle offenen Tafeln.
+    'ansage_tafel_ein' => 1,
+    'ansage_tafel_namen' => '',
     // Alle MQTT-Werte erneut senden, auch wenn sie sich nicht geaendert
     // haben - damit ein Miniserver nach einem Neustart nicht mit leeren
     // Eingaengen dasteht. 0 = aus.
@@ -465,6 +468,7 @@ function abfahrt_config() {
     }
     $abfcfg['route_departat'] = empty($abfcfg['route_departat']) ? 0 : 1;
     $abfcfg['quiet_push'] = empty($abfcfg['quiet_push']) ? 0 : 1;
+    $abfcfg['ansage_tafel_ein'] = (isset($abfcfg['ansage_tafel_ein']) && empty($abfcfg['ansage_tafel_ein'])) ? 0 : 1;
     $abfcfg['ganztags_ein'] = empty($abfcfg['ganztags_ein']) ? 0 : 1;
     $abfcfg['mqtt_vollsend_min'] = max(0, min(1440, (int) $abfcfg['mqtt_vollsend_min']));
     if (!preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', (string) $abfcfg['ganztags_zeit'])) {
@@ -933,6 +937,8 @@ function abfahrt_ansage_regeln($cfg = null)
     $r = ansage_regeln_vorgaben();
     /* Die feinere Ruhezeit je Wochentag (quiet) bleibt die geltende; die Nachtruhe des Stamms gilt hier nicht. */
     $r['nachtruhe'] = 0;
+    if (isset($cfg['ansage_tafel_ein']) && empty($cfg['ansage_tafel_ein'])) { $r['tafel'] = 0; }
+    if (isset($cfg['ansage_tafel_namen']) && ansage_tafel_namen_ok($cfg['ansage_tafel_namen'])) { $r['tafel_namen'] = $cfg['ansage_tafel_namen']; }
     $p = ansage_regeln_wert($r, $g);
     return $p === null ? ansage_regeln_vorgaben() : $p;
 }
@@ -997,7 +1003,7 @@ function abfahrt_ansage_token_pflegen($cfg = null)
 function abfahrt_ansage_vor_ort($cfg = null)
 {
     if ($cfg === null) { $cfg = abfahrt_config(); }
-    return ansage_token_fuer_lauf(abfahrt_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), abfahrt_ansage_k());
+    return ansage_tafel_einreihen(ansage_token_fuer_lauf(abfahrt_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), abfahrt_ansage_k()), abfahrt_ansage_regeln($cfg), abfahrt_ansage_k(), true);     // Stamm 1.4.0: die Tafel, wenn sie bereitsteht
 }
 
 /** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
@@ -1020,6 +1026,32 @@ function abfahrt_ansage_lage_html($cfg = null)
     foreach (ansage_regel_lage(abfahrt_tts($cfg), abfahrt_ansage_regeln($cfg), $k, true) as $z) {
         $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
     }
+    return implode("\n", $o) . "\n";
+}
+
+/**
+ * Die Tafel im Formular der Linie: Haken und Tafelnamen, dieselben Felder wie ansage_regeln_html() im Stamm. Dessen uebrige Regeln bleiben hier draussen,
+ * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung steht hier der gespeicherte Stand wie im Stamm.
+ */
+function abfahrt_ansage_tafel_html(array $cfg, $mark = null)
+{
+    $k = abfahrt_ansage_k();
+    $e = ansage_e_fn($k);
+    $r = abfahrt_ansage_regeln($cfg);
+    $mk = is_callable($mark) ? $mark : function ($n) { return ''; };
+    $o = array();
+    $o[] = '<div class="sm-feld" id="ansage_tafel_regel">';
+    $o[] = '    <input data-role="none" type="hidden" name="ansage_tafel_da" value="1">';
+    $o[] = '    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;"><input data-role="none" type="checkbox" name="ansage_tafel_ein" value="1"'
+         . (!empty($r['tafel']) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
+    $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_HINWEIS', $k)) . '</div>';
+    $o[] = '</div>';
+    $o[] = '<div class="sm-feld">';
+    $o[] = '    <label for="ansage_tafel_namen">' . $e(ansage_t('L_R_TAFEL_NAMEN', $k)) . '</label>';
+    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) $r['tafel_namen']) . '"'
+         . call_user_func($mk, 'ansage_tafel_namen') . '>';
+    $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_NAMEN_HINWEIS', $k)) . '</div>';
+    $o[] = '</div>';
     return implode("\n", $o) . "\n";
 }
 
@@ -6310,6 +6342,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'befehle_mqtt_ein':
         case 'route_departat':
         case 'quiet_push':
+        case 'ansage_tafel_ein':
         case 'ganztags_ein':
         case 'endpunkt_ein':          // Gruppe 18 (1.6.31; 2.9: ohne die Zeilen fiele ein gespeicherter Haken beim Laden
         case 'haus_abfahrt_ein':      // als UNBEKANNT auf die Vorgabe)
@@ -6318,6 +6351,9 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'api_key':       return $text($wert, 200);
         case 'home_address':  return $text($wert, 300);
         case 'ansage_vorlage': return $text($wert, 500);
+        case 'ansage_tafel_namen':
+            if (!ansage_tafel_namen_ok($wert)) { $grund = 'TEXT_ZEICHEN'; return null; }
+            return $wert;
         case 'ignore_locations': return $text($wert, 2000);
         case 'mqtt_topic':
             $s = $text($wert, 64);

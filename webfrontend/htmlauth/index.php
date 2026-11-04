@@ -877,6 +877,14 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     if (!$abf_tmangel) {
         abf_feld($abfneu, $abf_alt, 'tts', $abf_tts_neu, $abf_hw);
     }
+    /* Die Tafel: Der Stamm liest Haken und Namen. Fehlt das Merkmal ansage_tafel_da, bleibt der alte Wert; die uebrigen Regeln gelten hier nicht. */
+    $abf_tm2 = array();
+    $abf_tb2 = array();
+    list($abf_tr) = ansage_regeln_formular($_POST, abfahrt_ansage_regeln($abf_alt), array(), $abf_tm2, $abf_tb2, abfahrt_ansage_k());
+    foreach ($abf_tm2 as $abf_tm) { $abf_hw[] = $abf_tm['text']; }
+    foreach ($abf_tb2 as $abf_tb) { abf_bean($abf_tb); }
+    $abfneu['ansage_tafel_ein'] = (int) $abf_tr['tafel'];
+    $abfneu['ansage_tafel_namen'] = (string) $abf_tr['tafel_namen'];
 
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
      * halbe wird gemeldet statt weggelassen. */
@@ -1460,7 +1468,8 @@ echo ansage_formular_html($abfcfg['tts'], array(
     'modi' => abfahrt_ansage_modi(),
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => abfahrt_mit_zielen(),
-    'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k()); ?>
+    'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k());
+echo abfahrt_ansage_tafel_html($abfcfg, function ($n) { return abf_m($n); }); ?>
 <div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
 <div class="sm-feld">
 <?php if ($abf_ms4h !== null) { ?>
