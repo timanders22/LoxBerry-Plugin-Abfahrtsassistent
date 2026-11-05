@@ -147,6 +147,7 @@ function abf_eingabe_felder($formular) {
                      'tts_sonox_raum', 'tts_sonox_laut', 'tts_sonox_sprache',     // Gruppe 18 (1.6.31): SonoX (Modul 1.1.4)
                      'tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache',     // 1.6.33: Tabelle der weiteren
                      'tts_ziel_ein', 'tts_ziel_loeschen',                                    // Ziele (Modul 1.2.0)
+                     'ansage_tafel_ein', 'ansage_tafel_namen',                               // 1.6.38: die Tafel reist mit (Stamm 1.4.1)
                      'anwesenheit_ein', 'abfuhr_satz_ein',                        // Gruppe 18: Haus-Themen (Abnehmer)
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
@@ -887,6 +888,8 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     foreach ($abf_tb2 as $abf_tb) { abf_bean($abf_tb); }
     $abfneu['ansage_tafel_ein'] = (int) $abf_tr['tafel'];
     $abfneu['ansage_tafel_namen'] = (string) $abf_tr['tafel_namen'];
+    // 1.6.38: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.6.37 ueberschrieb es der naechste Abgleich.
+    $abfneu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($abf_alt['ansage_token_herkunft']) ? $abf_alt['ansage_token_herkunft'] : array());
 
     /* Ortsbuch. Eine Zeile zaehlt nur, wenn BEIDE Felder gefuellt sind; eine
      * halbe wird gemeldet statt weggelassen. */
@@ -1471,7 +1474,7 @@ echo ansage_formular_html($abfcfg['tts'], array(
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => abfahrt_mit_zielen(),
     'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k());
-echo abfahrt_ansage_tafel_html($abfcfg, function ($n) { return abf_m($n); }); ?>
+echo abfahrt_ansage_tafel_html($abfcfg, function ($n) { return abf_m($n); }, function ($n, $g) { return abf_w($n, $g); }, function ($n, $g) { return abf_h($n, $g); }); ?>
 <div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
 <div class="sm-feld">
 <?php if ($abf_ms4h !== null) { ?>

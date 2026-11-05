@@ -11,6 +11,10 @@ ARGV5=$5
 # Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
 LBHOMEDIR="${LBHOMEDIR:-$5}"
 PFOLDER="${ARGV3:-abfahrtsassistent}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # Ohne erkennbaren LoxBerry wird nichts angefasst (seit 1.6.10). postupgrade.sh
@@ -20,7 +24,7 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # Meldung sagte, es habe nichts zu retten gegeben.
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -f "$BASE/config/system/general.json" ]; then
     echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - die Konfiguration wurde NICHT gesichert."
-    exit 0
+    exit 2
 fi
 
 # ---------- I1: Marke "Aktualisierung laeuft" - als Erstes ----------
@@ -46,6 +50,30 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     echo "<FAIL> Fassung bleibt unveraendert installiert."
     exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    [ "$ABF_MARKE_VORHER" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    rm -rf "${NEU:?}" 2>/dev/null
+    exit 2
+}
 
 # ---------- Gruppe 2 / MQTT (1.6.30): die Befehlsbruecke anhalten ----------
 # Erst jetzt, da die Upgrade-Marke liegt: der Waechter im Minutenlauf startet sie dann nicht neu, und
@@ -94,6 +122,7 @@ if [ "$ABF_MARKE_VORHER" = "0" ] && { [ -e "$SICHER" ] || [ -L "$SICHER" ]; }; t
     if [ -e "$SICHER" ] || [ -L "$SICHER" ]; then
         echo "<FAIL> Eine Update-Sicherung aus einem frueheren Vorgang liess sich nicht entfernen: $SICHER"
         echo "<FAIL> postupgrade.sh spielte sie sonst zurueck. Die Aktualisierung wird abgebrochen."
+        rm -f "$MARKE" 2>/dev/null
         exit 2
     fi
     echo "<INFO> Eine Update-Sicherung aus einem frueheren Vorgang wurde entfernt."
@@ -122,6 +151,7 @@ if [ -f "$QUELLE" ]; then
     else
         rm -f "$NEU/abfahrt.json" 2>/dev/null
         echo "<WARNING> Die Konfiguration liess sich nicht sichern: $QUELLE"
+        ZS_FEHL="$ZS_FEHL abfahrt.json"
     fi
 else
     echo "<INFO> Keine bestehende Konfiguration gefunden: $QUELLE"
@@ -138,6 +168,7 @@ fi
 
 # I3: umbenennen. Eine brauchbare Sicherung eines abgebrochenen Versuchs
 # (siehe oben) wird nicht durch eine unbrauchbare neue ersetzt.
+zs_schluss
 if [ -f "$SICHER/abfahrt.json" ] && [ "$ABF_NEU_GUT" = "0" ] && hat_merkwort "$SICHER/abfahrt.json"; then
     rm -rf "${NEU:?}" 2>/dev/null
     echo "<INFO> Die Update-Sicherung eines abgebrochenen Versuchs dieses Updates bleibt stehen: $SICHER"
@@ -145,8 +176,10 @@ elif [ -n "$(ls -A "$NEU" 2>/dev/null)" ]; then
     rm -rf "${SICHER:?}" 2>/dev/null
     if ! mv "$NEU" "$SICHER" 2>/dev/null; then
         echo "<WARNING> Die Update-Sicherung liess sich nicht an ihren Platz bringen: $NEU"
+        ZS_FEHL="$ZS_FEHL Update-Sicherung"
     fi
 else
     rm -rf "${NEU:?}" 2>/dev/null
 fi
+zs_schluss
 exit 0

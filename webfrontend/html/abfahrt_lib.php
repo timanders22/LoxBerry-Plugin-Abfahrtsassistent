@@ -1031,24 +1031,26 @@ function abfahrt_ansage_lage_html($cfg = null)
 
 /**
  * Die Tafel im Formular der Linie: Haken und Tafelnamen, dieselben Felder wie ansage_regeln_html() im Stamm. Dessen uebrige Regeln bleiben hier draussen,
- * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung steht hier der gespeicherte Stand wie im Stamm.
+ * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung traegt es das Eingetippte wie der Stamm seit 1.4.1 ($wert, $haken: Rueckrufe der Einmalmeldung).
  */
-function abfahrt_ansage_tafel_html(array $cfg, $mark = null)
+function abfahrt_ansage_tafel_html(array $cfg, $mark = null, $wert = null, $haken = null)
 {
     $k = abfahrt_ansage_k();
     $e = ansage_e_fn($k);
     $r = abfahrt_ansage_regeln($cfg);
     $mk = is_callable($mark) ? $mark : function ($n) { return ''; };
+    $wt = is_callable($wert) ? $wert : function ($n, $g) { return $g; };
+    $hk = is_callable($haken) ? $haken : function ($n, $g) { return (bool) $g; };
     $o = array();
     $o[] = '<div class="sm-feld" id="ansage_tafel_regel">';
     $o[] = '    <input data-role="none" type="hidden" name="ansage_tafel_da" value="1">';
     $o[] = '    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;"><input data-role="none" type="checkbox" name="ansage_tafel_ein" value="1"'
-         . (!empty($r['tafel']) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
+         . (call_user_func($hk, 'ansage_tafel_ein', !empty($r['tafel'])) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
     $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_HINWEIS', $k)) . '</div>';
     $o[] = '</div>';
     $o[] = '<div class="sm-feld">';
     $o[] = '    <label for="ansage_tafel_namen">' . $e(ansage_t('L_R_TAFEL_NAMEN', $k)) . '</label>';
-    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) $r['tafel_namen']) . '"'
+    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) call_user_func($wt, 'ansage_tafel_namen', $r['tafel_namen'])) . '"'
          . call_user_func($mk, 'ansage_tafel_namen') . '>';
     $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_NAMEN_HINWEIS', $k)) . '</div>';
     $o[] = '</div>';
@@ -2386,7 +2388,12 @@ function abfahrt_next_event(array $abfcfg, &$diag = [], &$kallage = null) {
                     if ($k > 0) {
                         $per->modify('+' . ($k * $iv) . ' ' . $schritt);
                     }
-                    if ($per->getTimestamp() > $grenze) {
+                    /* 1.6.38 (AB-1): verglichen wird der ANFANG der Periode. Der Anker steht auf 12:00 des
+                     * Ersten; bis 1.6.37 flog ein Termin am Monatsersten vor 12 Uhr heraus, wenn das Fenster vor
+                     * 12 Uhr endete (08:00 am 1.12., jetzt 05:00, Fenster 3 h: "kein Termin"). */
+                    $per_anfang = clone $per;
+                    $per_anfang->setTime(0, 0, 0);
+                    if ($per_anfang->getTimestamp() > $grenze) {
                         break;   // die ganze Periode liegt hinter dem Fenster
                     }
                     $jahr = (int) $per->format('Y');
