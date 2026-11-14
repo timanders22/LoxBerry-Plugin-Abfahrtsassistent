@@ -522,12 +522,12 @@ if ($abf_post && isset($_POST['download'])) {
 /* ---------------- Einstellungen sichern (Download) ----------------
  * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken, aber ohne die
  * Sprechtoken fuer Alexa-NG (Ansage-2) und Chromecast 4 Lox NG (Ansage-3,
- * abfahrt_sicherung_bauen()). Der lesbare
- * Kopf traegt _plugin, _stand und _hinweis (keine Fassungsnummer, Begruendung
- * bei abfahrt_sicherung_bauen()). */
+ * abfahrt_sicherung_bauen()). Seit 1.6.41 baut das gemeinsame Sicherungsmodul
+ * Kopf und Inhalt: _hinweis, _plugin, _fassung (aus der Plugin-Datenbank bzw.
+ * der plugin.cfg), _stand und bei Bedarf _warnung. */
 if ($abf_post && isset($_POST['abfahrt_sichern'])) {
     $abfahrt_js = abfahrt_sicherung_bauen(abfahrt_config());
-    if ($abfahrt_js !== false) {
+    if ($abfahrt_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');     // Gruppe 18 (1.6.31, F4): die Datei traegt Merkwort und Kartendienst-Schluessel
@@ -988,89 +988,107 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST, dann die Groessengrenze: 64 kB (Hausmass,
- * Regeln/05). Eine Sicherung dieses Plugins ist wenige Kilobyte gross; bis
- * 1.6.9 stand hier das Vierfache. */
+ * 1.6.41: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0, Entscheidung
+ * des Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts
+ * gelesen und nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers
+ * unterschieben) und die Groessengrenze des Moduls (256 KB; bis 1.6.40 hier 64 KB); erst danach wird die
+ * Datei gelesen. Eine mit UTF-8-BOM gespeicherte Datei entfernte diese Linie bis 1.6.40 selbst (Nr. 27f);
+ * das Modul kennt das nicht, und eine Umgehung um das Modul gibt es nicht (Einheitlichkeit, Regeln/05
+ * Entscheidung 7) - die Datei wird dann als "keine lesbare Sicherung" abgewiesen. */
 if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
     $abf_hw = array();
     $abf_erg = array();
-    /* Nr. 27f: ueber upload_max_filesize (oder MAX_FILE_SIZE) kommt keine
-     * Datei an - bis 1.6.21 hiess das "keine Datei ausgewaehlt". */
-    $abf_ufehler = isset($_FILES['abfahrt_sicherung']['error']) ? (int) $_FILES['abfahrt_sicherung']['error'] : 0;
-    if ($abf_ufehler === UPLOAD_ERR_INI_SIZE || $abf_ufehler === UPLOAD_ERR_FORM_SIZE) {
-        $abf_hw[] = abf_upload_grenze_text();
-    } elseif (!isset($_FILES['abfahrt_sicherung']) || !is_array($_FILES['abfahrt_sicherung'])
-        || !isset($_FILES['abfahrt_sicherung']['tmp_name'])
-        || !is_string($_FILES['abfahrt_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['abfahrt_sicherung']['tmp_name'])) {
-        $abf_hw[] = abfahrt_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['abfahrt_sicherung']['size'] > 65536) {
-        $abf_hw[] = abfahrt_t('TEXT.SICH_ZU_GROSS');
-    } else {
-        /* Nr. 27f: Eine mit UTF-8-BOM gespeicherte Sicherung (Windows-Editor)
-         * scheiterte bis 1.6.21 an json_decode(). */
-        $abf_roh = (string) @file_get_contents($_FILES['abfahrt_sicherung']['tmp_name']);
-        if (substr($abf_roh, 0, 3) === "\xEF\xBB\xBF") { $abf_roh = (string) substr($abf_roh, 3); }
-        $abf_vorher = abfahrt_config();     // Nr. 27d: Praefix und Schalter VOR dem Zurueckspielen
-        list($abfahrt_neu, $abfahrt_mangel, $abfahrt_n) = abfahrt_sicherung_lesen($abf_roh);
-        if ($abfahrt_neu === null) {
-            // ALLE Beanstandungen, nicht nur die erste - und geaendert wird nichts.
-            $abf_hw[] = abfahrt_t('TEXT.SICH_ABGELEHNT') . ' ' . implode(' ', $abfahrt_mangel);
-        } elseif (abfahrt_config_speichern($abfahrt_neu)) {
-            $abf_erg['meldung'] = sprintf(abfahrt_t('TEXT.SICH_UEBERNOMMEN'), $abfahrt_n);
-            foreach ($abfahrt_mangel as $abf_m) { $abf_hw[] = $abf_m; }
-            /* DEN DIENST NACHZIEHEN (Hausstandard) - und sagen, was geschah.
-             * Zwischenstand, MQTT-Merker und Kalenderkopien gehoeren zur alten
-             * Konfiguration; sie werden verworfen, damit der Dienst beim
-             * naechsten Minutentakt neu rechnet und alle Werte neu sendet.
-             * Bis 1.6.9 lieferte der Miniserver bis zu fuenf Minuten lang
-             * Werte der alten Konfiguration. */
-            $abf_tmp = abfahrt_tmpdir(false);
-            $abf_weg = 0;
-            foreach (array_merge(array($abf_tmp . '/stand.json', $abf_tmp . '/mqtt_letzte.json',
-                                       $abf_tmp . '/mqtt_voll.stamp', $abf_tmp . '/titel.json'),
-                                 glob($abf_tmp . '/ics_*') ?: array()) as $abf_f) {
-                if (is_file($abf_f) && @unlink($abf_f)) { $abf_weg++; }
-            }
-            abfahrt_log('Konfiguration: Sicherung zurueckgespielt (' . (int) $abfahrt_n . ' Werte), '
-                        . $abf_weg . ' Zwischenstaende verworfen.');
-            $abf_hw[] = sprintf(abfahrt_t('MELDUNG.DIENST_NACHGEZOGEN'), $abf_weg);
-            // M5: das Praefix kann mit der Sicherung gewechselt haben.
-            $abf_nach = abfahrt_config();
-            /* Nr. 27d (Pruefung 02.10.2026): wie beim MQTT-Formular (M1) unter
-             * dem BISHERIGEN Praefix raeumen, wenn die Sicherung es wechselt
-             * oder MQTT abschaltet. Bis 1.6.21 blieb dort alles stehen. */
-            $abf_wechsel = ((string) $abf_nach['mqtt_topic'] !== (string) $abf_vorher['mqtt_topic']);
-            $abf_aus = (!empty($abf_vorher['mqtt_ein']) && empty($abf_nach['mqtt_ein']));
-            if ($abf_wechsel || $abf_aus) {
-                $abf_r = abfahrt_mqtt_praefix_raeumen((string) $abf_vorher['mqtt_topic'], $abf_aus ? 'aus' : 'wechsel');
-                if ($abf_r !== '') { $abf_hw[] = $abf_r; }
-            }
-            abfahrt_abo_datei($abf_nach['mqtt_topic'], true);
-            /* Gruppe 18 (1.6.31; F5): die Befehlsbruecke sofort schalten wie im MQTT-Formular - bis 1.6.30 startete erst
-             * der Waechter im Minutenlauf (bis zu 10 min mit der Bremse). */
-            if ((int) $abf_nach['befehle_mqtt_ein'] !== (int) $abf_vorher['befehle_mqtt_ein']) {
-                abfahrt_log('Befehle ueber MQTT ' . ($abf_nach['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . ' (Sicherung).');
-            }
-            list($abf_brc, $abf_bart, $abf_baus) = abfahrt_bruecke_schalten($abf_nach);
-            if ($abf_bart === 'start' && $abf_brc === 0) {
-                $abf_hw[] = abfahrt_t('BEFEHL.M_EIN');
-            } elseif ($abf_bart === 'start') {
-                $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $abf_baus);
-            } elseif ($abf_bart === 'stop' && $abf_brc === 0) {
-                $abf_hw[] = abfahrt_t('BEFEHL.M_AUS');
-            } elseif ($abf_bart === 'stop') {
-                $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $abf_baus);
-            } elseif (!empty($abf_nach['befehle_mqtt_ein']) && empty($abf_nach['mqtt_ein'])) {
-                $abf_hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
-            }
-            abf_haus_nachziehen($abf_vorher, $abf_nach, $abf_hw);     // Gruppe 18 (2.5)
-        } else {
-            $abf_hw[] = abfahrt_t('TEXT.SICH_SCHREIBFEHLER');
+    /* Die Meldungen maskiert diese Seite erst bei der Ausgabe (e()); das Modul gibt sie deshalb als Klartext
+     * (Regeln/05, "Meldungen als Klartext"). Die Haken-Zeile im Formular bekommt die unveraenderte Beschreibung. */
+    $abf_b = array('e' => function ($s) { return $s; }) + abfahrt_sicherung_beschreibung();
+    list($abf_roh, $abf_ab) = sicherung_eingang($abf_b, $_POST, $_FILES, 'abfahrt_sicherung');
+    if ($abf_ab !== null) {
+        $abf_sm = sicherung_meldungen($abf_b, $abf_ab);
+        foreach ($abf_sm['fehler'] as $abf_x) { $abf_hw[] = $abf_x; }
+        /* Nr. 27f: ueber upload_max_filesize (oder MAX_FILE_SIZE) kommt keine Datei an - das Modul sagt "keine
+         * Datei", diese Linie nennt dazu die Grenzen des Webservers (ein Hinweis, keine zweite Pruefung). */
+        $abf_ufehler = isset($_FILES['abfahrt_sicherung']['error']) ? (int) $_FILES['abfahrt_sicherung']['error'] : 0;
+        if (isset($abf_ab['abbruch']) && $abf_ab['abbruch'] === 'datei'
+            && ($abf_ufehler === UPLOAD_ERR_INI_SIZE || $abf_ufehler === UPLOAD_ERR_FORM_SIZE)) {
+            $abf_hw[] = abf_upload_grenze_text();
         }
+    } else {
+        /* 1.6.41: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen(), Beschreibung
+         * abfahrt_sicherung_beschreibung()) liest, prueft, verwirft Unbekanntes mit Namen, laesst leere Werte
+         * den bisherigen stehen (auch das Merkwort) und aendert bei einer Beanstandung GAR NICHTS - alle
+         * Beanstandungen, nicht nur die erste. abfahrt_config_speichern() schreibt Konfiguration und
+         * Zweitschrift (0600); das Modul misst danach, ob sie inhaltsgleich sind. */
+        $abf_b['speichern'] = function ($neu) { return abfahrt_config_speichern($neu); };
+        $abf_b['zweitschrift'] = function () { $p = abfahrt_paths(); return array($p['config'], $p['backup']); };
+        $abf_b['nachziehen'] = 'abf_sicherung_nachziehen';
+        $abf_b['log'] = function ($z) { abfahrt_log($z); };
+        $abf_r = sicherung_zurueckspielen($abf_b, $abf_roh);
+        $abf_sm = sicherung_meldungen($abf_b, $abf_r);
+        foreach ($abf_sm['fehler'] as $abf_x) { $abf_hw[] = $abf_x; }
+        if (!empty($abf_r['gespeichert']) && $abf_sm['hinweise']) {
+            /* Der erste Satz ("Einstellungen zurueckgespielt: n Werte uebernommen") steht wie bisher im
+             * gruenen Kasten, die uebrigen bei den Hinweisen. */
+            $abf_erg['meldung'] = array_shift($abf_sm['hinweise']);
+        }
+        foreach ($abf_sm['hinweise'] as $abf_x) { $abf_hw[] = $abf_x; }
     }
     $abf_erg['hinweise'] = $abf_hw;
     abf_umleiten($data_dir, 'tab-settings', $abf_erg);
+}
+
+/**
+ * 1.6.41: Nach dem Zurueckspielen (Rueckruf 'nachziehen' des Sicherungsmoduls) - dieselben Schritte wie bis
+ * 1.6.40, und die Saetze sagen, was geschah. $vorher ist der Stand VOR dem Zurueckspielen (Nr. 27d).
+ *  - Ein leeres Merkwort in der Datei behaelt das geltende (Regel 3 des Moduls); die Seite sagt, was das fuer
+ *    die Adressen in Loxone Config heisst.
+ *  - DEN DIENST NACHZIEHEN (Hausstandard): Zwischenstand, MQTT-Merker und Kalenderkopien gehoeren zur alten
+ *    Konfiguration; sie werden verworfen, damit der Dienst beim naechsten Minutentakt neu rechnet und alle
+ *    Werte neu sendet. Bis 1.6.9 lieferte der Miniserver bis zu fuenf Minuten lang Werte der alten
+ *    Konfiguration.
+ *  - Wie beim MQTT-Formular (M1) unter dem BISHERIGEN Praefix raeumen, wenn die Sicherung es wechselt oder MQTT
+ *    abschaltet; die Abo-Datei folgt; die Befehlsbruecke wird sofort geschaltet (Gruppe 18, F5); die
+ *    Haus-Themen werden nachgezogen (Gruppe 18, 2.5).
+ */
+function abf_sicherung_nachziehen($neu, $vorher, $r)
+{
+    $hw = array();
+    if (in_array('aktionstoken', $r['leer_behalten'], true)) {
+        $hw[] = abfahrt_t('TEXT.SICH_TOKEN_BEHALTEN');
+    }
+    $tmp = abfahrt_tmpdir(false);
+    $weg = 0;
+    foreach (array_merge(array($tmp . '/stand.json', $tmp . '/mqtt_letzte.json',
+                               $tmp . '/mqtt_voll.stamp', $tmp . '/titel.json'),
+                         glob($tmp . '/ics_*') ?: array()) as $f) {
+        if (is_file($f) && @unlink($f)) { $weg++; }
+    }
+    abfahrt_log('Konfiguration: nach dem Zurueckspielen ' . $weg . ' Zwischenstaende verworfen.');
+    $hw[] = sprintf(abfahrt_t('MELDUNG.DIENST_NACHGEZOGEN'), $weg);
+    $nach = abfahrt_config();
+    $wechsel = ((string) $nach['mqtt_topic'] !== (string) $vorher['mqtt_topic']);
+    $aus = (!empty($vorher['mqtt_ein']) && empty($nach['mqtt_ein']));
+    if ($wechsel || $aus) {
+        $x = abfahrt_mqtt_praefix_raeumen((string) $vorher['mqtt_topic'], $aus ? 'aus' : 'wechsel');
+        if ($x !== '') { $hw[] = $x; }
+    }
+    abfahrt_abo_datei($nach['mqtt_topic'], true);
+    if ((int) $nach['befehle_mqtt_ein'] !== (int) $vorher['befehle_mqtt_ein']) {
+        abfahrt_log('Befehle ueber MQTT ' . ($nach['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . ' (Sicherung).');
+    }
+    list($brc, $bart, $baus) = abfahrt_bruecke_schalten($nach);
+    if ($bart === 'start' && $brc === 0) {
+        $hw[] = abfahrt_t('BEFEHL.M_EIN');
+    } elseif ($bart === 'start') {
+        $hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $baus);
+    } elseif ($bart === 'stop' && $brc === 0) {
+        $hw[] = abfahrt_t('BEFEHL.M_AUS');
+    } elseif ($bart === 'stop') {
+        $hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $baus);
+    } elseif (!empty($nach['befehle_mqtt_ein']) && empty($nach['mqtt_ein'])) {
+        $hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
+    }
+    abf_haus_nachziehen($vorher, $nach, $hw);     // Gruppe 18 (2.5)
+    return $hw;
 }
 
 /* Ein POST, den kein Handler kannte (Knopf ohne Namen): trotzdem umleiten,
@@ -1588,6 +1606,7 @@ if ($abf_sich_warn) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= e(abf_formtoken($abfcfg)) ?>">
     <input data-role="none" type="file" name="abfahrt_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(abfahrt_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="abfahrt_zurueck" value="1"><?= e(abfahrt_t('TEXT.K_ZURUECK')) ?></button>
   </form>
 </div>

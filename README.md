@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.40 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.41 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,19 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.41
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul (1.2.2) wie die übrigen Plugins dieser Reihe.
+  - Das Kennzeichen `abfahrtsassistent` steht seit 1.6.7 im Kopf jeder Sicherung, wurde aber bis 1.6.40 nicht gelesen. Jetzt wird eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen als Ganzes abgewiesen. Der Kopf trägt dazu die Fassung (`_fassung`). Sicherungen von 1.6.4 bis 1.6.6 hatten keinen Kopf und werden abgewiesen (bis 1.6.40 angenommen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei, in den Blöcken (Sprachausgabe, Benachrichtigung, Sperrzeiten) und in den Listen (Kalender, Ortsbuch). Die übrigen Einstellungen werden zurückgespielt. Bisher wies ein unbekannter Name oben oder in einem Block die ganze Datei ab, und einer in einer Kalenderzeile fiel still weg.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Merkwort.
+  - Der Vermerk, welche Sprechtoken vom Nachbar-Plugin übernommen sind, bleibt beim Zurückspielen erhalten. Bis 1.6.40 ging er verloren, und übernommene Sprechtoken galten danach als von Hand eingetragen.
+  - Die Sicherungsdatei darf jetzt bis zu 256 KB groß sein (bisher 64 KB), wie in allen Plugins dieser Reihe.
+  - Eine Sicherung, die ein Editor mit vorangestellter UTF-8-Kennung (BOM) gespeichert hat, wird jetzt als „keine lesbare Sicherung“ abgewiesen; bis 1.6.40 entfernte dieses Plugin die Kennung selbst. Abhilfe: die Datei ohne BOM speichern.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul und sind in allen Plugins dieser Reihe gleich.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, alle Beanstandungen werden genannt. Fehlt einer Sicherung eine Einstellung, behält sie ihren geltenden Wert, und die Meldung nennt sie. Merkwort, Schlüssel des Kartendienstes und Kalenderadressen gehören in die Datei, die Sprechtoken nicht; eine Datei mit Sprechtoken wird abgewiesen. Die Zweitschrift zieht mit; danach werden die Zwischenstände verworfen, der Dienst rechnet beim nächsten Minutentakt neu, Abo-Datei, MQTT-Präfix, Befehlsbrücke und Haus-Themen werden nachgezogen, und die Meldung sagt es.
+- Am Gerät nicht gemessen. Gemessen wurde mit einem Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 37 Vorfassungen von 1.6.4 bis 1.6.40 (34 mit Kopf angenommen, 3 ohne Kopf abgewiesen).
 
 ## Neu in 1.6.40
 

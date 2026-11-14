@@ -26,6 +26,10 @@ ini_set('display_errors', '0');
  * ein und traegt jenes eine eigene Abschrift, gilt die hier zuerst geladene; die Datei
  * schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 1.6.41): "Einstellungen
+ * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
+ * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -1384,7 +1388,7 @@ function abfahrt_audio_allowed(array $abfcfg, &$why = '') {
  * Erst wortgleich (ohne Beachtung von Gross- und Kleinschreibung und ohne
  * fuehrende/folgende Leerzeichen), dann als eigenstaendiges Wort innerhalb
  * der Ortsangabe. Kein Teilwort, keine Aehnlichkeit, kein Raten. Wer "Bad"
- * einträgt, soll nicht "Badstrasse 5" umgebogen bekommen.
+ * einträgt, soll nicht "Badstrasse" umgebogen bekommen.
  *
  * Rueckgabe: [Adresse, getroffenes Muster] oder [Ortsangabe, ''].
  */
@@ -6205,75 +6209,146 @@ function abfahrt_config_speichern($cfg)
 
 
 /**
- * Die Sicherungsdatei bauen - mit lesbarem Kopf.
+ * 1.6.41: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn 12.11.2026). Lesen,
+ * Pruefen und Zurueckspielen macht das Modul; bis 1.6.40 stand hier eine eigene
+ * Schleife (abfahrt_sicherung_lesen()): ein unbekannter Schluessel oben und ein
+ * unbekannter Unterschluessel in tts, notify oder quiet wiesen die ganze Datei
+ * ab, einer in einer Kalenderzeile fiel still weg, ein leerer Wert ueberschrieb
+ * den bisherigen (ausser beim Merkwort), und das Kennzeichen _plugin wurde
+ * geschrieben, aber nie gelesen - eine fremde Datei oder eine ohne Kennzeichen
+ * wurde gelesen wie eine eigene; der Vermerk ansage_token_herkunft ging beim
+ * Zurueckspielen verloren (gemessen 14.11.2026 an 1.6.40 mit
+ * Werkzeuge/sicherung_pruefstand.py --profil ist).
  *
- * Der Kopf ist Hausstandard und war bis 1.6.6 nicht da: die Datei bestand
- * nur aus den Einstellungen. Wer sie ein halbes Jahr spaeter in einem Ordner
- * wiederfindet, sieht ihr sonst nicht an, wohin sie gehoert - und dass sie
- * ein Geheimnis traegt.
+ * Seither: das Kennzeichen 'abfahrtsassistent' (seit 1.6.7 im Kopf jeder
+ * Sicherung) bleibt und wird geprueft; eine Datei mit fremdem oder ohne
+ * Kennzeichen wird abgewiesen (Sicherungen 1.6.4 bis 1.6.6 trugen keinen Kopf);
+ * unbekannte Schluessel oben, in den Bloecken und in den Listen werden verworfen
+ * und mit Namen gemeldet; ein leerer Wert ueberschreibt keinen bestehenden. Der
+ * Kopf traegt dazu _fassung.
  *
- * Die Schluessel mit dem Unterstrich sind KEINE Einstellungen;
- * abfahrt_sicherung_lesen() uebergeht sie deshalb, statt sie zu beanstanden.
+ * Wie bisher: jeder Wert geht durch abfahrt_wert_pruefen() (dieselbe Pruefung
+ * wie beim Lesen der Konfiguration) und wird in dessen Normalform gespeichert;
+ * eine halb gueltige Datei aendert nichts, alle Beanstandungen werden gesammelt;
+ * eine Datei mit einem Sprechtoken fuer Alexa-NG oder Chromecast 4 Lox NG wird
+ * abgewiesen, und die geltenden Sprechtoken bleiben; ein Schluessel, der in der
+ * Sicherung fehlt, behaelt seinen geltenden Wert und wird genannt (seit
+ * 05.09.2026, jetzt 'fehlt' => 'behalten' an jedem Schluessel), ebenso die
+ * weiteren Ausgabeziele tts.ziele; der Vermerk ansage_token_herkunft kommt nie
+ * aus einer Datei und behaelt seinen geltenden Wert ('nie_aus_datei').
  */
-function abfahrt_sicherung_bauen(array $cfg, $pruefen = true)
+function abfahrt_sicherung_beschreibung()
 {
-    /* KEINE Fassungsnummer im Kopf. Es gaebe dafuer keine belastbare
-     * Quelle: die plugin.cfg wird nicht in den Plugin-Baum installiert, und
-     * parse_ini_file() liest sie ohnehin nicht (gemessen 05.09.2026: sie
-     * bricht an der ersten Raute-Kommentarzeile ab, PHP kennt '#' nicht mehr
-     * als Kommentarzeichen). Der Aufbau der Plugindatenbank ist an keiner
-     * Anlage nachgesehen - eine geratene Feldbezeichnung waere schlimmer als
-     * eine fehlende Zeile. */
-    $kopf = array(
-        '_plugin'  => 'abfahrtsassistent',
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_hinweis' => 'Diese Datei enthaelt das Merkwort und den Schluessel des '
-                    . 'Kartendienstes. Wie ein Passwort behandeln. Die '
-                    . 'Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG sind '
-                    . 'absichtlich NICHT enthalten.',
+    $p = abfahrt_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $tage = array();
+    foreach (abfahrt_quiet_keys() as $d) { $tage[(string) $d] = sicherung_block(array('on', 'from', 'to')); }
+    $schluessel = array(
+        'calendars' => sicherung_liste(array('name', 'url')),
+        'ortsbuch'  => sicherung_liste(array('muster', 'adresse')),
+        'notify'    => sicherung_block(array('audio', 'push')),
+        'quiet'     => sicherung_block(array(), $tage),
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                         + array('fehlt' => 'behalten')))
+                 + array(
+                     'sichern' => 'ansage_sicherung_bereinigen',
+                     'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                         /* Eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines, wird
+                          * sie abgewiesen (Ansage-2/3). Gemessen am Block der DATEI ($roh), denn Regel 3 des Moduls
+                          * setzt ein leeres Feld vorher auf den geltenden Wert. */
+                         $aus = array();
+                         foreach (ansage_sicherung_mangel($roh) as $n) {
+                             if ($n === 'tts.alexa_token') { $aus[] = abfahrt_t('TEXT.SICH_ALEXA_TOKEN'); }
+                             elseif ($n === 'tts.google_token') { $aus[] = abfahrt_t('TEXT.SICH_GOOGLE_TOKEN'); }
+                             else { $aus[] = sprintf(abfahrt_t('TEXT.SICH_WERT'), $n, abfahrt_grund_text('TTS_EINTRAG|' . substr($n, 4))); }
+                         }
+                         if ($aus) { return $aus; }
+                         $g = '';
+                         return abfahrt_wert_pruefen('tts', $w, $g) === null
+                             ? sprintf(abfahrt_t('TEXT.SICH_WERT'), 'tts', abfahrt_grund_text($g)) : '';
+                     }),
     );
-    /* Ansage-2 (01.10.2026): das Sprechtoken fuer Alexa-NG ist ein Kennwort
-     * eines anderen Plugins und geht nie mit; das Zurueckspielen behaelt das
-     * geltende (abfahrt_sicherung_lesen()). */
-    if (isset($cfg['tts']) && is_array($cfg['tts'])) {
-        $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
-        unset($cfg['ansage_token_herkunft']);     // 1.6.35
+    /* Jeder Schluessel: fehlt er in der Datei, behaelt er seinen geltenden Wert (wie seit 05.09.2026); nach
+     * bestandener Pruefung gilt die Normalform von abfahrt_wert_pruefen() (wie bis 1.6.40). */
+    foreach (array_keys(abfahrt_vorgaben()) as $k) {
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        $schluessel[$k]['fehlt'] = 'behalten';
+        $schluessel[$k]['wandeln'] = function ($w) use ($k) {
+            $g = '';
+            $x = abfahrt_wert_pruefen($k, $w, $g);
+            return $x === null ? $w : $x;
+        };
     }
-    /* X-3 (Welle 2, 30.09.2026): Wuerde das eigene Zurueckspielen diese Datei
-     * abweisen, sagt es der Kopf - nur Namen, nie Werte. Geliefert wird sie
-     * trotzdem vollstaendig. */
-    if ($pruefen) {
-        $abf_namen = abfahrt_rueckspiel_altwerte($cfg);
-        if ($abf_namen) {
-            $kopf['_warnung'] = sprintf(abfahrt_t('TEXT.SICH_WARN_KOPF'), implode(', ', $abf_namen));
+    return array(
+        'kennzeichen' => 'abfahrtsassistent',
+        'hinweis' => 'Diese Datei enthaelt das Merkwort und den Schluessel des '
+                   . 'Kartendienstes. Wie ein Passwort behandeln. Die '
+                   . 'Sprechtoken fuer Alexa-NG und Chromecast 4 Lox NG sind '
+                   . 'absichtlich NICHT enthalten.',
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()) - keine
+         * fuenfte Stelle neben den vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['lbhome'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => abfahrt_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'pruefen' => function ($k, $w) {
+            $g = '';
+            return abfahrt_wert_pruefen($k, $w, $g) === null
+                ? sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($g)) : '';
+        },
+        'vorbereiten' => 'abfahrt_sicherung_vorbereiten',
+        'jetzt' => 'abfahrt_config',
+        't' => 'abfahrt_t',
+    );
+}
+
+/**
+ * 1.6.41: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Kam der Block
+ * tts aus der Datei, bleiben die geltenden Sprechtoken fuer Alexa-NG und
+ * Chromecast 4 Lox NG (die Sicherung traegt keine) - wie bis 1.6.40. Fehlte er,
+ * steht dort schon der geltende ('fehlt' => 'behalten').
+ */
+function abfahrt_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        foreach (array('alexa_token', 'google_token') as $s) {
+            $neu['tts'][$s] = (isset($jt[$s]) && is_string($jt[$s])) ? $jt[$s] : '';
         }
     }
-    return json_encode($kopf + $cfg,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $neu;
+}
+
+/**
+ * Die Sicherungsdatei - lesbarer Kopf (_hinweis, _plugin, _fassung, _stand, bei
+ * Bedarf _warnung) und alle Schluessel der Vorgaben aus $cfg, gebaut vom
+ * gemeinsamen Sicherungsmodul (sicherung_bauen(), seit 1.6.41). Nie ein
+ * Sprechtoken, nie der Vermerk ansage_token_herkunft. Wuerde das eigene
+ * Zurueckspielen die Datei abweisen, sagt es der Kopf _warnung - nur Namen,
+ * nie Werte; geliefert wird sie trotzdem vollstaendig. Rueckgabe: der
+ * JSON-Text, '' wenn er sich nicht bilden laesst.
+ */
+function abfahrt_sicherung_bauen(array $cfg)
+{
+    return sicherung_json(sicherung_bauen(abfahrt_sicherung_beschreibung(), $cfg));
 }
 
 /**
  * X-3: Welche Einstellungen wuerden beim Zurueckspielen der EIGENEN Sicherung
- * abgewiesen? Gebaut wird genau die Datei, die "Einstellungen sichern"
- * liefert, und durch dieselbe Pruefung geschickt wie beim Zurueckspielen.
- * Rueckgabe: Namen (nie Werte), leer heisst "wuerde angenommen".
- *
- * Der Fall, der hier anschlaegt: ein unbekannter Schluessel in abfahrt.json
- * (aus einer neueren Fassung nach einem Zurueckgehen, oder von Hand). Die
- * Lesefunktion laesst ihn stehen und die Sicherung traegt ihn mit - das
- * Zurueckspielen weist die ganze Datei ab ("Unbekannte Einstellung").
- * Ein unzulaessiger WERT kann hier nicht stehen: abfahrt_config() setzt ihn
- * schon beim Lesen auf die Vorgabe und meldet es (Selbstheilung).
+ * abgewiesen? Seit 1.6.41 dieselbe Pruefung wie beim Zurueckspielen ueber das
+ * Sicherungsmodul (sicherung_selbstpruefung()) an genau der Datei, die
+ * "Einstellungen sichern" liefert. Rueckgabe: Namen (nie Werte), leer heisst
+ * "wuerde angenommen".
  */
 function abfahrt_rueckspiel_altwerte(array $cfg)
 {
-    $js = abfahrt_sicherung_bauen($cfg, false);
-    if ($js === false) { return array(); }     // Sichern meldet dann selbst SICH_SCHREIBFEHLER
-    $namen = array();
-    list($neu) = abfahrt_sicherung_lesen($js, $namen);
-    $namen = array_values(array_unique($namen));
+    $b = abfahrt_sicherung_beschreibung();
+    $d = sicherung_bauen($b, $cfg);
+    unset($d['_warnung']);
+    $namen = sicherung_selbstpruefung($b, $d, $cfg);
     sort($namen);
-    if ($neu === null && !$namen) { $namen[] = abfahrt_t('TEXT.SICH_GANZE_DATEI'); }
     return $namen;
 }
 
@@ -6637,144 +6712,3 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
     return null;
 }
 
-
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
- * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
- * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
- * als die alte, und man sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
-function abfahrt_sicherung_lesen($roh, &$namen = null)
-{
-    $namen = array();     // X-3: Namen der beanstandeten Einstellungen, nie Werte
-    $mangel = array();
-    $hinweise = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(abfahrt_t('TEXT.SICH_KEIN_JSON')), 0);
-    }
-
-    /* Grundlage ist der JETZIGE Stand, nicht die Werkseinstellung.
-     *
-     * BERICHTIGT 05.09.2026, und das war der schwerste Befund der Durchsicht.
-     * Vorher wurde auf abfahrt_vorgaben() aufgesetzt: eine Datei mit EINEM
-     * bekannten Schluessel wurde angenommen, meldete "1 Werte uebernommen"
-     * und setzte alles andere auf Werk zurueck. Gemessen am 04.09.2026 mit
-     * {"home_address":"..."} - danach waren Kalender, Schluessel des
-     * Kartendienstes und Merkwort weg, und beim naechsten Oeffnen der
-     * Oberflaeche entstand ein neues Merkwort: JEDE in Loxone Config
-     * eingetragene Adresse war ab da ungueltig, und zwar stumm, weil ein
-     * Virtueller Ausgang die 403-Antwort nicht auswertet.
-     *
-     * Ein Schluessel, der in der Sicherung fehlt, behaelt jetzt seinen
-     * jetzigen Wert, und es wird gesagt, wie viele das waren. */
-    $jetzt = abfahrt_config();
-    $vorgaben = abfahrt_vorgaben();
-    $neu = array();
-    foreach (array_keys($vorgaben) as $k) {
-        $neu[$k] = array_key_exists($k, $jetzt) ? $jetzt[$k] : $vorgaben[$k];
-    }
-
-    $anzahl = 0;
-    $gesehen = array();
-    foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. Bis 1.6.6
-         * lehnte diese Funktion eine sonst gueltige Sicherung mit _hinweis
-         * und _stand vollstaendig ab - waehrend die eigene Ausfuhr gar
-         * keinen Kopf schrieb. */
-        // is_string(): eine Liste ([1,2]) hat Zahlen als Schluessel, und $k[0]
-        // gab darauf unter PHP 8 eine Warnung (Pruefung 02.10.2026, Nr. 28c).
-        if (is_string($k) && $k !== '' && $k[0] === '_') {
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // 1.6.35: nie aus einer Datei
-        if (!array_key_exists($k, $vorgaben)) {
-            $mangel[] = sprintf(abfahrt_t('TEXT.SICH_FREMD'), (string) $k);
-            $namen[] = (string) $k;
-            continue;
-        }
-        /* Ansage-2: Sicherungen tragen nie ein Sprechtoken fuer Alexa-NG.
-         * Bringt eine Datei eines mit, wird sie abgewiesen - sie stammt nicht
-         * aus "Einstellungen sichern", und das geltende Token bleibt. */
-        if ($k === 'tts' && is_array($w)) {
-            $abf_mit_token = false;
-            if (array_key_exists('alexa_token', $w) && $w['alexa_token'] !== '') {
-                $mangel[] = abfahrt_t('TEXT.SICH_ALEXA_TOKEN');
-                $namen[] = 'tts.alexa_token';
-                $abf_mit_token = true;
-            }
-            /* Ansage-3: ebenso das Sprechtoken fuer Chromecast 4 Lox NG. */
-            if (array_key_exists('google_token', $w) && $w['google_token'] !== '') {
-                $mangel[] = abfahrt_t('TEXT.SICH_GOOGLE_TOKEN');
-                $namen[] = 'tts.google_token';
-                $abf_mit_token = true;
-            }
-            if ($abf_mit_token) { continue; }
-        }
-        $grund = '';
-        $wert = abfahrt_wert_pruefen($k, $w, $grund);
-        if ($wert === null) {
-            $mangel[] = sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($grund));
-            $namen[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = $wert;
-        $gesehen[$k] = 1;
-        $anzahl++;
-    }
-
-    if ($anzahl === 0) {
-        $mangel[] = abfahrt_t('TEXT.SICH_LEER');
-    }
-
-    // Ansage-2: das geltende Sprechtoken bleibt (die Sicherung traegt keines).
-    if (isset($gesehen['tts']) && is_array($neu['tts'])) {
-        $neu['tts']['alexa_token'] = (isset($jetzt['tts']['alexa_token']) && is_string($jetzt['tts']['alexa_token']))
-            ? $jetzt['tts']['alexa_token'] : '';
-        $neu['tts']['google_token'] = (isset($jetzt['tts']['google_token']) && is_string($jetzt['tts']['google_token']))
-            ? $jetzt['tts']['google_token'] : '';     // Ansage-3
-    }
-    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-     * heisst "keine weiteren Ziele" und wird so uebernommen. */
-    $abf_spaete = array();
-    if (isset($gesehen['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
-        list($neu['tts'], $abf_spaete) = ansage_sicherung_spaet($neu['tts'],
-            (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : null);
-    }
-
-    /* Ein leeres Merkwort in einer Sicherungsdatei heisst "kein Merkwort
-     * gesichert" - es ist kein unzulaessiger Wert, aber es darf auch nicht
-     * das vorhandene loeschen. Beides zusammen ergibt: das jetzige behalten
-     * und es sagen. */
-    if (isset($gesehen['aktionstoken']) && $neu['aktionstoken'] === ''
-        && trim((string) (isset($jetzt['aktionstoken']) ? $jetzt['aktionstoken'] : '')) !== '') {
-        $neu['aktionstoken'] = $jetzt['aktionstoken'];
-        $hinweise[] = abfahrt_t('TEXT.SICH_TOKEN_BEHALTEN');
-    }
-
-    $fehlend = array();
-    foreach (array_keys($vorgaben) as $k) {
-        if (!isset($gesehen[$k])) { $fehlend[] = $k; }
-    }
-    foreach ($abf_spaete as $abf_sn) { $fehlend[] = $abf_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-
-    if ($mangel) {
-        return array(null, $mangel, $anzahl);
-    }
-    /* Kein Mangel, aber unvollstaendig: das ist kein Grund abzulehnen (eine
-     * Sicherung aus einer aelteren Fassung kennt neue Schluessel nicht),
-     * wohl aber einer, es zu sagen. */
-    if ($fehlend) {
-        $hinweise[] = sprintf(abfahrt_t('TEXT.SICH_FEHLEND'),
-                              count($fehlend), implode(', ', $fehlend));
-    }
-    return array($neu, $hinweise, $anzahl);
-}
