@@ -6299,7 +6299,16 @@ function abfahrt_sicherung_beschreibung()
                 ? sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($g)) : '';
         },
         'vorbereiten' => 'abfahrt_sicherung_vorbereiten',
-        'jetzt' => 'abfahrt_config',
+        // 1.6.42 (Modul 1.2.9, Bauform vom 15.11.2026): das Modul sieht die geltende Konfiguration ungefiltert -
+        // abfahrt_config() weist einen Block tts mit unbekanntem Unterschluessel ganz ab (abfahrt_wert_pruefen());
+        // was die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen nennt, statt
+        // es still wegfallen zu lassen. Oben laesst abfahrt_config() Unbekanntes ohnehin stehen.
+        'jetzt' => function () {
+            $j = abfahrt_config();
+            list($w) = abfahrt_config_roh();
+            if (is_array($w) && isset($w['tts']) && is_array($w['tts'])) { $j['tts'] += $w['tts']; }
+            return $j;
+        },
         't' => 'abfahrt_t',
     );
 }
