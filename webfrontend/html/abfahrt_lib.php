@@ -388,28 +388,42 @@ function abfahrt_config_roh($datei = null) {
     return array($d, 'ok');
 }
 
-/**
- * Frage 46 (Entscheidung des Hausherrn 18.11.2026). Diese Funktion steht wortgleich in sieben Linien:
- * Abfahrtsassistent, Alexa-NG, AudiConnect, BYD-Autos, Beschattungswaechter, Skoda-Connect-NG und VolkswagenID.
- * Ein unbekannter Unterschluessel im Block tts wird verworfen und mit Namen genannt, nie mit Wert; die uebrigen
- * Eintraege bleiben samt Sprechtoken. Unbekannt heisst: die Pruefung der Linie ($pruefen, ein Eintrag allein,
- * Rueckgabe der Grund oder '') nennt ihn mit TTS_EINTRAG. Ein bekannter Eintrag mit ungueltigem Wert bleibt stehen;
- * ihn weist die Pruefung des ganzen Blocks ab, wie bisher. Bliebe nichts Bekanntes uebrig, bleibt der Block, wie er
- * ist. Rueckgabe: array(Block, Liste der Namen 'tts.<eintrag>').
- */
-function tts_unbekannte_verwerfen($tts, $pruefen)
+/* Fragen 55-59 (Entscheidung des Hausherrn 18.11.2026): unbekannte Eintraege im Block tts verwerfen, den Block pruefen
+ * und melden - mit dem Sprachmodul ab 1.4.4 (ansage_block_pruefen(), ansage_block_meldungen()). Bis dahin stand das
+ * Verwerfen wortgleich in sieben Linien. Frage 81: nach der Modulregel nur mit function_exists(); ist in diesem Prozess
+ * zuerst eine aeltere Abschrift geladen, wird nur der ganze Block geprueft (ohne Verwerfen, ohne die Saetze des Moduls). */
+
+/** Den Block tts pruefen; Rueckgabe in der Form von ansage_block_pruefen(). $pruefen: Pruefung der Linie fuer einen Teilblock. */
+function abfahrt_tts_block_pruefen($tts, $pruefen = null)
 {
-    if (!is_array($tts)) { return array($tts, array()); }
-    $rest = $tts;
-    $namen = array();
-    foreach ($tts as $s => $w) {
-        $g = (string) call_user_func($pruefen, array($s => $w));
-        if (strpos($g, 'TTS_EINTRAG|') === 0) {
-            unset($rest[$s]);
-            $namen[] = 'tts.' . substr($g, strlen('TTS_EINTRAG|'));
+    if (function_exists('ansage_block_pruefen')) {
+        return ansage_block_pruefen($tts, abfahrt_ansage_modi(), $pruefen);
+    }
+    $g = is_array($tts) ? '' : 'KEIN_FELD';
+    $p = null;
+    if (is_array($tts)) {
+        if ($pruefen !== null) {
+            $g = (string) call_user_func($pruefen, $tts);
+            $p = $g === '' ? $tts : null;
+        } else {
+            $p = ansage_wert_pruefen($tts, $g, abfahrt_ansage_modi());
         }
     }
-    return ($namen && $rest) ? array($rest, $namen) : array($tts, array());
+    $b = null;
+    if ($p !== null) { list($b) = ansage_vervollstaendigen($p, 'aus'); }
+    return array('block' => $b, 'roh' => $p !== null ? $tts : null, 'verworfen' => array(),
+                 'ungueltig' => $p !== null ? array() : array('tts' => $g), 'grund' => $p !== null ? '' : $g);
+}
+
+/** Die Saetze zur Lage (Frage 59), unmaskiert: aus dem Sprachmodul; mit einer aelteren Abschrift nur die Namen. */
+function abfahrt_tts_saetze(array $e, array $opt = array())
+{
+    if (function_exists('ansage_block_meldungen')) {
+        return ansage_block_meldungen($e, array('t' => function ($s) { return abfahrt_t($s); }), $opt);
+    }
+    $n = array_merge(isset($e['verworfen']) && is_array($e['verworfen']) ? $e['verworfen'] : array(),
+                     isset($e['ungueltig']) && is_array($e['ungueltig']) ? array_keys($e['ungueltig']) : array());
+    return $n ? array('tts: ' . implode(', ', $n)) : array();
 }
 
 /**
@@ -458,14 +472,17 @@ function abfahrt_config() {
     /* 1.6.43 (Frage 12, Entscheidung des Hausherrn 18.11.2026): ein unbekannter Unterschluessel im Block tts wird
      * verworfen und mit Namen genannt (abfahrt_config_lage(), abfahrt_config_heilen()); der Block bleibt samt
      * Sprechtoken. Bis 1.6.42 wies abfahrt_wert_pruefen() den ganzen Block ab, es galt der Werksblock, und beim
-     * Zurueckspielen waren die Sprechtoken leer. Frage 46: seit dem 18.11.2026 ueber tts_unbekannte_verwerfen(),
-     * wortgleich in sieben Linien (vorher ein eigener Weg in abfahrt_wert_pruefen()). */
+     * Zurueckspielen waren die Sprechtoken leer. Frage 46: seit dem 18.11.2026 im
+     * Sprachmodul 1.4.4 (abfahrt_tts_block_pruefen(), Frage 55; vorher ein eigener Weg in abfahrt_wert_pruefen()). */
     $verworfen = array();
-    if (isset($abfcfg['tts']) && is_array($abfcfg['tts'])) {
-        list($abfcfg['tts'], $verworfen) = tts_unbekannte_verwerfen($abfcfg['tts'], function ($t) {
+    $abf_tts_lage = array();     // Frage 59: die Lage des Blocks tts (Form von ansage_block_pruefen())
+    if (array_key_exists('tts', $abfcfg)) {
+        $abf_tts_lage = abfahrt_tts_block_pruefen($abfcfg['tts'], function ($t) {
             $g = '';
             return abfahrt_wert_pruefen('tts', $t, $g) === null ? $g : '';
         });
+        $verworfen = $abf_tts_lage['verworfen'];
+        if (is_array($abf_tts_lage['roh'])) { $abfcfg['tts'] = $abf_tts_lage['roh']; }
     }
     foreach ($vorgaben as $k => $v) {
         if (!array_key_exists($k, $abfcfg)) { continue; }
@@ -487,9 +504,12 @@ function abfahrt_config() {
     }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($abfcfg)));
     abfahrt_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen,
-                              'fehlend' => $fehlend, 'verworfen' => $verworfen));
+                              'fehlend' => $fehlend, 'verworfen' => $verworfen, 'tts_lage' => $abf_tts_lage));
     // Vorgaben fuer das, was fehlt oder abgewiesen wurde
     $abfcfg += $vorgaben;
+    /* Frage 76 (Entscheidung des Hausherrn 18.11.2026): ein ungueltiger Block tts gilt als aus (Regel des Sprachmoduls),
+     * nicht als Vorgabe - bis 1.6.43 galt dann der Werksblock, und die Ansage sprach ab Werk. */
+    if (isset($abgewiesen['tts'])) { $abfcfg['tts'] = ansage_block_oder_aus(null); }
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
     $abfcfg['befehle_mqtt_ein'] = empty($abfcfg['befehle_mqtt_ein']) ? 0 : 1;
     foreach (array('endpunkt_ein', 'haus_abfahrt_ein', 'anwesenheit_ein', 'abfuhr_satz_ein') as $abf_s) {     // Gruppe 18
@@ -6165,11 +6185,18 @@ function abfahrt_config_heilen() {
     $lage = abfahrt_config_lage();
     $abgew = array();
     foreach ($lage['abgewiesen'] as $k => $g) {
+        /* Fragen 59/76 (18.11.2026): ein ungueltiger Block tts gilt als aus; genannt wird jeder ungueltige Eintrag mit den
+         * Saetzen des Sprachmoduls (der Satz CFG_WERT_ABGEWIESEN sagt "es gilt die Vorgabe"). */
+        if ($k === 'tts' && !empty($lage['tts_lage']['ungueltig'])) {
+            foreach (abfahrt_tts_saetze(array('ungueltig' => $lage['tts_lage']['ungueltig'])) as $abf_bm) { $abgew[] = $abf_bm; }
+            continue;
+        }
         $abgew[] = sprintf(abfahrt_t('MELDUNG.CFG_WERT_ABGEWIESEN'), $k, abfahrt_grund_text($g));
     }
-    // 1.6.43 (Frage 12): ein verworfener unbekannter Unterschluessel wird genannt - nur der Name, nie der Wert
-    foreach ((isset($lage['verworfen']) ? $lage['verworfen'] : array()) as $n) {
-        $abgew[] = sprintf(abfahrt_t('MELDUNG.CFG_EINTRAG_VERWORFEN'), $n);
+    // 1.6.43 (Frage 12): ein verworfener unbekannter Unterschluessel wird genannt - nur der Name, nie der Wert.
+    // Frage 59 (18.11.2026): mit dem Satz des Sprachmoduls 1.4.4, ein Satz fuer alle Namen.
+    foreach (abfahrt_tts_saetze(array('verworfen' => isset($lage['verworfen']) ? $lage['verworfen'] : array())) as $abf_bm) {
+        $abgew[] = $abf_bm;
     }
     $merker = abfahrt_tmpdir() . '/cfg_abgewiesen.txt';
     $sig = $abgew ? md5(implode("\n", $abgew)) : '';
@@ -6754,7 +6781,7 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         break;
                     default:
                         /* Ein unbekannter Unterschluessel weist den Block ab. Die Lesefunktion abfahrt_config()
-                         * verwirft ihn vorher einzeln (tts_unbekannte_verwerfen(), Frage 46); beim Zurueckspielen
+                         * verwirft ihn vorher einzeln (abfahrt_tts_block_pruefen(), Fragen 46/55); beim Zurueckspielen
                          * verwirft und nennt ihn das Sicherungsmodul. Alle anderen Aufrufer wie bis 1.6.42. */
                         $grund = 'TTS_EINTRAG|' . $teil($uk); return null;
                 }

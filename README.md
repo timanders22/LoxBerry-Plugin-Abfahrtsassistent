@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.44 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,12 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.44
+
+- **Geändert – Takt ruht während des Updates schon in der Schale:** Der Minutentakt endet bei laufender Aktualisierung jetzt, bevor ein Programm startet. Bis 1.6.43 hielt erst das aufgerufene Skript an; Daten gingen dabei nicht verloren. Ist die Marke eine Stunde oder älter, liegt sie in der Zukunft oder enthält sie keine Unixzeit, gilt sie nicht, damit eine abgebrochene Aktualisierung den Takt nicht dauerhaft stilllegt. Alle Plugins dieser Reihe fragen die Marke mit demselben Block ab. Es wirkt schon beim Update auf diese Fassung, denn der Installer legt die Takte der neuen Fassung vor der Lücke an, und das `preupgrade.sh` der neuen Fassung legt die Marke an. Gemessen in einer Nachstellung des Update-Ablaufs auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Befehlsbrücke 1.0.3:** Während einer Aktualisierung legen Wächter und Start der Befehlsbrücke nichts mehr an. Bis 1.0.2 entstanden in der Lücke `befehle/`, die Optionsdateien und die Sperrdatei, bevor die Marke den Start abwies. Gemessen in einer Nachstellung auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Prüfung der Sprachausgabe über das gemeinsame Sprachmodul 1.4.4:** Die Einstellungen der Sprachausgabe in der Konfiguration prüft jetzt das gemeinsame Modul. Unbekannte Einträge werden wie bisher verworfen und genannt. Ist die Einstellung der Sprachausgabe ungültig, bleibt die Sprachausgabe jetzt aus; bis 1.6.43 galt dann die Vorgabe. Der Hinweis oben auf der Seite und das Protokoll nennen verworfene und jeden ungültigen Eintrag mit den gemeinsamen Sätzen des Moduls; der Satz, dass bis zur Berichtigung die Vorgabe gilt, entfällt für die Sprachausgabe. Ein Sprachtext, den nur die frühere eigene Prüfung brauchte, ist entfallen. Gemessen mit Handproben auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (gültiger Block, unbekannter Eintrag, ungültiger Wert, beides, ohne Block); am Gerät nicht gemessen.
 
 ## Neu in 1.6.43
 
