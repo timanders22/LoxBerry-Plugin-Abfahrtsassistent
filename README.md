@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.42 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.43 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,15 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.43
+
+- **Verhalten geändert – unbekannter Eintrag im Block der Sprachausgabe:** Steht in den gespeicherten Einstellungen im Block `tts` ein Eintrag, den diese Fassung nicht kennt (etwa aus einer Bearbeitung von Hand), wird nur dieser Eintrag verworfen und mit seinem Namen gemeldet, nie mit seinem Wert. Die übrigen Einstellungen der Sprachausgabe gelten weiter, und die hinterlegten Sprechtoken für Alexa-NG und Chromecast 4 Lox NG bleiben erhalten, auch beim Zurückspielen einer Sicherung. Bis 1.6.42 wurde in diesem Fall der ganze Block abgewiesen: Es galt die Werkseinstellung der Sprachausgabe, und nach dem Zurückspielen waren die Sprechtoken leer. Beim nächsten Speichern fällt der unbekannte Eintrag aus der Datei weg.
+- Ein ungültiger Wert eines bekannten Eintrags weist den Block weiterhin als Ganzes ab, wie bisher.
+- Die Prüfung auf unbekannte Einträge im Block `tts` steht seit dieser Fassung in einer Funktion, die in sieben Plugins des Hauses wortgleich ist; am Verhalten ändert sich dadurch nichts. Steht in einer Sicherungsdatei im Block `tts` ein bekannter Eintrag mit ungültigem Wert, wird die ganze Datei abgewiesen, die Einstellungen bleiben unverändert, und die Meldung nennt den Eintrag und den Grund – wie bisher. Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 an einer nachgestellten Konfiguration und Sicherung; am Gerät nicht gemessen.
+- Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 an einer nachgestellten Konfiguration; am Gerät nicht gemessen.
+- **Einstellungen sichern und zurückspielen mit dem gemeinsamen Sicherungsmodul 1.2.11 statt 1.2.9:** Neu in 1.2.10 ist, dass ein leerer Wert auch in einem Teil der Sicherung, der nur aus einem einzelnen Wert besteht (etwa einem Zugangsschlüssel in einer eigenen Datei), einen gesetzten Wert nicht mehr überschreibt; er bleibt stehen und wird in der Meldung genannt. Dieses Plugin führt keinen solchen Teil; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (3 Vorfassungen zurückgespielt). Am Gerät nicht gemessen.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
 
 ## Neu in 1.6.42
 

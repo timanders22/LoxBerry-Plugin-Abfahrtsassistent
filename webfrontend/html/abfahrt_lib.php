@@ -389,13 +389,37 @@ function abfahrt_config_roh($datei = null) {
 }
 
 /**
+ * Frage 46 (Entscheidung des Hausherrn 18.11.2026). Diese Funktion steht wortgleich in sieben Linien:
+ * Abfahrtsassistent, Alexa-NG, AudiConnect, BYD-Autos, Beschattungswaechter, Skoda-Connect-NG und VolkswagenID.
+ * Ein unbekannter Unterschluessel im Block tts wird verworfen und mit Namen genannt, nie mit Wert; die uebrigen
+ * Eintraege bleiben samt Sprechtoken. Unbekannt heisst: die Pruefung der Linie ($pruefen, ein Eintrag allein,
+ * Rueckgabe der Grund oder '') nennt ihn mit TTS_EINTRAG. Ein bekannter Eintrag mit ungueltigem Wert bleibt stehen;
+ * ihn weist die Pruefung des ganzen Blocks ab, wie bisher. Bliebe nichts Bekanntes uebrig, bleibt der Block, wie er
+ * ist. Rueckgabe: array(Block, Liste der Namen 'tts.<eintrag>').
+ */
+function tts_unbekannte_verwerfen($tts, $pruefen)
+{
+    if (!is_array($tts)) { return array($tts, array()); }
+    $rest = $tts;
+    $namen = array();
+    foreach ($tts as $s => $w) {
+        $g = (string) call_user_func($pruefen, array($s => $w));
+        if (strpos($g, 'TTS_EINTRAG|') === 0) {
+            unset($rest[$s]);
+            $namen[] = 'tts.' . substr($g, strlen('TTS_EINTRAG|'));
+        }
+    }
+    return ($namen && $rest) ? array($rest, $namen) : array($tts, array());
+}
+
+/**
  * Welche Werte hat abfahrt_config() beim letzten Lesen abgewiesen, und in
  * welchem Zustand war die Datei? Wird von der Selbstheilung und vom Reiter
  * Test gelesen, damit ein abgewiesener Wert nicht nur still auf die Vorgabe
  * faellt.
  */
 function abfahrt_config_lage($neu = null) {
-    static $lage = array('zustand' => 'fehlt', 'abgewiesen' => array(), 'fehlend' => array());
+    static $lage = array('zustand' => 'fehlt', 'abgewiesen' => array(), 'fehlend' => array(), 'verworfen' => array());
     if ($neu !== null) { $lage = $neu; }
     return $lage;
 }
@@ -431,6 +455,18 @@ function abfahrt_config() {
      * abfahrt_config_heilen(). Unbekannte Schluessel bleiben unberuehrt
      * stehen; sie koennen aus einer neueren Fassung stammen. */
     $abgewiesen = array();
+    /* 1.6.43 (Frage 12, Entscheidung des Hausherrn 18.11.2026): ein unbekannter Unterschluessel im Block tts wird
+     * verworfen und mit Namen genannt (abfahrt_config_lage(), abfahrt_config_heilen()); der Block bleibt samt
+     * Sprechtoken. Bis 1.6.42 wies abfahrt_wert_pruefen() den ganzen Block ab, es galt der Werksblock, und beim
+     * Zurueckspielen waren die Sprechtoken leer. Frage 46: seit dem 18.11.2026 ueber tts_unbekannte_verwerfen(),
+     * wortgleich in sieben Linien (vorher ein eigener Weg in abfahrt_wert_pruefen()). */
+    $verworfen = array();
+    if (isset($abfcfg['tts']) && is_array($abfcfg['tts'])) {
+        list($abfcfg['tts'], $verworfen) = tts_unbekannte_verwerfen($abfcfg['tts'], function ($t) {
+            $g = '';
+            return abfahrt_wert_pruefen('tts', $t, $g) === null ? $g : '';
+        });
+    }
     foreach ($vorgaben as $k => $v) {
         if (!array_key_exists($k, $abfcfg)) { continue; }
         $grund = '';
@@ -442,6 +478,7 @@ function abfahrt_config() {
             $abfcfg[$k] = $gut;
         }
     }
+    if (isset($abgewiesen['tts'])) { $verworfen = array(); }     // der ganze Block ist abgewiesen und genannt
     /* Gruppe 18 (1.6.31; Entwurf G18 3.2): Lese-Regel fuer endpunkt_ein - EINE Stelle. Eine eingerichtete Datei (Zustand
      * 'ok') ohne gueltigen Schluessel ist eine bestehende Anlage: der HTTP-Weg bleibt an (1). Keine Datei oder der Rohling
      * "{}" (Zustand 'leer'/'fehlt') = Neuinstallation: Vorgabe 0. Jedes Speichern schreibt den Wert in die Datei. */
@@ -450,7 +487,7 @@ function abfahrt_config() {
     }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($abfcfg)));
     abfahrt_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen,
-                              'fehlend' => $fehlend));
+                              'fehlend' => $fehlend, 'verworfen' => $verworfen));
     // Vorgaben fuer das, was fehlt oder abgewiesen wurde
     $abfcfg += $vorgaben;
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
@@ -6130,6 +6167,10 @@ function abfahrt_config_heilen() {
     foreach ($lage['abgewiesen'] as $k => $g) {
         $abgew[] = sprintf(abfahrt_t('MELDUNG.CFG_WERT_ABGEWIESEN'), $k, abfahrt_grund_text($g));
     }
+    // 1.6.43 (Frage 12): ein verworfener unbekannter Unterschluessel wird genannt - nur der Name, nie der Wert
+    foreach ((isset($lage['verworfen']) ? $lage['verworfen'] : array()) as $n) {
+        $abgew[] = sprintf(abfahrt_t('MELDUNG.CFG_EINTRAG_VERWORFEN'), $n);
+    }
     $merker = abfahrt_tmpdir() . '/cfg_abgewiesen.txt';
     $sig = $abgew ? md5(implode("\n", $abgew)) : '';
     $alt = is_file($merker) ? trim((string) @file_get_contents($merker)) : '';
@@ -6300,9 +6341,9 @@ function abfahrt_sicherung_beschreibung()
         },
         'vorbereiten' => 'abfahrt_sicherung_vorbereiten',
         // 1.6.42 (Modul 1.2.9, Bauform vom 15.11.2026): das Modul sieht die geltende Konfiguration ungefiltert -
-        // abfahrt_config() weist einen Block tts mit unbekanntem Unterschluessel ganz ab (abfahrt_wert_pruefen());
-        // was die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen nennt, statt
-        // es still wegfallen zu lassen. Oben laesst abfahrt_config() Unbekanntes ohnehin stehen.
+        // abfahrt_config() verwirft seit 1.6.43 einen unbekannten Unterschluessel im Block tts (bis 1.6.42 den
+        // ganzen Block); was die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen
+        // nennt, statt es still wegfallen zu lassen. Oben laesst abfahrt_config() Unbekanntes ohnehin stehen.
         'jetzt' => function () {
             $j = abfahrt_config();
             list($w) = abfahrt_config_roh();
@@ -6712,6 +6753,9 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
                         }
                         break;
                     default:
+                        /* Ein unbekannter Unterschluessel weist den Block ab. Die Lesefunktion abfahrt_config()
+                         * verwirft ihn vorher einzeln (tts_unbekannte_verwerfen(), Frage 46); beim Zurueckspielen
+                         * verwirft und nennt ihn das Sicherungsmodul. Alle anderen Aufrufer wie bis 1.6.42. */
                         $grund = 'TTS_EINTRAG|' . $teil($uk); return null;
                 }
             }
