@@ -149,6 +149,7 @@ function abf_eingabe_felder($formular) {
                      'tts_ziel_ein', 'tts_ziel_loeschen',                                    // Ziele (Modul 1.2.0)
                      'ansage_tafel_ein', 'ansage_tafel_namen',                               // 1.6.38: die Tafel reist mit (Stamm 1.4.1)
                      'anwesenheit_ein', 'abfuhr_satz_ein',                        // Gruppe 18: Haus-Themen (Abnehmer)
+                     'reichweite_ein', 'reichweite_fahrzeuge', 'reichweite_reserve', 'reichweite_ansage_ein',     // 1.6.45
                      'notify_audio', 'notify_push', 'quiet_push', 'quiet_on', 'quiet_from', 'quiet_to');
     }
     return array();
@@ -646,6 +647,43 @@ function abf_feld(array &$ziel, array $alt, $schluessel, $wert, array &$hinweise
     return true;
 }
 
+/* 1.6.45: Was nach dem Speichern des MQTT-Formulars und nach dem Zurueckspielen einer Sicherung gleich geschieht -
+ * bis 1.6.44 stand der Block an beiden Stellen woertlich (Hinweis eines fremden Pruefers 21.11.2026, gemessen).
+ *  - Wie beim MQTT-Formular (M1) unter dem BISHERIGEN Praefix raeumen, wenn das Praefix wechselt oder MQTT abschaltet.
+ *  - M5: die Abo-Datei des Gateways auf das (neue) Praefix nachfuehren.
+ *  - Gruppe 2 / MQTT (1.6.30; Entwurf aa 3, Bauart FerienFeiertage 1.2.27): die Befehlsbruecke sofort schalten -
+ *    starten, wenn Haken und MQTT an sind, sonst anhalten. Der Waechter im Minutenlauf startet nach einem Start
+ *    hoechstens alle 600 s neu; ohne den Direktstart liefe die Bruecke nach dem Einschalten bis zu 10 Minuten nicht.
+ *    Eine laufende Bruecke liest Haken und Praefix spaetestens alle 30 s selbst.
+ *  - Gruppe 18 (2.5): die Haus-Themen nachziehen.
+ * $zusatz haengt an der Protokollzeile (' (Sicherung)' beim Zurueckspielen). */
+function abf_mqtt_nachziehen(array $vorher, array $nach, array &$hw, $zusatz)
+{
+    $wechsel = ((string) $nach['mqtt_topic'] !== (string) $vorher['mqtt_topic']);
+    $aus = (!empty($vorher['mqtt_ein']) && empty($nach['mqtt_ein']));
+    if ($wechsel || $aus) {
+        $x = abfahrt_mqtt_praefix_raeumen((string) $vorher['mqtt_topic'], $aus ? 'aus' : 'wechsel');
+        if ($x !== '') { $hw[] = $x; }
+    }
+    abfahrt_abo_datei($nach['mqtt_topic'], true);
+    if ((int) $nach['befehle_mqtt_ein'] !== (int) $vorher['befehle_mqtt_ein']) {
+        abfahrt_log('Befehle ueber MQTT ' . ($nach['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . $zusatz . '.');
+    }
+    list($brc, $bart, $baus) = abfahrt_bruecke_schalten($nach);
+    if ($bart === 'start' && $brc === 0) {
+        $hw[] = abfahrt_t('BEFEHL.M_EIN');
+    } elseif ($bart === 'start') {
+        $hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $baus);
+    } elseif ($bart === 'stop' && $brc === 0) {
+        $hw[] = abfahrt_t('BEFEHL.M_AUS');
+    } elseif ($bart === 'stop') {
+        $hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $baus);
+    } elseif (!empty($nach['befehle_mqtt_ein']) && empty($nach['mqtt_ein'])) {
+        $hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
+    }
+    abf_haus_nachziehen($vorher, $nach, $hw);
+}
+
 /* Gruppe 18 (1.6.31; Entwurf G18 2.5, F-E16): den Anbieter haus/abfahrt nachziehen, wenn sich Haken oder MQTT
  * aendern. Eingeschaltet: Merker weg, der naechste Lauf sendet vollstaendig. Ausgeschaltet (oder ein frueherer
  * Abraeumversuch blieb offen, Merker _haus_frueher): haus/abfahrt/in_min abraeumen und ruecklesen; bleibt es offen, steht
@@ -737,32 +775,10 @@ if ($abf_post && isset($_POST['save_mqtt'])) {
             if (is_file($abf_tmp . '/' . $abf_f)) { @unlink($abf_tmp . '/' . $abf_f); }
         }
     }
-    if ($abf_wechsel || $abf_aus) {
-        $abf_r = abfahrt_mqtt_praefix_raeumen((string) $abf_alt['mqtt_topic'], $abf_aus ? 'aus' : 'wechsel');
-        if ($abf_r !== '') { $abf_hw[] = $abf_r; }
-    }
-    // M5: die Abo-Datei des Gateways auf das (neue) Praefix nachfuehren.
-    abfahrt_abo_datei($abf_neu['mqtt_topic'], true);
-    /* Gruppe 2 / MQTT (1.6.30; Entwurf aa 3, Bauart FerienFeiertage 1.2.27): die Befehlsbruecke sofort schalten -
-     * starten, wenn Haken und MQTT an sind, sonst anhalten. Der Waechter im Minutenlauf startet nach einem Start
-     * hoechstens alle 600 s neu; ohne den Direktstart liefe die Bruecke nach dem Einschalten bis zu 10 Minuten nicht.
-     * Eine laufende Bruecke liest Haken und Praefix spaetestens alle 30 s selbst. */
-    if ((int) $abf_neu['befehle_mqtt_ein'] !== (int) $abf_alt['befehle_mqtt_ein']) {
-        abfahrt_log('Befehle ueber MQTT ' . ($abf_neu['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
-    }
-    list($abf_brc, $abf_bart, $abf_baus) = abfahrt_bruecke_schalten($abf_neu);
-    if ($abf_bart === 'start' && $abf_brc === 0) {
-        $abf_hw[] = abfahrt_t('BEFEHL.M_EIN');
-    } elseif ($abf_bart === 'start') {
-        $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $abf_baus);
-    } elseif ($abf_bart === 'stop' && $abf_brc === 0) {
-        $abf_hw[] = abfahrt_t('BEFEHL.M_AUS');
-    } elseif ($abf_bart === 'stop') {
-        $abf_hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $abf_baus);
-    } elseif (!empty($abf_neu['befehle_mqtt_ein']) && empty($abf_neu['mqtt_ein'])) {
-        $abf_hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
-    }
-    abf_haus_nachziehen($abf_alt, $abf_neu, $abf_hw);     // Gruppe 18 (2.5)
+    /* 1.6.45: Raeumen, Abo-Datei, Befehlsbruecke und Haus-Themen in abf_mqtt_nachziehen() - eine Stelle fuer das
+     * MQTT-Formular und das Zurueckspielen (bis 1.6.44 stand derselbe Block zweimal). $abf_wechsel/$abf_aus oben
+     * gelten weiter fuer die Merker des Vollversands. */
+    abf_mqtt_nachziehen($abf_alt, $abf_neu, $abf_hw, '');
     abf_umleiten($data_dir, 'tab-mqtt', array('gespeichert' => 1, 'hinweise' => $abf_hw));
 }
 
@@ -837,7 +853,8 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
         return (isset($_POST[$k]) && is_string($_POST[$k])) ? trim($_POST[$k]) : '';
     };
     foreach (array('provider', 'home_address', 'buffer_min', 'arrival_min',
-                   'lookahead_hours', 'ignore_locations', 'ansage_vorlage', 'ganztags_zeit') as $abf_k) {
+                   'lookahead_hours', 'ignore_locations', 'ansage_vorlage', 'ganztags_zeit',
+                   'reichweite_fahrzeuge', 'reichweite_reserve') as $abf_k) {     // + 1.6.45 Reichweitenwarnung
         abf_feld($abfneu, $abf_alt, $abf_k, $abf_post_text($abf_k), $abf_hw);
     }
     /* U1: Der Schluessel des Kartendienstes steht nicht mehr in der Seite.
@@ -856,7 +873,8 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     } elseif ($abf_key !== '') {
         abf_feld($abfneu, $abf_alt, 'api_key', $abf_key, $abf_hw);
     }
-    foreach (array('route_departat', 'quiet_push', 'ganztags_ein', 'anwesenheit_ein', 'abfuhr_satz_ein') as $abf_k) {     // + Gruppe 18
+    foreach (array('route_departat', 'quiet_push', 'ganztags_ein', 'anwesenheit_ein', 'abfuhr_satz_ein',
+                   'reichweite_ein', 'reichweite_ansage_ein') as $abf_k) {     // + Gruppe 18, + 1.6.45
         $abfneu[$abf_k] = isset($_POST[$abf_k]) ? 1 : 0;
     }
     $abfneu['notify'] = array(
@@ -954,7 +972,8 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     $abf_erg = array('gespeichert' => 1, 'hinweise' => $abf_hw);
     /* Gruppe 18 (Entwurf G18 2.3): ein abgeschalteter Abnehmer-Haken loescht nur haus_quellen.json - nie ein Thema. */
     if ((!empty($abf_alt['anwesenheit_ein']) && empty($abfneu['anwesenheit_ein']))
-        || (!empty($abf_alt['abfuhr_satz_ein']) && empty($abfneu['abfuhr_satz_ein']))) {
+        || (!empty($abf_alt['abfuhr_satz_ein']) && empty($abfneu['abfuhr_satz_ein']))
+        || (!empty($abf_alt['reichweite_ein']) && empty($abfneu['reichweite_ein']))) {     // 1.6.45
         if (is_file(abfahrt_haus_quellen_datei())) { @unlink(abfahrt_haus_quellen_datei()); }
     }
 
@@ -1065,29 +1084,7 @@ function abf_sicherung_nachziehen($neu, $vorher, $r)
     abfahrt_log('Konfiguration: nach dem Zurueckspielen ' . $weg . ' Zwischenstaende verworfen.');
     $hw[] = sprintf(abfahrt_t('MELDUNG.DIENST_NACHGEZOGEN'), $weg);
     $nach = abfahrt_config();
-    $wechsel = ((string) $nach['mqtt_topic'] !== (string) $vorher['mqtt_topic']);
-    $aus = (!empty($vorher['mqtt_ein']) && empty($nach['mqtt_ein']));
-    if ($wechsel || $aus) {
-        $x = abfahrt_mqtt_praefix_raeumen((string) $vorher['mqtt_topic'], $aus ? 'aus' : 'wechsel');
-        if ($x !== '') { $hw[] = $x; }
-    }
-    abfahrt_abo_datei($nach['mqtt_topic'], true);
-    if ((int) $nach['befehle_mqtt_ein'] !== (int) $vorher['befehle_mqtt_ein']) {
-        abfahrt_log('Befehle ueber MQTT ' . ($nach['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . ' (Sicherung).');
-    }
-    list($brc, $bart, $baus) = abfahrt_bruecke_schalten($nach);
-    if ($bart === 'start' && $brc === 0) {
-        $hw[] = abfahrt_t('BEFEHL.M_EIN');
-    } elseif ($bart === 'start') {
-        $hw[] = sprintf(abfahrt_t('BEFEHL.M_START_FEHL'), $baus);
-    } elseif ($bart === 'stop' && $brc === 0) {
-        $hw[] = abfahrt_t('BEFEHL.M_AUS');
-    } elseif ($bart === 'stop') {
-        $hw[] = sprintf(abfahrt_t('BEFEHL.M_STOP_FEHL'), $baus);
-    } elseif (!empty($nach['befehle_mqtt_ein']) && empty($nach['mqtt_ein'])) {
-        $hw[] = abfahrt_t('BEFEHL.P_MQTT_AUS');
-    }
-    abf_haus_nachziehen($vorher, $nach, $hw);     // Gruppe 18 (2.5)
+    abf_mqtt_nachziehen($vorher, $nach, $hw, ' (Sicherung)');     // 1.6.45: dieselbe Stelle wie das MQTT-Formular
     return $hw;
 }
 
@@ -1343,6 +1340,17 @@ $abf_k_ok = abfahrt_ok_wirksam($abf_k_st);
         ? e(sprintf(abfahrt_t('SEITE.KOPF_MIN'), (int) $abf_k_st['abfahrt_in'])) : '&ndash;' ?></td></tr>
 <tr><td><?= e(abfahrt_t('SEITE.KOPF_KALENDER')) ?></td>
     <td><?= (int) $abf_kal_echt ?></td></tr>
+<?php if (!empty($abfcfg['reichweite_ein'])) {     /* 1.6.45 Reichweitenwarnung: aus stand.json und haus_quellen.json, keine Anfrage */
+    $abf_rw = abfahrt_reichweite_lage($abfcfg, $abf_k_st); ?>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_STRECKE')) ?></td>
+    <td><?= $abf_rw['strecke_km'] >= 0 ? e(sprintf(abfahrt_t('SEITE.KOPF_STRECKE_WERT'), $abf_rw['strecke_km'], $abf_rw['bedarf_km'], $abf_rw['reserve'])) : '&ndash;' ?></td></tr>
+<tr><td><?= e(abfahrt_t('SEITE.KOPF_LADEWARNUNG')) ?></td>
+    <td><?= $abf_rw['ladewarnung'] === 1 ? '<span class="sm-aus">' . e(abfahrt_t('SEITE.KOPF_LW_JA')) . '</span>'
+        : ($abf_rw['ladewarnung'] === 0 ? '<span class="sm-an">' . e(abfahrt_t('SEITE.KOPF_LW_NEIN')) . '</span>' : e(abfahrt_t('SEITE.KOPF_LW_OHNE'))) ?></td></tr>
+<?php foreach ($abf_rw['fahrzeuge'] as $abf_rn => $abf_re) { ?>
+<tr><td><?= e(sprintf(abfahrt_t('SEITE.KOPF_FAHRZEUG'), $abf_rn)) ?></td>
+    <td><?= e(abfahrt_reichweite_fahrzeug_text($abf_re)) ?></td></tr>
+<?php } } ?>
 </table>
 
 <?php /* Welcher Reiter offen ist, entscheidet der SERVER: sm-active steht schon
@@ -1524,6 +1532,27 @@ echo abfahrt_ansage_tafel_html($abfcfg, function ($n) { return abf_m($n); }, fun
     <input data-role="none" type="checkbox" name="abfuhr_satz_ein" value="1"<?= abf_h('abfuhr_satz_ein', !empty($abfcfg['abfuhr_satz_ein'])) ? ' checked' : '' ?><?= abf_m('abfuhr_satz_ein') ?>> <?= e(abfahrt_t('HAUS.L_ABFUHR')) ?>
 </label>
 <div class="sm-small"><?= abfahrt_t('HAUS.HINWEIS_ABNEHMER') ?></div>
+<?php /* 1.6.45 (Entscheidung des Hausherrn 21.11.2026): Reichweitenwarnung, ab Werk aus - Abnehmer von haus/fahrzeug. */ ?>
+<h3 class="sm-h3"><?= e(abfahrt_t('HAUS.H_REICHWEITE')) ?></h3>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="reichweite_ein" value="1"<?= abf_h('reichweite_ein', !empty($abfcfg['reichweite_ein'])) ? ' checked' : '' ?><?= abf_m('reichweite_ein') ?>> <?= e(abfahrt_t('HAUS.L_REICHWEITE')) ?>
+</label>
+<div class="sm-row">
+    <div>
+        <label><?= e(abfahrt_t('HAUS.L_REICHWEITE_FAHRZEUGE')) ?></label>
+        <input data-role="none" type="text" name="reichweite_fahrzeuge" value="<?= e(abf_w('reichweite_fahrzeuge', $abfcfg['reichweite_fahrzeuge'])) ?>"<?= abf_m('reichweite_fahrzeuge') ?>>
+        <div class="sm-small"><?= abfahrt_t('HAUS.REICHWEITE_FAHRZEUGE_HINWEIS') ?></div>
+    </div>
+    <div>
+        <label><?= e(abfahrt_t('HAUS.L_REICHWEITE_RESERVE')) ?></label>
+        <input data-role="none" type="number" name="reichweite_reserve" value="<?= e(abf_w('reichweite_reserve', $abfcfg['reichweite_reserve'])) ?>"<?= abf_m('reichweite_reserve') ?> min="0" max="100">
+        <div class="sm-small"><?= abfahrt_t('HAUS.REICHWEITE_RESERVE_HINWEIS') ?></div>
+    </div>
+</div>
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="reichweite_ansage_ein" value="1"<?= abf_h('reichweite_ansage_ein', !empty($abfcfg['reichweite_ansage_ein'])) ? ' checked' : '' ?><?= abf_m('reichweite_ansage_ein') ?>> <?= e(abfahrt_t('HAUS.L_REICHWEITE_ANSAGE')) ?>
+</label>
+<div class="sm-small"><?= abfahrt_t('HAUS.REICHWEITE_HINWEIS') ?></div>
 
 <h2><?= e(abfahrt_t('SEITE.H_BENACHRICHTIGUNGEN')) ?></h2>
 <div style="margin-bottom:10px;">
@@ -1735,6 +1764,17 @@ $abf_bliste = abfahrt_befehle_liste(); ?>
 <?php } ?>
 </table></div>
 <div class="sm-small"><?= abfahrt_t('LOX.S3_DIGITAL') ?></div>
+<?php /* 1.6.45: die drei Werte der Reichweitenwarnung - eigene Tabelle (abfahrt_mqtt_namen_reichweite()), damit die
+   Nummern der Baustein-Liste und die Hakenliste gleich bleiben. */ ?>
+<h4 class="sm-h4"><?= e(abfahrt_t('LOX.H_REICHWEITE')) ?></h4>
+<div class="sm-small"><?= sprintf(abfahrt_t('LOX.REICHWEITE_TEXT'), e($abf_praefix)) ?></div>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= e(abfahrt_t('LOX.T_HTHEMA')) ?></th><th><?= e(abfahrt_t('LOX.T_KOPIEREN')) ?></th><th><?= e(abfahrt_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= e(abfahrt_t('LOX.T_BEREICH')) ?></th><th><?= e(abfahrt_t('SEITE.T_BEFEHLSERKENNUNG')) ?></th></tr>
+<?php foreach (abfahrt_mqtt_namen_reichweite($abf_praefix) as $abf_rz) { ?>
+<tr><td><span class="sm-mono"><?= e($abf_praefix . '/' . $abf_rz[0]) ?></span></td><td><span class="sm-mono"><?= e($abf_rz[1]) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= e($abf_rz[1]) ?>"><?= e(abfahrt_t('LOX.KOPIEREN')) ?></button></td><td><?= e($abf_rz[2]) ?></td><td><?= e($abf_rz[4] . ' … ' . $abf_rz[5] . ($abf_rz[6] !== '' ? ' ' . $abf_rz[6] : '')) ?></td><td><span class="sm-mono"><?= e(abfahrt_suchtext($abf_rz[0])) ?></span></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-small"><?= empty($abfcfg['reichweite_ein']) ? abfahrt_t('LOX.REICHWEITE_AUS') : abfahrt_t('LOX.REICHWEITE_EIN') ?></div>
 <div class="sm-small"><?= abfahrt_t('LOX.S3_RECHTE') ?></div>
 <div class="sm-small"><?= abfahrt_t('LOX.S3_MUSTER') ?></div>
 <div class="sm-alert sm-info"><?= abfahrt_t('SEITE.FEHLER_CODES') ?></div>
@@ -1889,7 +1929,7 @@ foreach ($abf_namen as $abf_nz) {
 <tr><td><?= e(abfahrt_t('SEITE.T_ABFRAGEZYKLUS')) ?></td><td><?= e(abfahrt_t('SEITE.ABFRAGEZYKLUS_WERT')) ?></td></tr>
 </table>
 <?= e(abfahrt_t('SEITE.HTTP1_ANTWORT')) ?><br>
-<span class="sm-mono">TERMIN;OK=1;MINSTART=55;FAHRT=43.7;ABFAHRT_IN=-4;FEHLER=0;ALTER=23;AUDIO=1;PUSH=1;ANKUNFT=754</span>
+<span class="sm-mono">TERMIN;OK=1;MINSTART=55;FAHRT=43.7;ABFAHRT_IN=-4;FEHLER=0;ALTER=23;AUDIO=1;PUSH=1;ANKUNFT=754;STRECKE_KM=38;BEDARF_KM=92;LADEWARNUNG=0</span>
 </div>
 
 <div class="sm-step"><b><?= e(abfahrt_t('SEITE.H_HTTP2')) ?></b><br><br>

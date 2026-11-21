@@ -345,6 +345,15 @@ function abfahrt_vorgaben()
     'haus_abfahrt_ein' => 0,
     'anwesenheit_ein' => 0,
     'abfuhr_satz_ein' => 0,
+    /* 1.6.45 (Entscheidung des Hausherrn 21.11.2026, "Reichweitenwarnung ... soll auch fuer andere Nutzer mit anderen
+     * Autos verwendbar sein"): AB WERK AUS. Abnehmer von haus/fahrzeug/<name>/reichweite_km, .../zuhause und
+     * .../zaehler (Regeln/07 Nr. 15) fuer die hier genannten Fahrzeuge - hoechstens 4, kommagetrennt, je
+     * ^[a-z0-9_-]{1,40}$ wie das Fahrzeug-Plugin sie meldet. Bedarf = ceil(2 x Strecke x (1 + Reserve/100)), Reserve in
+     * ganzen Prozent 0...100. reichweite_ansage_ein haengt bei Ladewarnung 1 einen Satz an die Ansage. */
+    'reichweite_ein' => 0,
+    'reichweite_fahrzeuge' => '',
+    'reichweite_reserve' => 20,
+    'reichweite_ansage_ein' => 0,
 ];
 }
 
@@ -512,9 +521,14 @@ function abfahrt_config() {
     if (isset($abgewiesen['tts'])) { $abfcfg['tts'] = ansage_block_oder_aus(null); }
     $abfcfg['mqtt_ein'] = empty($abfcfg['mqtt_ein']) ? 0 : 1;
     $abfcfg['befehle_mqtt_ein'] = empty($abfcfg['befehle_mqtt_ein']) ? 0 : 1;
-    foreach (array('endpunkt_ein', 'haus_abfahrt_ein', 'anwesenheit_ein', 'abfuhr_satz_ein') as $abf_s) {     // Gruppe 18
+    foreach (array('endpunkt_ein', 'haus_abfahrt_ein', 'anwesenheit_ein', 'abfuhr_satz_ein',
+                   'reichweite_ein', 'reichweite_ansage_ein') as $abf_s) {     // Gruppe 18, 1.6.45 Reichweitenwarnung
         $abfcfg[$abf_s] = empty($abfcfg[$abf_s]) ? 0 : 1;
     }
+    /* 1.6.45: Reserve und Fahrzeugliste sind oben gegen abfahrt_wert_pruefen() geprueft (abgewiesen = Vorgabe und
+     * gemeldet); hier nur die Form, in der sie weitergereicht werden. */
+    $abfcfg['reichweite_reserve'] = (int) $abfcfg['reichweite_reserve'];
+    $abfcfg['reichweite_fahrzeuge'] = (string) $abfcfg['reichweite_fahrzeuge'];
     $abfcfg['mqtt_topic'] = abfahrt_mqtt_praefix_norm($abfcfg['mqtt_topic']);
     if ($abfcfg['mqtt_topic'] === '') { $abfcfg['mqtt_topic'] = 'abfahrt'; }
     /* Vor jedem "+=" pruefen, ob wirklich ein Feld dasteht. Eine von Hand
@@ -2712,11 +2726,75 @@ function abfahrt_departat_param($provider, $ts) {
 }
 
 /**
+ * 1.6.45 (Reichweitenwarnung): die Laenge der Strecke in Metern aus DERSELBEN Antwort wie die Fahrzeit - keine
+ * zusaetzliche Abfrage. Google routes[0].legs[0].distance.value, TomTom routes[0].summary.lengthInMeters, HERE die
+ * Summe von routes[0].sections[*].summary.length (die Abfrage verlangt return=summary). Fehlt ein Teil oder ist er
+ * keine Zahl >= 0, ist die Laenge unbekannt: -1, nie geschaetzt. Rein (keine Datei, kein Netz).
+ */
+function abfahrt_route_meter($provider, $r)
+{
+    if (!is_array($r)) { return -1; }
+    $m = function ($v) {
+        if (is_int($v) && $v >= 0) { return $v; }
+        if (is_float($v) && $v >= 0 && $v < 1e9) { return (int) round($v); }
+        return -1;
+    };
+    if ($provider === 'google') {
+        return isset($r['routes'][0]['legs'][0]['distance']['value']) ? $m($r['routes'][0]['legs'][0]['distance']['value']) : -1;
+    }
+    if ($provider === 'tomtom') {
+        return isset($r['routes'][0]['summary']['lengthInMeters']) ? $m($r['routes'][0]['summary']['lengthInMeters']) : -1;
+    }
+    if ($provider === 'here') {
+        if (!isset($r['routes'][0]['sections']) || !is_array($r['routes'][0]['sections']) || !$r['routes'][0]['sections']) {
+            return -1;
+        }
+        $summe = 0;
+        foreach ($r['routes'][0]['sections'] as $s) {
+            $t = (is_array($s) && isset($s['summary']['length'])) ? $m($s['summary']['length']) : -1;
+            if ($t < 0) { return -1; }
+            $summe += $t;
+        }
+        return $summe;
+    }
+    return -1;
+}
+
+/** 1.6.45: Begleitdatei zum Routen-Zwischenspeicher - gleicher Schluessel, Endung _m, Inhalt ganze Meter. Sie entsteht
+ *  in demselben Lauf wie die Minuten und gilt so lange wie diese (Haltbarkeit und Gnadenfrist ABFAHRT_ROUTE_GNADE). */
+function abfahrt_route_meter_datei($cache)
+{
+    return $cache . '_m';
+}
+
+/** Die Laenge zum Zwischenspeicher ablegen; ohne Laenge (-1) wird eine alte Begleitdatei entfernt. */
+function abfahrt_route_meter_merken($cache, $meter)
+{
+    $f = abfahrt_route_meter_datei($cache);
+    if ((int) $meter < 0) {
+        if (is_file($f)) { @unlink($f); }
+        return false;
+    }
+    return abfahrt_cache_schreiben($f, (string) (int) $meter);
+}
+
+/** Die Laenge zum Zwischenspeicher lesen: ganze Meter, -1 ohne (gueltige) Begleitdatei; eine unbrauchbare wird entfernt. */
+function abfahrt_route_meter_lesen($cache)
+{
+    $m = abfahrt_cache_lesen(abfahrt_route_meter_datei($cache), '/^\d{1,9}$/');
+    return $m === false ? -1 : (int) $m;
+}
+
+/**
  * @param int|null $abfahrtTs Fuer WELCHEN Abfahrtszeitpunkt gerechnet werden
  *        soll. null = jetzt (bisheriges Verhalten).
+ * @param int $meter 1.6.45: die Laenge der Strecke in Metern aus derselben Antwort (bzw. aus der Begleitdatei des
+ *        Zwischenspeichers), -1 = unbekannt.
  */
-function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minutenBisTermin = null, &$veraltet = false, $abfahrtTs = null, &$err_id = '') {
+function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minutenBisTermin = null, &$veraltet = false, $abfahrtTs = null, &$err_id = '', &$meter = -1) {
     $veraltet = false;
+    $meter = -1;
+    $r = null;
     $err_id = '';     // b1: der Grund als Kennung (GRUND.*), $err ist derselbe als Satz
     $grund_id = '';
     $abf_hs = 0;
@@ -2739,6 +2817,7 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
     if ($alter !== null && $alter < abfahrt_route_ttl($minutenBisTermin)) {
         $alt = abfahrt_cache_lesen($cache, '/^\d+(\.\d+)?$/');
         if ($alt !== false) {
+            $meter = abfahrt_route_meter_lesen($cache);     // 1.6.45
             return (float) $alt;
         }
         $alter = null;   // Datei war unbrauchbar und ist jetzt weg
@@ -2812,7 +2891,9 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
         }
     }
     if ($minutes !== false) {
+        $meter = abfahrt_route_meter($provider, $r);     // 1.6.45: dieselbe Antwort, keine weitere Abfrage
         abfahrt_cache_schreiben($cache, $minutes);
+        abfahrt_route_meter_merken($cache, $meter);
         return $minutes;
     }
 
@@ -2826,6 +2907,7 @@ function abfahrt_route_minutes($destAddress, array $abfcfg, &$err = '', $minuten
         $alt = abfahrt_cache_lesen($cache, '/^\d+(\.\d+)?$/');
         if ($alt !== false) {
             $veraltet = true;
+            $meter = abfahrt_route_meter_lesen($cache);     // 1.6.45: die Laenge mit derselben Gnadenfrist
             abfahrt_log(sprintf(abfahrt_t('DIAG.ROUTE_GNADE'), $err, (int) round($alter / 60)));     // b1
             $err = '';
             $err_id = '';
@@ -2860,7 +2942,7 @@ function abfahrt_tts_sauber($text, $max = 300) {
  * Steht hier und nicht in termin_say.php, weil er zweisprachig sein muss: bis
  * 1.5.7 war er fest deutsch, auch bei englisch eingestellter Oberflaeche.
  */
-function abfahrt_ansagetext(array $info, array $abfcfg = array()) {
+function abfahrt_ansagetext(array $info, array $abfcfg = array(), $reichweite = null) {
     $titel = abfahrt_tts_sauber($info['titel'] ?? '', 120);
     /* Eigene Vorlage, falls hinterlegt. Sie gilt auch ohne Titel - wer sie
      * schreibt, weiss selbst, was drinstehen soll. Die Platzhalter werden
@@ -2871,27 +2953,35 @@ function abfahrt_ansagetext(array $info, array $abfcfg = array()) {
      * nur gueltige Kennungen, nicht quittiert, Quelle frisch, bereinigt, hoechstens 200 Byte). Eigene Vorlage: Platzhalter
      * {abfuhr} (leer ohne Satz); ohne {abfuhr} wird er angehaengt. */
     list($abfuhr) = abfahrt_abfuhr_satz($abfcfg);
+    /* 1.6.45 (Reichweitenwarnung): mit reichweite_ansage_ein und Ladewarnung 1 der Satz ANSAGETEXT.REICHWEITE
+     * (abfahrt_reichweite_satz()); eigene Vorlage: Platzhalter {reichweite} (leer ohne Warnung), ohne {reichweite}
+     * angehaengt - wie {abfuhr}. $reichweite: der Satz von aussen (Pruefstand), null = aus dem Stand. */
+    $reichweite = ($reichweite === null) ? abfahrt_reichweite_satz($abfcfg) : (string) $reichweite;
     if ($vorlage !== '') {
         $mit = (strpos($vorlage, '{abfuhr}') !== false);
+        $mitr = (strpos($vorlage, '{reichweite}') !== false);
         $text = abfahrt_tts_sauber(str_replace(
-            array('{titel}', '{ort}', '{fahrt}', '{abfahrt_in}', '{beginn}', '{abfuhr}'),
+            array('{titel}', '{ort}', '{fahrt}', '{abfahrt_in}', '{beginn}', '{abfuhr}', '{reichweite}'),
             array($titel,
                   abfahrt_tts_sauber($info['ort'] ?? '', 120),
                   (string) (int) ceil((float) ($info['fahrt'] ?? 0)),
                   (string) (int) ($info['abfahrt_in'] ?? 0),
                   abfahrt_tts_sauber($info['beginn'] ?? '', 40),
-                  $abfuhr),
-            $vorlage), $mit ? 600 : 400);
-        return ($mit || $abfuhr === '') ? $text : trim($text . ' ' . $abfuhr);
+                  $abfuhr, $reichweite),
+            $vorlage), ($mit || $mitr) ? 800 : 400);
+        $text = ($mit || $abfuhr === '') ? $text : trim($text . ' ' . $abfuhr);
+        return ($mitr || $reichweite === '') ? $text : trim($text . ' ' . $reichweite);
     }
     if ($titel === '') {
-        return trim(abfahrt_t('ANSAGETEXT.OHNE_TITEL') . ' ' . $abfuhr);
+        $text = trim(abfahrt_t('ANSAGETEXT.OHNE_TITEL') . ' ' . $abfuhr);
+    } else {
+        $text = sprintf(abfahrt_t('ANSAGETEXT.MIT_TITEL'), $titel);
+        if (!empty($info['fahrt'])) {
+            $text .= ' ' . sprintf(abfahrt_t('ANSAGETEXT.FAHRZEIT'), (int) ceil((float) $info['fahrt']));
+        }
+        if ($abfuhr !== '') { $text .= ' ' . $abfuhr; }
     }
-    $text = sprintf(abfahrt_t('ANSAGETEXT.MIT_TITEL'), $titel);
-    if (!empty($info['fahrt'])) {
-        $text .= ' ' . sprintf(abfahrt_t('ANSAGETEXT.FAHRZEIT'), (int) ceil((float) $info['fahrt']));
-    }
-    return $abfuhr === '' ? $text : $text . ' ' . $abfuhr;
+    return $reichweite === '' ? $text : $text . ' ' . $reichweite;
 }
 
 /* ---------------- Ausgabe der Ansage (Nr. 36 b, Stufe 2) ----------------
@@ -2974,7 +3064,18 @@ function abfahrt_felder() {
         // Felder - und damit jede eingetragene Befehlserkennung - gleich
         // bleibt. 1440 heisst "unbekannt"; gueltige Werte sind 0..1439.
         'ANKUNFT'    => [1, 0, 1440, 'FELD.ANKUNFT', 0, 1, '', 1440],
+        // 1.6.45 (Reichweitenwarnung, ab Werk aus): wieder am ENDE. -1 = ohne Aussage. Ueber MQTT nur mit
+        // eingeschalteter Reichweitenwarnung (abfahrt_dienst_mqtt()), nie retained; nicht in der Namenstabelle der
+        // Baustein-Liste (abfahrt_mqtt_namen()), sondern in eigener (abfahrt_mqtt_namen_reichweite()).
+        'STRECKE_KM'  => [1, -1, 99999, 'FELD.STRECKE_KM', 0, 1, 'km', -1],
+        'BEDARF_KM'   => [1, -1, 99999, 'FELD.BEDARF_KM', 0, 1, 'km', -1],
+        'LADEWARNUNG' => [1, -1, 1, 'FELD.LADEWARNUNG', 0, 1, '', -1],
     ];
+}
+
+/** 1.6.45: Gehoert dieses Feld zur Reichweitenwarnung? Eine Stelle fuer Dienst, Namenstabellen und Oberflaeche. */
+function abfahrt_feld_reichweite($name) {
+    return in_array((string) $name, array('STRECKE_KM', 'BEDARF_KM', 'LADEWARNUNG'), true);
 }
 
 /** Geht dieses Feld ueber MQTT hinaus? Eine Quelle: abfahrt_felder(). */
@@ -3079,6 +3180,7 @@ function abfahrt_stand() {
         'zeit' => 0, 'ok' => 0, 'fehler' => 0, 'grund' => '', 'grund_id' => '',
         'minstart' => 9999, 'fahrt' => 0, 'abfahrt_in' => 9999, 'ankunft' => 1440,
         'titel' => '', 'ort' => '', 'kalender' => '', 'beginn' => '',
+        'strecke_km' => -1,     // 1.6.45: einfache Strecke zum Termin in ganzen km, -1 unbekannt
     ];
 }
 
@@ -3262,6 +3364,7 @@ function abfahrt_zeile(array $st, array $abfcfg) {
 function abfahrt_werte(array $st, array $abfcfg) {
     $why = '';
     $alter = $st['zeit'] > 0 ? time() - (int) $st['zeit'] : 86400;
+    $rw = abfahrt_reichweite_lage($abfcfg, $st);
     return [
         // C4: mit Altersgrenze (abfahrt_ok_wirksam()); bis 1.6.15 nur $st['ok'].
         'OK'         => abfahrt_ok_wirksam($st),
@@ -3279,6 +3382,10 @@ function abfahrt_werte(array $st, array $abfcfg) {
         'PUSH'       => (empty($abfcfg['notify']['push'])
                          || (!empty($abfcfg['quiet_push']) && abfahrt_in_quiet($abfcfg))) ? 0 : 1,
         'ANKUNFT'    => (int) $st['ankunft'],
+        // 1.6.45 (Reichweitenwarnung): aus abfahrt_reichweite_lage() - stand.json und haus_quellen.json, kein Netz.
+        'STRECKE_KM'  => (int) $rw['strecke_km'],
+        'BEDARF_KM'   => (int) $rw['bedarf_km'],
+        'LADEWARNUNG' => (int) $rw['ladewarnung'],
     ];
 }
 
@@ -3316,6 +3423,7 @@ function abfahrt_berechnen(?array $abfcfg = null) {
         $st['fahrt'] = 0;
         $st['abfahrt_in'] = 9999;
         $st['ankunft'] = 1440;      // 1440 = unbekannt
+        $st['strecke_km'] = -1;     // 1.6.45
         $st['titel'] = '';
         $st['ort'] = '';
         $st['kalender'] = '';
@@ -3361,7 +3469,8 @@ function abfahrt_berechnen(?array $abfcfg = null) {
     $err = '';
     $err_id = '';
     $veraltet = false;
-    $fahrt = abfahrt_route_minutes($loc, $abfcfg, $err, $minstart, $veraltet, null, $err_id);
+    $meter = -1;     // 1.6.45: Laenge der Strecke aus derselben Antwort
+    $fahrt = abfahrt_route_minutes($loc, $abfcfg, $err, $minstart, $veraltet, null, $err_id, $meter);
     if ($fahrt === false) {
         /* b1: FEHLER=6 mit Kennung - bis 1.6.18 ohne, die Oberflaeche zeigte
          * den Satz des Minutentakts (deutsch, auch in der englischen). */
@@ -3401,8 +3510,11 @@ function abfahrt_berechnen(?array $abfcfg = null) {
         $abfahrtTs = time() + $vorlaeufig * 60;
         $err2 = '';
         $veraltet2 = false;
-        $fahrt2 = abfahrt_route_minutes($loc, $abfcfg, $err2, $minstart, $veraltet2, $abfahrtTs);
+        $abf_eid2 = '';
+        $meter2 = -1;
+        $fahrt2 = abfahrt_route_minutes($loc, $abfcfg, $err2, $minstart, $veraltet2, $abfahrtTs, $abf_eid2, $meter2);
         if ($fahrt2 !== false) {
+            if ($meter2 >= 0) { $meter = $meter2; }     // 1.6.45: die Strecke zur Fahrzeit, die gilt
             $diag[] = sprintf(abfahrt_t('DIAG.FAHRZEIT_ABFAHRT'),
                               date('H:i', $abfahrtTs), $fahrt2, $fahrt);     // b1
             $fahrt = $fahrt2;
@@ -3439,6 +3551,9 @@ function abfahrt_berechnen(?array $abfcfg = null) {
      * beantwortet die Frage, die ABFAHRT_IN nicht beantwortet: bin ich schon
      * zu spaet, und um wie viel. 1440 heisst unbekannt. */
     $st['ankunft'] = abfahrt_ankunft_minuten($fahrt);   // C5: aus der Uhrzeit
+    /* 1.6.45 (Reichweitenwarnung): die einfache Strecke zum aktiven Termin in ganzen km, -1 wenn der Kartendienst
+     * keine Laenge geliefert hat. */
+    $st['strecke_km'] = $meter >= 0 ? (int) round($meter / 1000) : -1;
     $st['titel'] = $sum;
     $st['ort'] = $loc;
     $st['kalender'] = $calname;
@@ -4236,6 +4351,7 @@ function abfahrt_mqtt_namen($praefix = null)
     }
     $aus = array();
     foreach (abfahrt_felder() as $name => $d) {
+        if (abfahrt_feld_reichweite($name)) { continue; }     // 1.6.45: eigene Tabelle, abfahrt_mqtt_namen_reichweite()
         if ($name === 'ALTER') {
             $aus[] = array('status/zaehler', abfahrt_mqtt_gateway_name('status/zaehler', $praefix),
                            abfahrt_t('BAUSTEIN.F_STATUS_ZAEHLER'), 'zahl', 0, 999, '', 'STATUS_ZAEHLER');
@@ -4247,6 +4363,26 @@ function abfahrt_mqtt_namen($praefix = null)
     }
     $aus[] = array('status/ok', abfahrt_mqtt_gateway_name('status/ok', $praefix), abfahrt_t('BAUSTEIN.B18_PARAM'), 'zahl',
                    0, 1, '', 'STATUS_OK');
+    return $aus;
+}
+
+/**
+ * 1.6.45 (Reichweitenwarnung): die drei Namen der Reichweitenwarnung in derselben Form wie abfahrt_mqtt_namen() -
+ * eine eigene Liste, damit die Zeilennummern der Baustein-Liste (Musterprojekt) und die Hakenliste unveraendert
+ * bleiben. Gesendet werden sie nur mit eingeschalteter Reichweitenwarnung.
+ */
+function abfahrt_mqtt_namen_reichweite($praefix = null)
+{
+    if ($praefix === null) {
+        $c = abfahrt_config();
+        $praefix = $c['mqtt_topic'];
+    }
+    $aus = array();
+    foreach (abfahrt_felder() as $name => $d) {
+        if (!abfahrt_feld_reichweite($name)) { continue; }
+        $aus[] = array($name, abfahrt_mqtt_gateway_name($name, $praefix), abfahrt_t($d[3]), 'zahl',
+                       (int) $d[1], (int) $d[2], (string) $d[6], $name);
+    }
     return $aus;
 }
 
@@ -4881,7 +5017,37 @@ function abfahrt_haus_lesethemen(array $abfcfg)
         $aus['abfuhr'] = array('haus/abfuhr/heute', 'haus/abfuhr/heute_satz', 'haus/abfuhr/quittiert',
                                'haus/abfuhr/zaehler');
     }
+    /* 1.6.45 (Reichweitenwarnung): je Fahrzeug der Einstellung die drei GENAUEN Themen (die Sitzung kennt keine
+     * Platzhalter), Quelle 'fahrzeug/<name>' - abfahrt_haus_merken() schneidet 'haus/fahrzeug/<name>/' ab. */
+    if (!empty($abfcfg['reichweite_ein'])) {
+        foreach (abfahrt_reichweite_fahrzeuge($abfcfg) as $abf_n) {
+            $aus['fahrzeug/' . $abf_n] = array('haus/fahrzeug/' . $abf_n . '/reichweite_km', 'haus/fahrzeug/' . $abf_n . '/zuhause',
+                                               'haus/fahrzeug/' . $abf_n . '/zaehler');
+        }
+    }
+    /* Hoechstens ABFAHRT_HAUS_THEMEN_MAX Themen in einer Sitzung: die zuletzt angefuegten Quellen fallen weg (bei
+     * hoechstens 4 Fahrzeugen sind es 2 + 4 + 12 = 18, die Grenze greift also nur bei einer verbogenen Liste). */
+    while ($aus && count($aus, COUNT_RECURSIVE) - count($aus) > ABFAHRT_HAUS_THEMEN_MAX) { array_pop($aus); }
     return $aus;
+}
+
+/** 1.6.45: hoechstens so viele genaue Themen liest der abgekoppelte Leser in einer Sitzung. */
+define('ABFAHRT_HAUS_THEMEN_MAX', 50);
+
+/**
+ * 1.6.45: Quellen in haus_quellen.json, die nicht mehr gelesen werden, entfernen - anwesenheit, abfuhr und JEDES
+ * fahrzeug/<name>, das nicht mehr in $themen steht (Haken aus, Fahrzeug aus der Liste genommen). Andere Eintraege
+ * (sitzung, lage_anwesenheit) bleiben. Rein.
+ */
+function abfahrt_haus_quellen_raeumen(array $c, array $themen)
+{
+    foreach (array_keys($c) as $q) {
+        $q = (string) $q;
+        if (($q === 'anwesenheit' || $q === 'abfuhr' || strpos($q, 'fahrzeug/') === 0) && !isset($themen[$q])) {
+            unset($c[$q]);
+        }
+    }
+    return $c;
 }
 
 /**
@@ -5003,9 +5169,7 @@ function abfahrt_haus_abnehmer(array $abfcfg, $fenster = null)
     }
     $c = abfahrt_haus_merken($c, $erg, $themen, time());
     $c['sitzung'] = array('zeit' => time(), 'lage' => $erg['lage'], 'gewartet' => count($warten));
-    foreach (array_keys(abfahrt_haus_lesethemen(array('anwesenheit_ein' => 1, 'abfuhr_satz_ein' => 1))) as $q) {
-        if (!isset($themen[$q])) { unset($c[$q]); }
-    }
+    $c = abfahrt_haus_quellen_raeumen($c, $themen);     // 1.6.45: auch entfernte Fahrzeuge
     if (isset($themen['anwesenheit'])) {
         $lage = abfahrt_anwesenheit_lage($abfcfg, $c, time());
         if (!isset($c['lage_anwesenheit']) || $c['lage_anwesenheit'] !== $lage) {
@@ -5103,6 +5267,7 @@ function abfahrt_haus_anbieter(array $st, array $abfcfg)
     if (empty($abfcfg['haus_abfahrt_ein']) || empty($abfcfg['mqtt_ein'])) { return null; }
     $tmp = abfahrt_tmpdir();
     $wert = abfahrt_haus_in_min($st);
+    $werte = abfahrt_haus_anbieter_werte($st, $abfcfg);     // 1.6.45: in_min und die vier Themen der Reichweitenwarnung
     $mf = $tmp . '/haus_letzte.json';
     $m = is_file($mf) ? json_decode((string) @file_get_contents($mf), true) : null;
     $voll = !is_array($m) || !isset($m['voll']) || (int) $m['voll'] > time() || time() - (int) $m['voll'] >= 1800;
@@ -5110,13 +5275,10 @@ function abfahrt_haus_anbieter(array $st, array $abfcfg)
     $n = is_file($zf) ? (int) trim((string) @file_get_contents($zf)) : -1;
     $n = ($n + 1) % 1000;
     abfahrt_cache_schreiben($zf, (string) $n);
-    $senden = array('haus/abfahrt/zaehler' => array((string) $n, false));
-    if ($voll || !isset($m['in_min']) || (string) $m['in_min'] !== (string) $wert) {
-        $senden['haus/abfahrt/in_min'] = array((string) $wert, true);
-    }
+    $senden = abfahrt_haus_anbieter_senden($werte, $m, $voll, $n);
     $erg = abfahrt_haus_sitzung($senden, array(), array(), 0);
     if ($erg['lage'] === 'ok') {
-        abfahrt_cache_schreiben($mf, json_encode(array('in_min' => $wert,
+        abfahrt_cache_schreiben($mf, json_encode(array('in_min' => $wert, 'werte' => $werte,
             'voll' => $voll ? time() : (int) $m['voll'], 'zeit' => time())));
     } else {
         abfahrt_log_gedrosselt('haus_anbieter', 'Haus-Thema haus/abfahrt: Sitzung am Broker gescheitert (' . $erg['lage']
@@ -5127,22 +5289,68 @@ function abfahrt_haus_anbieter(array $st, array $abfcfg)
     return $erg;
 }
 
+/** 1.6.45: die retained Themen des Anbieters haus/abfahrt - EINE Liste fuer Senden, Abraeumen und Deinstallation.
+ *  Vertrag mit dem Dashboard (Auftrag 21.11.2026): strecke_km und bedarf_km ganze km, -1 ohne Aussage; ladewarnung
+ *  1/0/-1; fahrzeuge "name=1,name=0,name=-1" in der Reihenfolge der Einstellung, "-" wenn die Funktion aus ist. */
+function abfahrt_haus_anbieter_themen()
+{
+    return array('haus/abfahrt/in_min', 'haus/abfahrt/strecke_km', 'haus/abfahrt/bedarf_km', 'haus/abfahrt/ladewarnung',
+                 'haus/abfahrt/fahrzeuge');
+}
+
+/** 1.6.45: die Werte der retained Themen (Thema => Text) aus Stand, Einstellung und haus_quellen.json. */
+function abfahrt_haus_anbieter_werte(array $st, array $abfcfg, $c = null, $jetzt = null)
+{
+    $rw = abfahrt_reichweite_lage($abfcfg, $st, $c, $jetzt);
+    $aus = array();
+    foreach (abfahrt_haus_anbieter_themen() as $t) {
+        switch ($t) {
+            case 'haus/abfahrt/in_min':      $aus[$t] = (string) abfahrt_haus_in_min($st); break;
+            case 'haus/abfahrt/strecke_km':  $aus[$t] = (string) (int) $rw['strecke_km']; break;
+            case 'haus/abfahrt/bedarf_km':   $aus[$t] = (string) (int) $rw['bedarf_km']; break;
+            case 'haus/abfahrt/ladewarnung': $aus[$t] = (string) (int) $rw['ladewarnung']; break;
+            case 'haus/abfahrt/fahrzeuge':   $aus[$t] = (string) $rw['text']; break;
+        }
+    }
+    return $aus;
+}
+
+/** 1.6.45: Was eine Sitzung des Anbieters sendet (rein): der Zaehler immer (nie retained), jedes retained Thema im
+ *  Vollversand oder wenn es sich gegen den Merker geaendert hat. Ein Merker aus 1.6.44 (nur in_min) gilt fuer in_min. */
+function abfahrt_haus_anbieter_senden(array $werte, $m, $voll, $n)
+{
+    $senden = array('haus/abfahrt/zaehler' => array((string) $n, false));
+    $alt = (is_array($m) && isset($m['werte']) && is_array($m['werte'])) ? $m['werte'] : array();
+    if (is_array($m) && isset($m['in_min']) && !isset($alt['haus/abfahrt/in_min'])) {
+        $alt['haus/abfahrt/in_min'] = (string) $m['in_min'];
+    }
+    foreach ($werte as $t => $w) {
+        if ($voll || !array_key_exists($t, $alt) || (string) $alt[$t] !== (string) $w) {
+            $senden[$t] = array((string) $w, true);
+        }
+    }
+    return $senden;
+}
+
 /**
- * haus/abfahrt/in_min abraeumen (Haken aus, MQTT aus, Zurueckspielen mit Haken aus, Deinstallation; F-E16): leere
- * retained Nutzlast ueber die Haus-Sitzung, danach Ruecklesen ueber abfahrt_mqtt_behalten_liste(), hoechstens $runden
- * Runden. Nur das eigene Thema, nie haus/#. Rueckgabe: nichts | geleert | rest | nicht_nachgelesen | kein_broker.
+ * Die retained Themen haus/abfahrt/* des Anbieters abraeumen (abfahrt_haus_anbieter_themen(); Haken aus, MQTT aus,
+ * Zurueckspielen mit Haken aus, Deinstallation; F-E16): leere retained Nutzlast ueber die Haus-Sitzung, danach
+ * Ruecklesen ueber abfahrt_mqtt_behalten_liste(), hoechstens $runden Runden. Nur die eigenen Themen, nie haus/#.
+ * Rueckgabe: nichts | geleert | rest | nicht_nachgelesen | kein_broker.
  */
 function abfahrt_haus_abraeumen($runden = 3)
 {
-    $t = 'haus/abfahrt/in_min';
-    $f = abfahrt_mqtt_behalten_liste(array($t));
+    $themen = abfahrt_haus_anbieter_themen();
+    $f = abfahrt_mqtt_behalten_liste($themen);
     if ($f['lage'] === 'ok' && !$f['belegt']) { return 'nichts'; }
+    $leer = array();
+    foreach ($themen as $t) { $leer[$t] = array('', true); }
     $zustand = 'kein_broker';
     for ($r = 1; $r <= max(1, (int) $runden); $r++) {
-        $e = abfahrt_haus_sitzung(array($t => array('', true)), array(), array(), 0);
+        $e = abfahrt_haus_sitzung($leer, array(), array(), 0);
         if ($e['lage'] !== 'ok') { $zustand = 'kein_broker'; continue; }
         usleep(300000);
-        $f = abfahrt_mqtt_behalten_liste(array($t));
+        $f = abfahrt_mqtt_behalten_liste($themen);
         if ($f['lage'] !== 'ok') { $zustand = 'nicht_nachgelesen'; continue; }
         if (!$f['belegt']) { return 'geleert'; }
         $zustand = 'rest';
@@ -5200,6 +5408,7 @@ function abfahrt_haus_pruefzeilen(array $abfcfg)
                                            abfahrt_t('HAUS.LAGE_' . strtoupper((string) $s['lage'])))));
         }
     }
+    $z[] = abfahrt_reichweite_pruefzeile($abfcfg, $c, $jetzt);     // 1.6.45 Reichweitenwarnung
     if (empty($abfcfg['haus_abfahrt_ein'])) {
         $z[] = array(-1, abfahrt_t('HAUS.F_ANBIETER'), abfahrt_e(abfahrt_t('HAUS.A_AUS')));
     } elseif (empty($abfcfg['mqtt_ein'])) {
@@ -5217,6 +5426,159 @@ function abfahrt_haus_pruefzeilen(array $abfcfg)
         }
     }
     return $z;
+}
+
+/* ==================================================================
+ * 1.6.45: Reichweitenwarnung (Entscheidung des Hausherrn 21.11.2026), AB WERK AUS
+ *
+ * Abnehmer von haus/fahrzeug/<name>/reichweite_km, .../zuhause, .../zaehler (Regeln/07 Nr. 15; Anbieter sind die
+ * Fahrzeug-Plugins, Haken im Reiter MQTT). Die Strecke kommt aus derselben Antwort des Kartendienstes wie die Fahrzeit
+ * (abfahrt_route_meter()). Urteil je Fahrzeug: 1 reicht, 0 reicht nicht, -1 ohne Aussage; Ladewarnung 1 nur, wenn
+ * mindestens ein Fahrzeug eine Aussage hat und keines reicht.
+ * ================================================================== */
+
+/** Die Fahrzeugliste pruefen: array der Namen (Reihenfolge der Eingabe) oder null mit Grund als Kennung. Leer = array(). */
+function abfahrt_reichweite_liste_pruefen($s, &$grund = '')
+{
+    $grund = '';
+    $s = trim((string) $s);
+    if ($s === '') { return array(); }
+    $aus = array();
+    foreach (explode(',', $s) as $i => $n) {
+        $n = trim($n);
+        if ($n === '') { $grund = 'FAHRZEUG_LEER'; return null; }
+        if (!preg_match('/^[a-z0-9_-]{1,40}\z/', $n)) { $grund = 'FAHRZEUG_NAME|' . ($i + 1); return null; }
+        if ($n === 'zaehler' || $n === 'anbieter') { $grund = 'FAHRZEUG_RESERVIERT|' . ($i + 1); return null; }
+        if (in_array($n, $aus, true)) { $grund = 'FAHRZEUG_DOPPELT|' . ($i + 1); return null; }
+        $aus[] = $n;
+    }
+    if (count($aus) > 4) { $grund = 'MEHR_FAHRZEUGE|4'; return null; }
+    return $aus;
+}
+
+/** Die eingestellten Fahrzeuge (eine ungueltige Liste gilt als leer - abfahrt_config() hat sie schon gemeldet). */
+function abfahrt_reichweite_fahrzeuge(array $abfcfg)
+{
+    $g = '';
+    $l = abfahrt_reichweite_liste_pruefen(isset($abfcfg['reichweite_fahrzeuge']) ? (string) $abfcfg['reichweite_fahrzeuge'] : '', $g);
+    return $l === null ? array() : $l;
+}
+
+/**
+ * Das Urteil (rein, wenn $c und $jetzt gegeben sind). Rueckgabe:
+ *   ein          0/1
+ *   strecke_km   einfache Strecke bei gueltigem Termin (abfahrt_ok_wirksam() = 1), sonst -1 - auch ohne Haken
+ *   bedarf_km    ceil(2 x strecke x (1 + reserve/100)) in ganzen km, -1 ohne Strecke oder mit Funktion aus
+ *   ladewarnung  1 keines reicht (mindestens eines mit Aussage), 0 mindestens eines reicht, -1 ohne Aussage
+ *   fahrzeuge    name => array(urteil 1/0/-1, grund reicht|reicht_nicht|weg|kein_wert|keine_strecke|schweigt|nie,
+ *                reichweite_km (-1 ohne Zahl), seit)
+ *   text         "name=1,name=0,name=-1" in der Reihenfolge der Einstellung, "-" mit Funktion aus oder ohne Fahrzeug
+ *   grund        aus | kein_termin | keine_strecke | kein_fahrzeug | ohne_aussage | reicht | warnung
+ */
+function abfahrt_reichweite_lage(array $abfcfg, array $st, $c = null, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $st += array('strecke_km' => -1, 'ok' => 0, 'zeit' => 0);
+    $termin = abfahrt_ok_wirksam($st) === 1;
+    $strecke = ($termin && is_numeric($st['strecke_km']) && (int) $st['strecke_km'] >= 0) ? (int) $st['strecke_km'] : -1;
+    $aus = array('ein' => empty($abfcfg['reichweite_ein']) ? 0 : 1, 'strecke_km' => $strecke, 'bedarf_km' => -1,
+                 'ladewarnung' => -1, 'fahrzeuge' => array(), 'text' => '-', 'grund' => 'aus',
+                 'reserve' => isset($abfcfg['reichweite_reserve']) ? max(0, min(100, (int) $abfcfg['reichweite_reserve'])) : 20);
+    if (!$aus['ein']) { return $aus; }
+    if ($strecke >= 0) {
+        $aus['bedarf_km'] = intdiv(2 * $strecke * (100 + $aus['reserve']) + 99, 100);
+    }
+    $namen = abfahrt_reichweite_fahrzeuge($abfcfg);
+    if ($namen && $c === null) { $c = abfahrt_haus_quellen(); }
+    $teile = array();
+    $mit = 0;
+    $reicht = 0;
+    foreach ($namen as $n) {
+        $q = 'fahrzeug/' . $n;
+        $w = (isset($c[$q]['werte']) && is_array($c[$q]['werte'])) ? $c[$q]['werte'] : array();
+        $rw = isset($w['reichweite_km']) ? trim((string) $w['reichweite_km']) : '';
+        $km = preg_match('/^\d{1,6}(\.\d+)?\z/', $rw) ? (int) floor((float) $rw) : -1;
+        $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+        $e = array('urteil' => -1, 'grund' => '', 'reichweite_km' => $km, 'seit' => $seit);
+        if (!abfahrt_haus_frisch(is_array($c) ? $c : array(), $q, $jetzt)) {
+            $e['grund'] = $seit > 0 ? 'schweigt' : 'nie';
+        } elseif (isset($w['zuhause']) && (string) $w['zuhause'] === '0') {
+            $e['grund'] = 'weg';
+        } elseif ($km < 0) {
+            $e['grund'] = 'kein_wert';
+        } elseif ($aus['bedarf_km'] < 0) {
+            $e['grund'] = 'keine_strecke';
+        } else {
+            $e['urteil'] = $km >= $aus['bedarf_km'] ? 1 : 0;
+            $e['grund'] = $e['urteil'] === 1 ? 'reicht' : 'reicht_nicht';
+            $mit++;
+            if ($e['urteil'] === 1) { $reicht++; }
+        }
+        $aus['fahrzeuge'][$n] = $e;
+        $teile[] = $n . '=' . $e['urteil'];
+    }
+    if ($teile) { $aus['text'] = implode(',', $teile); }
+    if ($strecke < 0) {
+        $aus['grund'] = $termin ? 'keine_strecke' : 'kein_termin';
+    } elseif (!$namen) {
+        $aus['grund'] = 'kein_fahrzeug';
+    } elseif ($mit === 0) {
+        $aus['grund'] = 'ohne_aussage';
+    } else {
+        $aus['ladewarnung'] = $reicht > 0 ? 0 : 1;
+        $aus['grund'] = $reicht > 0 ? 'reicht' : 'warnung';
+    }
+    return $aus;
+}
+
+/** Der Satz fuer die Ansage: nur mit reichweite_ein, reichweite_ansage_ein und Ladewarnung 1, sonst ''. */
+function abfahrt_reichweite_satz(array $abfcfg, $lage = null)
+{
+    if (empty($abfcfg['reichweite_ein']) || empty($abfcfg['reichweite_ansage_ein'])) { return ''; }
+    if ($lage === null) { $lage = abfahrt_reichweite_lage($abfcfg, abfahrt_stand()); }
+    if ((int) $lage['ladewarnung'] !== 1) { return ''; }
+    return sprintf(abfahrt_t('ANSAGETEXT.REICHWEITE'), (int) $lage['bedarf_km']);
+}
+
+/** Ein Fahrzeug als Satz fuer Kopf und Reiter Test (unmaskiert). */
+function abfahrt_reichweite_fahrzeug_text(array $e, $jetzt = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    switch ($e['grund']) {
+        case 'reicht':
+        case 'reicht_nicht':
+            return sprintf(abfahrt_t('HAUS.A_RW_FRISCH'), (int) $e['reichweite_km'],
+                           abfahrt_t($e['grund'] === 'reicht' ? 'HAUS.A_RW_REICHT' : 'HAUS.A_RW_REICHT_NICHT'));
+        case 'weg':           return abfahrt_t('HAUS.A_RW_WEG');
+        case 'kein_wert':     return abfahrt_t('HAUS.A_RW_KEIN_WERT');
+        case 'keine_strecke': return sprintf(abfahrt_t('HAUS.A_RW_OHNE_STRECKE'), (int) $e['reichweite_km']);
+        case 'schweigt':      return sprintf(abfahrt_t('HAUS.A_RW_SCHWEIGT'), abfahrt_haus_alter((int) $jetzt - (int) $e['seit']));
+    }
+    return abfahrt_t('HAUS.A_RW_NIE');
+}
+
+/** Zeile "Reichweite der Fahrzeuge" fuer den Reiter Test: array(Stand, Frage, Antwort maskiert). Stand 1, wenn
+ *  mindestens ein Fahrzeug frisch gemeldet hat; -1 aus bzw. alle schweigen (keine Warnung, Rueckfall); 0 an, aber kein
+ *  Fahrzeug eingetragen. */
+function abfahrt_reichweite_pruefzeile(array $abfcfg, $c = null, $jetzt = null, $st = null)
+{
+    if ($jetzt === null) { $jetzt = time(); }
+    $f = abfahrt_t('HAUS.F_REICHWEITE');
+    if (empty($abfcfg['reichweite_ein'])) { return array(-1, $f, abfahrt_e(abfahrt_t('HAUS.A_RW_AUS'))); }
+    $l = abfahrt_reichweite_lage($abfcfg, $st === null ? abfahrt_stand() : $st, $c, $jetzt);
+    if (!$l['fahrzeuge']) { return array(0, $f, abfahrt_e(abfahrt_t('HAUS.A_RW_KEIN_FAHRZEUG'))); }
+    if ($l['strecke_km'] < 0) {
+        $kopf = abfahrt_t($l['grund'] === 'kein_termin' ? 'HAUS.A_RW_KEIN_TERMIN' : 'HAUS.A_RW_KEINE_STRECKE');
+    } else {
+        $kopf = sprintf(abfahrt_t('HAUS.A_RW_KOPF'), $l['strecke_km'], $l['bedarf_km'], $l['reserve'], $l['ladewarnung']);
+    }
+    $teile = array();
+    $frisch = false;
+    foreach ($l['fahrzeuge'] as $n => $e) {
+        $teile[] = sprintf(abfahrt_t('HAUS.A_RW_FAHRZEUG'), $n, abfahrt_reichweite_fahrzeug_text($e, $jetzt));
+        if (!in_array($e['grund'], array('schweigt', 'nie'), true)) { $frisch = true; }
+    }
+    return array($frisch ? 1 : -1, $f, abfahrt_e($kopf . ' ' . implode('; ', $teile)));
 }
 
 /* ==================================================================
@@ -6506,7 +6868,17 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'endpunkt_ein':          // Gruppe 18 (1.6.31; 2.9: ohne die Zeilen fiele ein gespeicherter Haken beim Laden
         case 'haus_abfahrt_ein':      // als UNBEKANNT auf die Vorgabe)
         case 'anwesenheit_ein':
-        case 'abfuhr_satz_ein': return $schalter($wert);
+        case 'abfuhr_satz_ein':
+        case 'reichweite_ein':           // 1.6.45 Reichweitenwarnung
+        case 'reichweite_ansage_ein': return $schalter($wert);
+        case 'reichweite_reserve': return $zahl($wert, 0, 100);
+        case 'reichweite_fahrzeuge':
+            /* Abgewiesen und gemeldet, nie zurechtgebogen: nur Leerraum um die Kommas faellt weg (die Normalform
+             * ist "a,b"). Der Grund nennt die Stelle, nie die Eingabe. */
+            $s = $text($wert, 200);
+            if ($s === null) { return null; }
+            $l = abfahrt_reichweite_liste_pruefen($s, $grund);
+            return $l === null ? null : implode(',', $l);
         case 'api_key':       return $text($wert, 200);
         case 'home_address':  return $text($wert, 300);
         case 'ansage_vorlage': return $text($wert, 500);

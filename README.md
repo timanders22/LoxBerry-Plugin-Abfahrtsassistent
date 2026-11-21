@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.44 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.45 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,12 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.45
+
+- **Neu – Reichweitenwarnung (ab Werk aus):** Das Plugin sagt, ob eines der eingetragenen Elektroautos für Hin- und Rückfahrt zum nächsten Termin reicht. Einrichten im Reiter *Einstellungen*, Abschnitt „Reichweitenwarnung“: Haken setzen, bis zu vier Fahrzeuge mit dem Namen eintragen, unter dem das Fahrzeug-Plugin sie unter `haus/fahrzeug/<name>/…` meldet (der Name steht dort im Reiter *MQTT*), dazu die Reserve in Prozent (Vorgabe 20). Die Strecke kommt aus derselben Antwort des Kartendienstes wie die Fahrzeit (Google, TomTom, HERE); es gibt keine zusätzliche Abfrage. Bedarf = 2 × Strecke × (1 + Reserve/100), aufgerundet auf ganze Kilometer. Ein Fahrzeug zählt nur, solange sein Zähler `haus/fahrzeug/<name>/zaehler` sich binnen 120 Sekunden ändert, es eine Reichweite als Zahl meldet und nicht als „nicht zu Hause“ gemeldet ist. `LADEWARNUNG` ist 1, wenn mindestens ein Fahrzeug eine Aussage hat und keines reicht, 0, wenn eines reicht, sonst −1. Neue Werte für Loxone: `STRECKE_KM`, `BEDARF_KM`, `LADEWARNUNG` (über MQTT nur mit eingeschalteter Funktion, in der Antwort von `termin.php` immer; Reiter *Einbindung in Loxone*). Mit „Minuten bis zur Abfahrt an andere Plugins geben“ zusätzlich retained `haus/abfahrt/strecke_km`, `haus/abfahrt/bedarf_km`, `haus/abfahrt/ladewarnung` und `haus/abfahrt/fahrzeuge`. Wahlweise hängt die Ansage einen Satz an; eine eigene Ansagevorlage setzt ihn mit `{reichweite}` ein. Im Quelltext der Fahrzeug-Plugins MGiSmart, Renault NG, VolkswagenID, AudiConnect, Skoda-Connect-NG und BYD-Autos steht der Anbieter von `haus/fahrzeug/<name>/reichweite_km`; an einem Gerät gemessen ist das Zusammenspiel noch nicht.
+- **Geändert – gescheiterter Start des Haus-Lesers wird gemeldet:** Liest das Plugin `haus/anwesenheit` oder `haus/abfuhr`, startet der Minutentakt dafür einen Leser im Hintergrund. Ließ der sich nicht starten, blieb das bis 1.6.44 ohne jede Zeile; die Haus-Werte blieben still auf dem letzten Stand. Jetzt steht im Protokoll eine Zeile, höchstens einmal je Stunde. Erkannt werden zwei Fälle: die Sperrdatei des Lesers lässt sich nicht öffnen, oder die Schale, die den Leser startet, scheitert selbst. Fehlt dagegen `bash`, startet kein Leser, und es entsteht keine Zeile – gemessen in der Prüfung dieser Fassung.
+- **Intern – eine Stelle nach dem Speichern von MQTT und nach dem Zurückspielen:** Was danach geschieht (unter dem bisherigen Präfix räumen, Abo-Datei nachführen, Befehlsbrücke schalten, Haus-Themen nachziehen), stand bis 1.6.44 an zwei Stellen wortgleich. Jetzt steht es in einer Funktion. Am Verhalten ändert sich nichts.
 
 ## Neu in 1.6.44
 

@@ -197,7 +197,9 @@ function abfahrt_selbsttest(array $abfcfg)
     /* Gruppe 18 (1.6.31; Entwurf G18 2.5): Haus-Themen - nur Hinweise, ohne Kennwort und ohne Wert. */
     $abf_ht = array();
     if (!empty($abfcfg['haus_abfahrt_ein'])) { $abf_ht[] = abfahrt_t('HAUS.SELBST_ANBIETER'); }
-    if (!empty($abfcfg['anwesenheit_ein']) || !empty($abfcfg['abfuhr_satz_ein'])) { $abf_ht[] = abfahrt_t('HAUS.SELBST_ABNEHMER'); }
+    if (!empty($abfcfg['anwesenheit_ein']) || !empty($abfcfg['abfuhr_satz_ein']) || !empty($abfcfg['reichweite_ein'])) {
+        $abf_ht[] = abfahrt_t('HAUS.SELBST_ABNEHMER');
+    }
     if ($abf_ht) {
         $zeilen[] = '[INFO] ' . implode('; ', $abf_ht);
         $abf_hs = abfahrt_haus_sitzung(array(), array(), array(), 0);
@@ -262,6 +264,8 @@ function abfahrt_dienst_mqtt(array $st, array $abfcfg)
     $neu = [];
     foreach ($werte as $k => $v) {
         if (!abfahrt_feld_mqtt($k)) { continue; }   // ALTER nur ueber HTTP
+        // 1.6.45: STRECKE_KM, BEDARF_KM, LADEWARNUNG nur mit eingeschalteter Reichweitenwarnung (ab Werk aus)
+        if (abfahrt_feld_reichweite($k) && empty($abfcfg['reichweite_ein'])) { continue; }
         if ($voll || !array_key_exists($k, $vorher) || (string) $vorher[$k] !== (string) $v) {
             $neu[$k] = $v;
         }
@@ -341,11 +345,13 @@ if ($modus === '--mqtt-leeren') {
     $abf_hc = abfahrt_config();
     if (!empty($abf_hc['haus_abfahrt_ein']) || !empty($abf_hc['_haus_frueher'])) {
         $abf_hz = abfahrt_haus_abraeumen();
-        $abf_hzt = array('nichts' => "<OK> Haus-Thema: der Broker bestaetigt, haus/abfahrt/in_min steht nicht zurueckbehalten - nichts zu leeren.\n",
-                         'geleert' => "<OK> Haus-Thema haus/abfahrt/in_min geleert, der Broker bestaetigt es.\n",
-                         'rest' => "<WARNING> Haus-Thema haus/abfahrt/in_min steht noch im Broker. Von Hand: mosquitto_pub -r -n -t haus/abfahrt/in_min\n",
-                         'nicht_nachgelesen' => "<INFO> Haus-Thema haus/abfahrt/in_min geleert, der Broker liess sich nicht befragen - nicht nachgelesen.\n",
-                         'kein_broker' => "<WARNING> Haus-Thema haus/abfahrt/in_min: der Broker war nicht erreichbar - nicht geleert.\n");
+        /* 1.6.45: die fuenf retained Themen aus abfahrt_haus_anbieter_themen() (in_min und die Reichweitenwarnung). */
+        $abf_hn = implode(', ', abfahrt_haus_anbieter_themen());
+        $abf_hzt = array('nichts' => "<OK> Haus-Themen: der Broker bestaetigt, keines steht zurueckbehalten - nichts zu leeren (" . $abf_hn . ").\n",
+                         'geleert' => "<OK> Haus-Themen geleert, der Broker bestaetigt es (" . $abf_hn . ").\n",
+                         'rest' => "<WARNING> Haus-Themen stehen noch im Broker (" . $abf_hn . "). Von Hand je Thema: mosquitto_pub -r -n -t <thema>\n",
+                         'nicht_nachgelesen' => "<INFO> Haus-Themen geleert, der Broker liess sich nicht befragen - nicht nachgelesen (" . $abf_hn . ").\n",
+                         'kein_broker' => "<WARNING> Haus-Themen (" . $abf_hn . "): der Broker war nicht erreichbar - nicht geleert.\n");
         echo $abf_hzt[$abf_hz];
         if ($abf_hz === 'rest' || $abf_hz === 'kein_broker') { $abf_rc = max($abf_rc, 1); }
     }
@@ -476,7 +482,12 @@ abfahrt_bruecke_waechter();
  * nicht mehr selbst (das 32-s-Fenster verpasste den Zaehler in fester Phase), sondern startet hoechstens EINEN
  * abgekoppelten Leser (--haus-lesen, bis 65 s, eigene Sperre), wartet nie darauf und nimmt den letzten Stand aus
  * haus_quellen.json. */
-abfahrt_haus_abnehmer_starten($abfcfg, __FILE__);
+/* 1.6.45 (Hinweis eines fremden Pruefers 21.11.2026): ein gescheiterter Start des Lesers ging bis 1.6.44 lautlos unter
+ * - der Rueckgabewert 'kein_start' wurde verworfen, und die Haus-Quellen alterten still. Jetzt eine Zeile, hoechstens
+ * einmal je Stunde (der Minutentakt soll das Protokoll nicht fuellen). */
+if (abfahrt_haus_abnehmer_starten($abfcfg, __FILE__) === 'kein_start') {
+    abfahrt_log_gedrosselt('haus_leser_kein_start', 'Haus-Themen: der Leser (--haus-lesen) liess sich nicht starten; anwesenheit/abfuhr bleiben auf dem letzten Stand.', 3600);
+}
 
 /**
  * Wie oft wird ueberhaupt neu gerechnet?
