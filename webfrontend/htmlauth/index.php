@@ -1158,7 +1158,8 @@ $abf_abo_klasse = ((int) ($abf_mz['fassung'] ?? 0) === 1) ? ($abf_abo_da ? 'sm-h
                 : (((int) ($abf_mz['fassung'] ?? 0) >= 2) ? 'sm-hinweis' : 'sm-warnung');
 
 if ($use_frame) {
-    LBWeb::lbheader('Abfahrts-Assistent', 'https://wiki.loxberry.de/plugins/abfahrtsassistent/start', 'help.html');     // Gruppe 18 (E13)
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Abfahrts-Assistent', __DIR__), 'https://wiki.loxberry.de/plugins/abfahrtsassistent/start', 'help.html');     // Gruppe 18 (E13)
 }
 
 ?>
