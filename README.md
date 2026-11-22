@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Abfahrts-Assistent
 
-Version 1.6.46 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
+Version 1.6.47 · LoxBerry ab 3.0 · PHP 7.4 und 8.x
 
 Sagt an, wann man losfahren muss: Das Plugin liest bis zu **10 iCal-Kalender**
 (z. B. Google Kalender), sucht den nächsten Termin **mit Ortsangabe**, ermittelt
@@ -20,6 +20,10 @@ gelöschte Instanzen via RECURRENCE-ID/STATUS:CANCELLED; DST-sicher). [v1.1.0]
 **v1.1.1:** Konfiguration bleibt bei Updates erhalten (preupgrade/postupgrade);
 Zonen-Feld akzeptiert einfache Zonenliste (`2,4,6`) &mdash; Lautstärke kommt dann aus
 dem Lautstärke-Feld; `Zone~Lautstärke` je Zone weiterhin möglich.
+
+## Neu in 1.6.47
+
+- Gemeinsames Sprachmodul auf 1.5.0 nachgezogen (Einheitlichkeit aller Linien, Entscheidung des Hausherrn 22.11.2026: Nachtruhe an Nicht-Schultagen). Die Linie rechnet mit ihrer eigenen Ruhezeit je Wochentag; die Nachtruhe des Moduls gilt hier nicht. An ihrem Verhalten ändert sich deshalb nichts.
 
 ## Neu in 1.6.46
 
