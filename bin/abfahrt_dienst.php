@@ -445,7 +445,7 @@ if ($fh === false) {
 /* Konfiguration pruefen und, wo noetig, heilen - einmal, gemeldet
  * (abfahrt_config_heilen() in der Bibliothek). Hier und in der Oberflaeche,
  * nie im unangemeldeten Endpunkt. Danach neu lesen. */
-abfahrt_config_heilen();
+abfahrt_dienst_pflege();     // 1.6.48: heilen und Lade-Beanstandungen einmal melden (Regeln/05)
 $abfcfg = abfahrt_config();
 $abf_lage = abfahrt_config_lage();
 if ($abf_lage['zustand'] === 'unlesbar') {

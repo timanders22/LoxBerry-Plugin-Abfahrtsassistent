@@ -26,10 +26,12 @@ ini_set('display_errors', '0');
  * ein und traegt jenes eine eigene Abschrift, gilt die hier zuerst geladene; die Datei
  * schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.6.48)
 /* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 1.6.41): "Einstellungen
  * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
  * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.6.48, Regeln/07)
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -319,6 +321,8 @@ function abfahrt_vorgaben()
     // Die Tafel des Plugins Dashboard: 1 = auch dort ansagen (nie gesetzt = an), leer = alle offenen Tafeln.
     'ansage_tafel_ein' => 1,
     'ansage_tafel_namen' => '',
+    // 1.6.48: Meldungen an SignalBot (gemeinsames Modul meldung.php), ab Werk aus
+    'meldung' => meld_vorgaben(abfahrt_meld_anlaesse(), abfahrt_meld_haken_vorgabe()),
     // Alle MQTT-Werte erneut senden, auch wenn sie sich nicht geaendert
     // haben - damit ein Miniserver nach einem Neustart nicht mit leeren
     // Eingaengen dasteht. 0 = aus.
@@ -497,6 +501,12 @@ function abfahrt_config() {
         if (!array_key_exists($k, $abfcfg)) { continue; }
         $grund = '';
         $gut = abfahrt_wert_pruefen($k, $abfcfg[$k], $grund);
+        if ($gut === null && $k === 'aktionstoken' && is_string($abfcfg[$k]) && $abfcfg[$k] !== '') {
+            /* 1.6.48 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn 24.11.2026 Punkt 2): ein formwidriges
+             * Merkwort gilt bis zur Berichtigung weiter und wird gemeldet (abfahrt_lade_beanstandungen(), nie mit
+             * Wert) - nie ersetzt. Bis hier galt dann '' und jede Adresse im Miniserver wurde abgewiesen. */
+            continue;
+        }
         if ($gut === null) {
             $abgewiesen[$k] = $grund;
             unset($abfcfg[$k]);
@@ -635,7 +645,8 @@ function abfahrt_token_ok(array $abfcfg) {
  * fuellt.
  */
 function abfahrt_token_abweisen($praefix, array $abfcfg) {
-    $kein = empty($abfcfg['aktionstoken']);
+    /* 1.6.48 (Punkt 4, 24.11.2026): "kein Merkwort" heisst kein Text oder nur Leerraum - nicht empty() ("0" ist eines). */
+    $kein = !isset($abfcfg['aktionstoken']) || !is_string($abfcfg['aktionstoken']) || trim($abfcfg['aktionstoken']) === '';
     $wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : 'unbekannt';
     abfahrt_log_gedrosselt('abweisung_' . $praefix . '_' . $wer . ($kein ? '_kein' : ''),
         'Abgewiesen: ' . $praefix . ' von ' . $wer . ' - '
@@ -644,8 +655,8 @@ function abfahrt_token_abweisen($praefix, array $abfcfg) {
     http_response_code(403);
     if ($kein) {
         echo $praefix . ";OK=0;ERR=KEIN_TOKEN_EINGERICHTET;GRUND=KEIN_TOKEN_GESETZT\n"
-           . "Einmal die Plugin-Oberflaeche oeffnen - dort wird eines erzeugt und\n"
-           . "im Reiter \"Einbindung in Loxone\" samt fertiger Adresse angezeigt.\n";
+           . "Im Reiter \"Test\" der Plugin-Oberflaeche mit \"Merkwort neu wuerfeln\" eines erzeugen;\n"
+           . "es steht danach im Reiter \"Einbindung in Loxone\" samt fertiger Adresse.\n";
     } else {
         echo $praefix . ";OK=0;ERR=TOKEN;GRUND=TOKEN\n";
     }
@@ -3693,6 +3704,7 @@ function abfahrt_mqtt_senden(array $werte, ?array $abfcfg = null, array $extra =
     if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
     if (empty($abfcfg['mqtt_ein'])) { return false; }
     $m = abfahrt_mqtt_zustand();
+    abfahrt_praefix_haus_melden($abfcfg);   // 1.6.48: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
     if (!$sock) {
@@ -4529,6 +4541,41 @@ function abfahrt_mqtt_v2_haken_lage(?array $cfg = null)
  * (Ausgabeart "aus"), GEGENSEITE (die Sprachausgabe hat nicht gesprochen).
  */
 function abfahrt_ansage_ausfuehren($quelle = 'http', $force = false, $text_roh = null, $debug = false, ?array $abfcfg = null)
+{
+    /* 1.6.48 (Signal-Welle, F6): erst sprechen wie bisher, danach - ausser beim Testknopf (force) - die Meldung an
+     * SignalBot mit eigenem Haken. Die Antwort an den Aufrufer ist die der Ansage, unveraendert. */
+    if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
+    $r = abfahrt_ansage_ausfuehren_sprechen($quelle, $force, $text_roh, $debug, $abfcfg);
+    if (!$force) { abfahrt_meld_abruf($abfcfg, $text_roh, ($quelle === 'mqtt') ? ' [MQTT]' : ''); }
+    return $r;
+}
+
+/**
+ * 1.6.48: die Meldung an SignalBot zur abgerufenen Abfahrtsansage (Entscheidung des Hausherrn 24.11.2026, F6).
+ * Haken 'abfahrt' im Block "Meldungen an SignalBot" (ab Werk aus). Die Sperrzeit je Wochentag gilt, "niemand zu Hause"
+ * und "Ansage erlauben" gelten nicht. Text wie die Ansage; ohne gueltigen Stand und ohne eigenen Text keine Meldung.
+ * Rueckgabe: das Ergebnis von abfahrt_meld_senden() oder null (nichts gemeldet).
+ */
+function abfahrt_meld_abruf(array $abfcfg, $text_roh = null, $mqtt = '')
+{
+    if (!meld_anlass_an(abfahrt_meld_block($abfcfg), 'abfahrt')) { return null; }
+    $info = '';
+    if (abfahrt_in_quiet($abfcfg, $info)) {
+        abfahrt_log('Meldung an SignalBot unterdrueckt: ' . $info . $mqtt);
+        return null;
+    }
+    if ($text_roh !== null && !is_string($text_roh)) { return null; }
+    $eigener = ($text_roh !== null) ? abfahrt_tts_sauber($text_roh) : '';
+    if ($eigener === '' && abfahrt_ok_wirksam(abfahrt_stand()) !== 1) { return null; }
+    $titel = @json_decode((string) @file_get_contents(abfahrt_tmpdir() . '/titel.json'), true);
+    $text = ($eigener !== '') ? $eigener : abfahrt_ansagetext(is_array($titel) ? $titel : array(), $abfcfg);
+    if (trim((string) $text) === '') { return null; }
+    return abfahrt_meld_senden(array(array('schluessel' => 'abfahrt|' . substr(md5((string) $text), 0, 10), 'anlass' => 'abfahrt',
+                                           'text' => (string) $text)), $abfcfg);
+}
+
+/** Der Rumpf der Abfahrts-Ansage bis 1.6.48 (unveraendert; die Beschreibung steht ueber abfahrt_ansage_ausfuehren()). */
+function abfahrt_ansage_ausfuehren_sprechen($quelle = 'http', $force = false, $text_roh = null, $debug = false, ?array $abfcfg = null)
 {
     if ($abfcfg === null) { $abfcfg = abfahrt_config(); }
     $erg = function ($ok, $grund, $antwort, $http = 200) {
@@ -5849,6 +5896,10 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
             sprintf(abfahrt_t('TEST.A_MQTT_OK'), (int) $m['udpport'], abfahrt_e($abfcfg['mqtt_topic'])));
     }
 
+    /* 1.6.48: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)? */
+    list($abf_hbs, $abf_hbt) = abfahrt_pruef_praefix_haus($abfcfg);
+    $zeile($abf_hbs, abfahrt_t('HAUSBEREICH.F_TEST'), $abf_hbt);
+
     /* Konfiguration heil und vollstaendig? (neu in 1.6.10)
      * Liest nur, was abfahrt_config() eben festgestellt hat - kein
      * Schreibzugriff im Seitenaufbau. */
@@ -5889,6 +5940,14 @@ function abfahrt_pruefungen(?array $abfcfg = null, array $oberflaeche = array())
     } else {
         $zeile(1, abfahrt_t('TEST.F_CFG'), sprintf(abfahrt_t('TEST.A_CFG_OK'), count(abfahrt_vorgaben())));
     }
+
+    /* 1.6.48: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist (die abgewiesenen nennt TEST.F_CFG oben schon). Frisch gelesen, nicht aus
+     * $abfcfg: die Seite fuellt dort die Kalender auf zehn Zeilen auf. */
+    $abf_ladeb = abfahrt_lade_b(true);
+    $abf_la = abfahrt_lade_beanstandungen(null, true);
+    $zeile($abf_la ? 0 : 1, sicherung_t('K_LADE_FRAGE', $abf_ladeb),
+        $abf_la ? implode(' ', sicherung_lade_saetze($abf_ladeb, $abf_la)) : sicherung_t('K_LADE_KEINE', $abf_ladeb));
 
     /* Steht der Cron-Eintrag da, und ist er eine Datei? MarstekVenus hatte
      * an dieser Stelle monatelang ein Verzeichnis (Regeln/06). */
@@ -6590,9 +6649,91 @@ function abfahrt_datei_rechte($datei) {
     return $un . ':' . $gn . ' ' . sprintf('%04o', $r & 07777);
 }
 
-function abfahrt_config_speichern($cfg)
+/* ==================================================================
+ * Lade-Beanstandungen (1.6.48; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * Ergaenzt die eigene Meldung abgewiesener Werte (abfahrt_config_lage(), abfahrt_config_heilen(), Reiter Test
+ * TEST.F_CFG) um die einheitliche Form aller Linien: gelber Kasten, eigene Zeile im Reiter Test, "Dateiwert behalten"
+ * beim Speichern, Knopf "Angezeigte Werte uebernehmen", eine Protokollzeile je Aenderung. Nie zurueckgeschrieben.
+ * Gemeldet wird auch, was abfahrt_config() still ersetzt (mqtt_topic '' -> 'abfahrt', Schraegstriche am Rand).
+ * ================================================================== */
+
+/** Die rohen Werte von abfahrt.json (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function abfahrt_lade_roh()
+{
+    list($d, $zustand) = abfahrt_config_roh();
+    return ($zustand === 'ok' && is_array($d)) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen. Geprueft wird wie in abfahrt_config() (abfahrt_wert_pruefen(),
+ *  mqtt_topic vorher geglaettet) - nicht wie beim Zurueckspielen: dort weist der Block tts jedes Sprechtoken ab (die
+ *  Konfiguration traegt es zu Recht), und ein Praefix unter haus/ wird abgewiesen, das abfahrt_config() verwendet.
+ *  Geheim: api_key, die Kalenderadressen und die Sprechtoken (aktionstoken immer). $maskiert = true fuer den gelben
+ *  Kasten und den Reiter Test (beide geben die Saetze unmittelbar aus), false fuer die Meldungen nach einem Knopf
+ *  (die Seite maskiert sie bei der Ausgabe). */
+function abfahrt_lade_b($maskiert = true)
+{
+    $b = abfahrt_sicherung_beschreibung();
+    foreach (array_keys($b['schluessel']) as $abf_k) { unset($b['schluessel'][$abf_k]['pruefen']); }
+    unset($b['quer']);
+    $b['pruefen'] = function ($k, $w) use ($maskiert) {
+        if ($k === 'mqtt_topic' && is_string($w)) { $w = trim(preg_replace('#/{2,}#', '/', $w), '/'); }
+        $g = '';
+        if (abfahrt_wert_pruefen($k, $w, $g) !== null) { return ''; }
+        $t = abfahrt_grund_text($g);
+        return $maskiert ? abfahrt_e($t) : $t;
+    };
+    $b['geheim'] = array_merge(array('api_key', 'calendars[].url'),
+                               array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    $b['e'] = $maskiert ? 'abfahrt_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst abfahrt_config()). */
+function abfahrt_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = abfahrt_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(abfahrt_lade_b($maskiert), $d, is_array($cfg) ? $cfg : abfahrt_config());
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function abfahrt_lade_behalten(array $cfg)
+{
+    $d = abfahrt_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = abfahrt_config();
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(abfahrt_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Dienst (bin/abfahrt_dienst.php, jede Minute): heilen wie bisher, dann die Lade-Beanstandungen einmal melden.
+ *  Rueckgabe wie abfahrt_config_heilen(). */
+function abfahrt_dienst_pflege()
+{
+    $r = abfahrt_config_heilen();
+    abfahrt_lade_melden(abfahrt_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function abfahrt_lade_melden(array $beanst)
+{
+    $d = abfahrt_paths()['data'];
+    if ($d === '' || (!is_dir($d) && !@mkdir($d, 0775, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        abfahrt_log(sicherung_lade_protokollzeile($beanst));
+    }
+}
+
+function abfahrt_config_speichern($cfg, $lade_behalten = true)
 {
     $p = abfahrt_paths();
+    /* 1.6.48 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert - jeder Speicherweg
+     * liest abfahrt_config(), aendert einen Teil und schreibt hier ganz zurueck. Nicht beim Zurueckspielen und nicht
+     * beim Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = abfahrt_lade_behalten($cfg); }
     /* Nr. 5: ueber eine Datei, die dieser Prozess nicht lesen kann, wird nicht
      * geschrieben - der Aufrufer haette sonst die Vorgaben statt ihres
      * Inhalts in der Hand, und die Zweitschrift ginge gleich mit. */
@@ -6698,6 +6839,7 @@ function abfahrt_sicherung_beschreibung()
                          return abfahrt_wert_pruefen('tts', $w, $g) === null
                              ? sprintf(abfahrt_t('TEXT.SICH_WERT'), 'tts', abfahrt_grund_text($g)) : '';
                      }),
+        'meldung' => meld_sicherung_knoten(abfahrt_meld_anlaesse(), abfahrt_meld_k()),     // 1.6.48
     );
     /* Jeder Schluessel: fehlt er in der Datei, behaelt er seinen geltenden Wert (wie seit 05.09.2026); nach
      * bestandener Pruefung gilt die Normalform von abfahrt_wert_pruefen() (wie bis 1.6.40). */
@@ -6725,8 +6867,15 @@ function abfahrt_sicherung_beschreibung()
         'nie_aus_datei' => array('ansage_token_herkunft'),
         'pruefen' => function ($k, $w) {
             $g = '';
-            return abfahrt_wert_pruefen($k, $w, $g) === null
-                ? sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($g)) : '';
+            if (abfahrt_wert_pruefen($k, $w, $g) === null) {
+                return sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k, abfahrt_grund_text($g));
+            }
+            /* 1.6.48: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($k === 'mqtt_topic' && hb_bereich($w) !== '') {
+                return sprintf(abfahrt_t('TEXT.SICH_WERT'), (string) $k,
+                    sprintf(abfahrt_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+            }
+            return '';
         },
         'vorbereiten' => 'abfahrt_sicherung_vorbereiten',
         // 1.6.42 (Modul 1.2.9, Bauform vom 15.11.2026): das Modul sieht die geltende Konfiguration ungefiltert -
@@ -6882,6 +7031,10 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'api_key':       return $text($wert, 200);
         case 'home_address':  return $text($wert, 300);
         case 'ansage_vorlage': return $text($wert, 500);
+        case 'meldung':     // 1.6.48: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+            $f = meld_block_pruefen($wert, abfahrt_meld_anlaesse());
+            if ($f) { $grund = meld_beanstandung_text($f[0], abfahrt_meld_k()); return null; }
+            return $wert;
         case 'ansage_tafel_namen':
             if (!ansage_tafel_namen_ok($wert)) { $grund = 'TEXT_ZEICHEN'; return null; }
             return $wert;
@@ -7164,3 +7317,154 @@ function abfahrt_wert_pruefen($schluessel, $wert, &$grund = '')
     return null;
 }
 
+
+/**
+ * 1.6.48 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function abfahrt_pruef_praefix_haus($cfg)
+{
+    $p = (trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : '')) !== '' ? trim((string) $cfg['mqtt_topic']) : 'abfahrt');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(abfahrt_t('HAUSBEREICH.A_AUS'), abfahrt_e($p), abfahrt_e($b)));
+        }
+        return array(0, sprintf(abfahrt_t('HAUSBEREICH.A_NEIN'), abfahrt_e($p), abfahrt_e($b)));
+    }
+    return array(1, sprintf(abfahrt_t('HAUSBEREICH.A_JA'), abfahrt_e($p)));
+}
+
+/**
+ * 1.6.48: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function abfahrt_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : '')) !== '' ? trim((string) $cfg['mqtt_topic']) : 'abfahrt');
+    if ($merk === null) {
+        $merk = abfahrt_paths()['data'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        abfahrt_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('abfahrt_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.6.48, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (abfahrt_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (abfahrt_meld_will()); der Sender trennt die Wege wieder (abfahrt_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function abfahrt_meld_anlaesse()
+{
+    return array('abfahrt' => abfahrt_t('SEITE.L_MELD_ABFAHRT'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function abfahrt_meld_haken_vorgabe()
+{
+    return array('abfahrt' => 0);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function abfahrt_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    return (string) $a === 'abfahrt' && is_array($cfg) && !empty($cfg['notify']['audio']);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function abfahrt_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, abfahrt_meld_anlaesse(), abfahrt_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function abfahrt_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, abfahrt_meld_anlaesse(), abfahrt_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function abfahrt_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(abfahrt_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function abfahrt_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    return abfahrt_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(abfahrt_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function abfahrt_meld_k()
+{
+    return (function () { $p = abfahrt_paths(); return array('plugin' => (string) $p['plugin'], 'ordner' => @is_dir($p['data']) ? $p['data'] : abfahrt_tmpdir()) + abfahrt_ansage_k(); })();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function abfahrt_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $anl = abfahrt_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !abfahrt_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function abfahrt_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $b = abfahrt_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, abfahrt_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        abfahrt_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function abfahrt_meld_test()
+{
+    $r = meld_testmeldung(abfahrt_meld_k());
+    abfahrt_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function abfahrt_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = abfahrt_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = abfahrt_meld_k();
+    $o = array();
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(abfahrt_meld_block($cfg), abfahrt_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(abfahrt_meld_block($cfg), abfahrt_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
+}

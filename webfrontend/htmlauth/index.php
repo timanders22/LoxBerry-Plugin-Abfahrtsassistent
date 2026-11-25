@@ -476,8 +476,10 @@ $abf_heilmeldungen = abfahrt_config_heilen();
  * die sich nicht lesen liess - die hat abfahrt_config_heilen() beiseite
  * gelegt; liess sie sich nicht verschieben, wird hier nichts geschrieben. */
 list($abf_roh, $abf_rohzustand) = abfahrt_config_roh();
-$abf_hat_token = is_array($abf_roh) && array_key_exists('aktionstoken', $abf_roh)
-                 && is_string($abf_roh['aktionstoken']) && $abf_roh['aktionstoken'] !== '';
+/* 1.6.48 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn 24.11.2026 Punkt 1): ein neues Merkwort nur,
+ * wenn der SCHLUESSEL fehlt; ein vorhandenes - auch leer oder kein Text - wird nie ersetzt (das Formularmerkmal haengt
+ * hier am eigenen formgeheimnis, nicht am Merkwort). Bis hier entstand auch bei '' ein neues. */
+$abf_hat_token = is_array($abf_roh) && array_key_exists('aktionstoken', $abf_roh);
 if (!$abf_hat_token && $abf_rohzustand !== 'kaputt' && $abf_rohzustand !== 'unlesbar') {
     $abf_neu = abfahrt_config();
     $abf_neu['aktionstoken'] = abfahrt_token_erzeugen();
@@ -577,6 +579,11 @@ if ($abf_post && isset($_POST['selftest'])) {
  * F5 sprach erneut, Entwurf B6). Endet wie jeder Handler mit der Umleitung. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.6.48: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($abf_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = abfahrt_meld_test();
+    if ($meld_ok) { abf_umleiten($data_dir, 'tab-settings', array('meldung' => $meld_satz)); } else { abf_umleiten($data_dir, 'tab-settings', array('hinweise' => array($meld_satz))); }
+}
 if ($abf_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $abf_tk = abfahrt_ansage_k();
     $abf_tnur = (isset($_POST['ansage_test_ziel']) && abfahrt_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -636,6 +643,17 @@ if ($abf_post && isset($_POST['clearlog'])) {
 function abf_feld(array &$ziel, array $alt, $schluessel, $wert, array &$hinweise) {
     $grund = '';
     $gut = abfahrt_wert_pruefen($schluessel, $wert, $grund);
+    /* 1.6.48 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+     * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+     * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+    if ($gut !== null && $schluessel === 'mqtt_topic' && hb_bereich($gut) !== ''
+        && $gut !== (string) $alt[$schluessel]) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        $hinweise[] = sprintf(abfahrt_t('HAUSBEREICH.FEHLER'), $gut, hb_bereich($gut));
+        abf_bean_aus_wert($schluessel, $wert);     // X-2
+        $ziel[$schluessel] = $alt[$schluessel];
+        return false;
+    }
     if ($gut === null) {
         $hinweise[] = sprintf(abfahrt_t('MELDUNG.FELD_ABGEWIESEN'), abfahrt_t('FELDNAME.' . strtoupper($schluessel)),
                               abfahrt_grund_text($grund));     // U5
@@ -906,6 +924,12 @@ if ($abf_post && (isset($_POST['save']) || isset($_POST['refresh']))) {
     foreach ($abf_tb2 as $abf_tb) { abf_bean($abf_tb); }
     $abfneu['ansage_tafel_ein'] = (int) $abf_tr['tafel'];
     $abfneu['ansage_tafel_namen'] = (string) $abf_tr['tafel_namen'];
+    // 1.6.48: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $abf_mm = array();
+    $abf_mb = array();
+    $abfneu['meldung'] = meld_formular_lesen($_POST, isset($abf_alt['meldung']) ? $abf_alt['meldung'] : null, abfahrt_meld_anlaesse(), $abf_mm, $abf_mb, abfahrt_meld_k(), abfahrt_meld_haken_vorgabe());
+    foreach ($abf_mm as $abf_mx) { $abf_hw[] = $abf_mx['text']; }
+    foreach ($abf_mb as $abf_my) { abf_bean($abf_my); }
     // 1.6.38: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.6.37 ueberschrieb es der naechste Abgleich.
     $abfneu['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($abf_alt['ansage_token_herkunft']) ? $abf_alt['ansage_token_herkunft'] : array());
 
@@ -1037,7 +1061,8 @@ if ($abf_post && isset($_POST['abfahrt_zurueck'])) {
          * den bisherigen stehen (auch das Merkwort) und aendert bei einer Beanstandung GAR NICHTS - alle
          * Beanstandungen, nicht nur die erste. abfahrt_config_speichern() schreibt Konfiguration und
          * Zweitschrift (0600); das Modul misst danach, ob sie inhaltsgleich sind. */
-        $abf_b['speichern'] = function ($neu) { return abfahrt_config_speichern($neu); };
+        // 1.6.48: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $abf_b['speichern'] = function ($neu) { return abfahrt_config_speichern($neu, false); };
         $abf_b['zweitschrift'] = function () { $p = abfahrt_paths(); return array($p['config'], $p['backup']); };
         $abf_b['nachziehen'] = 'abf_sicherung_nachziehen';
         $abf_b['log'] = function ($z) { abfahrt_log($z); };
@@ -1086,6 +1111,30 @@ function abf_sicherung_nachziehen($neu, $vorher, $r)
     $nach = abfahrt_config();
     abf_mqtt_nachziehen($vorher, $nach, $hw, ' (Sicherung)');     // 1.6.45: dieselbe Stelle wie das MQTT-Formular
     return $hw;
+}
+
+/* 1.6.48: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Geschrieben ohne "Dateiwert behalten". Die Seite
+ * maskiert die Meldungen bei der Ausgabe (e()). */
+if ($abf_post && sicherung_lade_eingang($_POST) !== '') {
+    $abf_ladeb = abfahrt_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        abf_umleiten($data_dir, $active_tab, array('fehler' => sicherung_t('K_LADE_HAKEN_FEHLT', $abf_ladeb)));
+    }
+    $abf_ld = abfahrt_lade_roh();
+    $abf_lv = abfahrt_config();
+    $abf_un = array();
+    if ($abf_ld !== null) {
+        list($abf_lneu, $abf_un) = sicherung_lade_uebernehmen_stand($abf_ld, $abf_lv, sicherung_lade_beanstandungen($abf_ladeb, $abf_ld, $abf_lv));
+        if ($abf_un && !abfahrt_config_speichern($abf_lneu, false)) {
+            abf_umleiten($data_dir, $active_tab, array('fehler' => sprintf(abfahrt_t('MELDUNG.SPEICHERN_FEHL'), $config_file)));
+        }
+    }
+    if ($abf_un) {
+        abfahrt_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $abf_un)));
+        abf_umleiten($data_dir, $active_tab, array('meldung' => sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $abf_ladeb), implode(', ', $abf_un))));
+    }
+    abf_umleiten($data_dir, $active_tab, array());
 }
 
 /* Ein POST, den kein Handler kannte (Knopf ohne Namen): trotzdem umleiten,
@@ -1306,7 +1355,13 @@ if ($use_frame) {
 <?php if ($save_error !== '') { ?><div class="sm-alert sm-err"><b><?= e(abfahrt_t('SEITE.FEHLER')) ?></b> <?= e($save_error) ?></div><?php } ?>
 <?php if ($abf_hinweise) { ?><div class="sm-alert sm-warn"><?php
     foreach ($abf_hinweise as $abf_h) { echo e($abf_h) . '<br>'; } ?></div><?php } ?>
+<?php /* 1.6.48: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$abf_lade = abfahrt_lade_beanstandungen();
+abfahrt_lade_melden($abf_lade); ?>
 
+<?= sicherung_lade_kasten(abfahrt_lade_b(true), isset($abf_lade) ? $abf_lade : abfahrt_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="formtoken" value="' . e(abf_formtoken($abfcfg)) . '">'
+        . '<input data-role="none" type="hidden" name="activetab" value="' . e($active_tab) . '">') ?>
 <?php if (!empty($status['titel'])) { ?>
 <div class="sm-alert sm-info"><?= sprintf(abfahrt_t('SEITE.LETZTER_TERMIN'),
     e($status['titel']), e($status['kalender'] ?? ''), e($status['beginn'] ?? ''), e($status['ort'] ?? ''),
@@ -1502,6 +1557,7 @@ echo ansage_formular_html($abfcfg['tts'], array(
     'ziele' => abfahrt_mit_zielen(),
     'ziele_post' => abf_eingabe_aktiv('tts_ziel_art') ? abf_eingaben()['werte'] : null), abfahrt_ansage_k());
 echo abfahrt_ansage_tafel_html($abfcfg, function ($n) { return abf_m($n); }, function ($n, $g) { return abf_w($n, $g); }, function ($n, $g) { return abf_h($n, $g); }); ?>
+<?= abfahrt_meld_form_html($abfcfg) ?>
 <div class="sm-hilfe"><?= e(abfahrt_t('TTS.H_TESTANSAGE')) ?></div>
 <div class="sm-feld">
 <?php if ($abf_ms4h !== null) { ?>
